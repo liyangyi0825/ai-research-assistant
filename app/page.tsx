@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 
 export default function Home() {
   return (
@@ -46,9 +46,12 @@ export default function Home() {
 
           {/* 行动按钮 */}
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Button size="lg" className="text-base px-8" asChild>
-              <Link href="/upload">开始上传论文</Link>
-            </Button>
+            <Link
+              href="/upload"
+              className={buttonVariants({ size: "lg" }) + " text-base px-8"}
+            >
+              开始上传论文
+            </Link>
           </div>
 
           <p className="mt-6 text-xs text-gray-400">
