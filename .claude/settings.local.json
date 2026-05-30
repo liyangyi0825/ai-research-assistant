@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Test-Path \"C:\\\\Program Files\\\\nodejs\\\\node.exe\"; Test-Path \"C:\\\\Program Files \\(x86\\)\\\\nodejs\\\\node.exe\"; Get-ChildItem \"$env:APPDATA\\\\npm\" -ErrorAction SilentlyContinue | Select-Object -First 3)",
+      "PowerShell(& \"C:\\\\Program Files\\\\nodejs\\\\node.exe\" -v)",
+      "PowerShell(& \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" -v)",
+      "PowerShell(Get-ChildItem \"D:\\\\网站项目\" -Force | Where-Object { $_.Name -ne \"node_modules\" -and $_.Name -ne \".next\" } | Select-Object Name, LastWriteTime)",
+      "PowerShell($env:PATH = \"C:\\\\Program Files\\\\nodejs;\" + $env:PATH; Set-Location \"D:\\\\网站项目\"; npx shadcn@latest init --yes --defaults 2>&1)"
+    ]
+  }
+}
