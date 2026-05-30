@@ -93,6 +93,6 @@ npm run lint         # 检查代码
 
 - [x] 项目脚手架搭建（Next.js + Tailwind + shadcn/ui）
 - [x] PDF 上传，并在页面显示提取出的文字
-- [ ] 调用 Claude API 生成论文总结
-- [ ] 与论文对话（基于论文内容问答）
-- [ ] 部署到 Vercel
+- [x] 调用 Claude API 生成论文总结
+- [x] 与论文对话（基于论文内容问答）
+- [x] 部署到 Vercel
