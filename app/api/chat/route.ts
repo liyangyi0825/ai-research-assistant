@@ -1,0 +1,72 @@
+// 后端接口：基于论文内容进行对话
+// 路径：POST /api/chat
+
+import { NextRequest, NextResponse } from "next/server";
+import { fetchWithProxy } from "@/lib/fetch-proxy";
+
+export async function POST(req: NextRequest) {
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: "服务器未配置 API Key" },
+        { status: 500 }
+      );
+    }
+
+    const { paperContent, messages } = await req.json();
+
+    if (!paperContent || !messages?.length) {
+      return NextResponse.json({ error: "缺少必要参数" }, { status: 400 });
+    }
+
+    // 截取论文内容，避免超出 token 限制
+    const truncatedContent = paperContent.slice(0, 60000);
+
+    // 构建发给 Claude 的消息列表
+    // 用 system prompt 注入论文内容作为背景知识
+    const anthropicRes = await fetchWithProxy(
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 1500,
+          system: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
+请用中文回答，回答要准确、简洁，并直接基于论文内容。如果论文中没有相关信息，请如实说明。
+
+以下是论文的完整内容：
+---
+${truncatedContent}
+---`,
+          messages: messages,
+        }),
+      }
+    );
+
+    if (!anthropicRes.ok) {
+      const errBody = await anthropicRes.text();
+      console.error(`Anthropic API 错误 ${anthropicRes.status}:`, errBody);
+      return NextResponse.json(
+        { error: `AI 回复失败，请重试` },
+        { status: 500 }
+      );
+    }
+
+    const data = await anthropicRes.json();
+    const reply = data.content?.[0]?.text ?? "";
+
+    return NextResponse.json({ reply });
+  } catch (error) {
+    console.error("对话请求失败:", error);
+    return NextResponse.json(
+      { error: "请求失败，请稍后重试" },
+      { status: 500 }
+    );
+  }
+}
