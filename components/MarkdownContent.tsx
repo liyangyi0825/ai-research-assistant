@@ -14,9 +14,9 @@ interface MarkdownContentProps {
  */
 export function MarkdownContent({ content, className = "" }: MarkdownContentProps) {
   return (
+    <div className={className}>
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
-      className={className}
       components={{
         // 加粗：深色 + font-bold
         strong: ({ children }) => (
@@ -41,5 +41,6 @@ export function MarkdownContent({ content, className = "" }: MarkdownContentProp
     >
       {content}
     </ReactMarkdown>
+    </div>
   );
 }
