@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { MarkdownContent } from "@/components/MarkdownContent";
 
 // 解析 AI 返回的结构化总结，拆成四个部分
 function parseSummary(text: string) {
@@ -234,7 +235,7 @@ export default function UploadPage() {
                   {parseSummary(summaryText).map(({ key, icon, content }) => (
                     <div key={key} className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
                       <h3 className="font-semibold text-gray-800 mb-3">{icon} {key}</h3>
-                      <p className="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">{content}</p>
+                      <MarkdownContent content={content} className="text-sm" />
                     </div>
                   ))}
                   <Button variant="outline" className="w-full" onClick={handleSummarize}>重新生成总结</Button>
