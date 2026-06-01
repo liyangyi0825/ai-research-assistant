@@ -13,6 +13,19 @@ function getEnvVars() {
   return { url, key };
 }
 
+/**
+ * 管理员客户端（使用 Service Role Key，拥有完整数据库权限）
+ * 只能在服务器端使用，绝不能暴露给浏览器
+ */
+export function getSupabaseAdminClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "";
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+  if (!url || !serviceKey) return null;
+  return createClient(url, serviceKey, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+}
+
 /** 简单客户端（不含用户 session）—— 反馈接口等使用 */
 export function getSupabaseClient() {
   const { url, key } = getEnvVars();
