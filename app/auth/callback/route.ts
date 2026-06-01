@@ -1,20 +1,22 @@
 // 魔法链接登录回调
-// 用户点击邮件里的链接后，Supabase 会带着 code 参数跳到这个地址
-// 这里把 code 换成真正的 session（写入 cookie），然后跳到首页
+// Supabase 支持两种回调参数格式：
+//   1. code（PKCE 流程，OAuth 等）→ 用 exchangeCodeForSession
+//   2. token_hash + type（Magic Link / 邮件 OTP）→ 用 verifyOtp
+// 两种都要处理，否则魔法链接登录会失败
 
 import { createServerClient } from "@supabase/ssr";
 import { NextRequest, NextResponse } from "next/server";
+import type { EmailOtpType } from "@supabase/supabase-js";
 
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
+  const token_hash = searchParams.get("token_hash");
+  const type = searchParams.get("type") as EmailOtpType | null;
 
-  if (code) {
-    // 先创建好跳转到首页的 response
-    const response = NextResponse.redirect(`${origin}/`);
-
-    // 把 cookie 直接写进这个 response，确保浏览器能收到
-    const supabase = createServerClient(
+  // 工厂函数：创建一个把 cookie 写进指定 response 的 Supabase 客户端
+  function makeSupabase(response: NextResponse) {
+    return createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
@@ -31,13 +33,24 @@ export async function GET(request: NextRequest) {
         },
       }
     );
-
-    const { error } = await supabase.auth.exchangeCodeForSession(code);
-    if (!error) {
-      return response; // 带着 session cookie 一起跳到首页
-    }
   }
 
-  // code 不存在或兑换失败，回到登录页并显示错误
+  // ── 情况 1：PKCE 授权码流程 ──────────────────────────────────────
+  if (code) {
+    const response = NextResponse.redirect(`${origin}/`);
+    const supabase = makeSupabase(response);
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+    if (!error) return response;
+  }
+
+  // ── 情况 2：Magic Link / 邮件 OTP（token_hash 流程）──────────────
+  if (token_hash && type) {
+    const response = NextResponse.redirect(`${origin}/`);
+    const supabase = makeSupabase(response);
+    const { error } = await supabase.auth.verifyOtp({ type, token_hash });
+    if (!error) return response;
+  }
+
+  // 两种都失败 → 回登录页并显示错误
   return NextResponse.redirect(`${origin}/login?error=auth_failed`);
 }
