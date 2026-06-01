@@ -14,7 +14,7 @@ export default function Home() {
       </header>
 
       {/* 主内容区 */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-10 sm:py-20 text-center">
+      <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-10 sm:py-20 pb-24 sm:pb-20 text-center">
         <div className="max-w-2xl mx-auto w-full">
           {/* 标题 */}
           <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-3 sm:mb-4 leading-tight">

@@ -157,7 +157,7 @@ export default function UploadPage() {
         <span className="text-sm text-gray-500">上传论文</span>
       </header>
 
-      <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-6 sm:py-12">
+      <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-6 sm:py-12 pb-24 sm:pb-12">
         <div className="w-full max-w-3xl space-y-4 sm:space-y-6">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-1">上传 PDF 论文</h1>

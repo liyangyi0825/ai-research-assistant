@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { FeedbackWidget } from "@/components/FeedbackWidget";
 import "./globals.css";
@@ -16,6 +16,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "AI 科研助手",
   description: "帮助大学生更高效地读文献、处理实验数据、做学术输出",
+};
+
+// 让 iOS 安全区域（底部 Home 条、刘海）被正确处理
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

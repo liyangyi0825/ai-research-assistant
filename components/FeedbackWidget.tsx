@@ -61,7 +61,7 @@ export function FeedbackWidget() {
       {/* ===== 浮动按钮（右下角）===== */}
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-5 right-5 sm:bottom-6 sm:right-6 z-40 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-full shadow-lg shadow-blue-200 px-4 py-2.5 text-sm font-medium transition-colors"
+        className="fixed bottom-8 right-4 sm:bottom-6 sm:right-6 z-40 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-full shadow-lg shadow-blue-200 px-4 py-3 sm:py-2.5 text-sm font-medium transition-colors"
         aria-label="提交反馈"
       >
         <span className="text-base">💬</span>
@@ -81,7 +81,7 @@ export function FeedbackWidget() {
               <h2 className="font-semibold text-gray-800">💬 提交反馈</h2>
               <button
                 onClick={handleClose}
-                className="w-8 h-8 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors text-xl leading-none"
+                className="w-10 h-10 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors text-2xl leading-none"
                 aria-label="关闭"
               >
                 ×
