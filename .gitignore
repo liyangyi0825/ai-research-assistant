@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# 但 .env.example 是模板文件，不含真实密钥，允许提交
+!.env.example
 
 # vercel
 .vercel
