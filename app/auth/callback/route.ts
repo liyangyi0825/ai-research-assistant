@@ -3,7 +3,6 @@
 // 这里把 code 换成真正的 session（写入 cookie），然后跳到首页
 
 import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(request: NextRequest) {
@@ -11,20 +10,23 @@ export async function GET(request: NextRequest) {
   const code = searchParams.get("code");
 
   if (code) {
-    const cookieStore = await cookies();
+    // 先创建好跳转到首页的 response
+    const response = NextResponse.redirect(`${origin}/`);
+
+    // 把 cookie 直接写进这个 response，确保浏览器能收到
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
           getAll() {
-            return cookieStore.getAll();
+            return request.cookies.getAll();
           },
           setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
-            cookiesToSet.forEach(({ name, value, options }) =>
+            cookiesToSet.forEach(({ name, value, options }) => {
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              cookieStore.set(name, value, options as any)
-            );
+              response.cookies.set(name, value, options as any);
+            });
           },
         },
       }
@@ -32,8 +34,7 @@ export async function GET(request: NextRequest) {
 
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (!error) {
-      // 登录成功，跳到首页
-      return NextResponse.redirect(`${origin}/`);
+      return response; // 带着 session cookie 一起跳到首页
     }
   }
 
