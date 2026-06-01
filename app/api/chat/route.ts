@@ -3,6 +3,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
+import { recordUsage } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -55,6 +56,9 @@ ${truncatedContent}
         { status: 500 }
       );
     }
+
+    // 记录用量（不影响主流程）
+    await recordUsage("chat");
 
     // 直接把 Anthropic 的 SSE 流透传给前端
     return new Response(anthropicRes.body, {
