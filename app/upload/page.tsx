@@ -5,7 +5,51 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 
-// 解析 AI 返回的结构化总结，拆成四个部分
+// ─── 解析 Anthropic SSE 流，逐块 yield 文字 ───────────────────────────────
+async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE 每行一个字段，事件之间用空行分隔；这里逐行处理
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? ""; // 保留最后一段不完整的行
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+
+        const data = trimmed.slice(6);
+        if (!data || data === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(data);
+          // Anthropic 流式格式：content_block_delta 事件里的 text_delta
+          if (
+            parsed.type === "content_block_delta" &&
+            parsed.delta?.type === "text_delta" &&
+            typeof parsed.delta.text === "string"
+          ) {
+            yield parsed.delta.text;
+          }
+        } catch {
+          // 跳过无法解析的行
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// ─── 解析总结文字，拆成四个部分 ──────────────────────────────────────────────
 function parseSummary(text: string) {
   const sections = [
     { key: "研究问题", icon: "🔍" },
@@ -21,59 +65,82 @@ function parseSummary(text: string) {
   });
 }
 
+// ─── 三点加载动画组件 ─────────────────────────────────────────────────────────
+function DotLoader() {
+  return (
+    <span className="inline-flex gap-1 items-center">
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" />
+    </span>
+  );
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
 }
 
 export default function UploadPage() {
-  // PDF 提取状态
+  // ── PDF 提取状态 ──
   const [extractStatus, setExtractStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [uploadStage, setUploadStage] = useState<"uploading" | "extracting">("uploading");
   const [extractedText, setExtractedText] = useState("");
   const [extractError, setExtractError] = useState("");
   const [fileName, setFileName] = useState("");
 
-  // AI 总结状态
+  // ── AI 总结状态 ──
+  // loading = 等待第一个 token；streaming = 文字正在流入；done = 完成
   const [summaryStatus, setSummaryStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [summaryText, setSummaryText] = useState("");
   const [summaryError, setSummaryError] = useState("");
+  const summaryStreamId = useRef(0); // 防止旧流覆盖新流
 
-  // 对话状态
+  // ── 对话状态 ──
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const chatStreamId = useRef(0);
   const chatBottomRef = useRef<HTMLDivElement>(null);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 自动滚动到对话最底部
+  // 自动滚动到对话底部
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ——— PDF 上传与提取 ———
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PDF 上传与提取（分阶段进度）
+  // ─────────────────────────────────────────────────────────────────────────────
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       setExtractStatus("error");
       setExtractError("请上传 PDF 格式的文件");
       return;
     }
+
     setFileName(file.name);
     setExtractStatus("loading");
+    setUploadStage("uploading");
     setExtractError("");
     setSummaryStatus("idle");
     setSummaryText("");
     setMessages([]);
 
+    // 1.5 秒后切换到"正在提取文字"阶段（如果请求还没完成）
+    const stageTimer = setTimeout(() => setUploadStage("extracting"), 1500);
+
     try {
       const formData = new FormData();
       formData.append("file", file);
       const res = await fetch("/api/extract", { method: "POST", body: formData });
+      clearTimeout(stageTimer);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "解析失败");
       setExtractedText(data.text);
       setExtractStatus("done");
     } catch (err) {
+      clearTimeout(stageTimer);
       setExtractStatus("error");
       setExtractError(err instanceof Error ? err.message : "上传失败，请重试");
     }
@@ -91,33 +158,56 @@ export default function UploadPage() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
-  // ——— 生成 AI 总结 ———
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 生成 AI 总结（流式）
+  // ─────────────────────────────────────────────────────────────────────────────
   async function handleSummarize() {
+    const myId = ++summaryStreamId.current;
     setSummaryStatus("loading");
     setSummaryError("");
+    setSummaryText("");
+
     try {
       const res = await fetch("/api/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: extractedText }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "总结失败");
-      setSummaryText(data.summary);
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "总结失败");
+      }
+
+      // 逐块读取并累积文字
+      let fullText = "";
+      for await (const chunk of streamAnthropicSSE(res)) {
+        if (summaryStreamId.current !== myId) return; // 用户已重新生成，丢弃旧流
+        fullText += chunk;
+        setSummaryText(fullText);
+      }
+
+      if (summaryStreamId.current !== myId) return;
       setSummaryStatus("done");
     } catch (err) {
+      if (summaryStreamId.current !== myId) return;
       setSummaryStatus("error");
       setSummaryError(err instanceof Error ? err.message : "生成失败，请重试");
     }
   }
 
-  // ——— 发送对话消息 ———
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 发送对话消息（流式）
+  // ─────────────────────────────────────────────────────────────────────────────
   async function handleSendMessage() {
     const text = inputText.trim();
     if (!text || chatLoading) return;
 
-    const newMessages: Message[] = [...messages, { role: "user", content: text }];
-    setMessages(newMessages);
+    const myId = ++chatStreamId.current;
+    const userMessages: Message[] = [...messages, { role: "user", content: text }];
+
+    // 立刻显示用户消息 + 空白占位（用于流入 AI 回复）
+    setMessages([...userMessages, { role: "assistant", content: "" }]);
     setInputText("");
     setChatLoading(true);
 
@@ -125,26 +215,40 @@ export default function UploadPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paperContent: extractedText,
-          messages: newMessages,
-        }),
+        body: JSON.stringify({ paperContent: extractedText, messages: userMessages }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "回复失败");
-      setMessages([...newMessages, { role: "assistant", content: data.reply }]);
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "回复失败");
+      }
+
+      let reply = "";
+      for await (const chunk of streamAnthropicSSE(res)) {
+        if (chatStreamId.current !== myId) return;
+        reply += chunk;
+        setMessages([...userMessages, { role: "assistant", content: reply }]);
+      }
     } catch (err) {
+      if (chatStreamId.current !== myId) return;
       setMessages([
-        ...newMessages,
+        ...userMessages,
         {
           role: "assistant",
           content: `❌ ${err instanceof Error ? err.message : "请求失败，请重试"}`,
         },
       ]);
     } finally {
-      setChatLoading(false);
+      if (chatStreamId.current === myId) setChatLoading(false);
     }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 渲染
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // 总结是否正在流入（有文字但还没 done）
+  const isSummaryStreaming = summaryStatus === "loading" && summaryText.length > 0;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
@@ -184,11 +288,33 @@ export default function UploadPage() {
             </div>
           )}
 
-          {/* ===== PDF 解析中 ===== */}
+          {/* ===== PDF 上传中（分阶段进度）===== */}
           {extractStatus === "loading" && (
             <div className="bg-white rounded-2xl p-8 sm:p-12 text-center shadow-sm">
-              <div className="text-5xl mb-4 animate-bounce">⏳</div>
-              <p className="text-base sm:text-lg font-medium text-gray-700">正在解析 <span className="text-blue-600">{fileName}</span> ...</p>
+              <div className="text-5xl mb-5">
+                {uploadStage === "uploading" ? "📤" : "📄"}
+              </div>
+
+              {/* 进度步骤指示器 */}
+              <div className="flex items-center justify-center gap-2 mb-4">
+                {/* 步骤1 */}
+                <div className={`flex items-center gap-1.5 text-sm font-medium ${
+                  uploadStage === "uploading" ? "text-blue-600" : "text-green-500"
+                }`}>
+                  {uploadStage === "uploading" ? <DotLoader /> : <span>✓</span>}
+                  <span>正在上传</span>
+                </div>
+                <span className="text-gray-300">→</span>
+                {/* 步骤2 */}
+                <div className={`flex items-center gap-1.5 text-sm font-medium ${
+                  uploadStage === "extracting" ? "text-blue-600" : "text-gray-300"
+                }`}>
+                  {uploadStage === "extracting" && <DotLoader />}
+                  <span>提取文字</span>
+                </div>
+              </div>
+
+              <p className="text-sm text-gray-400 truncate px-4">{fileName}</p>
             </div>
           )}
 
@@ -205,6 +331,8 @@ export default function UploadPage() {
               </div>
 
               {/* ===== AI 总结区域 ===== */}
+
+              {/* 等待点击 */}
               {summaryStatus === "idle" && (
                 <div className="bg-white rounded-2xl p-6 sm:p-8 text-center shadow-sm border border-blue-100">
                   <div className="text-4xl mb-3">✨</div>
@@ -214,14 +342,33 @@ export default function UploadPage() {
                 </div>
               )}
 
-              {summaryStatus === "loading" && (
+              {/* 等待第一个 token */}
+              {summaryStatus === "loading" && !summaryText && (
                 <div className="bg-white rounded-2xl p-8 sm:p-10 text-center shadow-sm">
-                  <div className="text-5xl mb-4 animate-spin">⚙️</div>
-                  <p className="text-base sm:text-lg font-medium text-gray-700">AI 正在阅读论文并生成总结...</p>
-                  <p className="text-sm text-gray-400 mt-2">通常需要 10～30 秒</p>
+                  <div className="flex justify-center mb-5">
+                    <DotLoader />
+                  </div>
+                  <p className="text-base sm:text-lg font-medium text-gray-700">AI 正在读取论文...</p>
+                  <p className="text-sm text-gray-400 mt-2">通常需要几秒钟</p>
                 </div>
               )}
 
+              {/* 流式文字进入中 */}
+              {isSummaryStreaming && (
+                <div className="space-y-3 sm:space-y-4">
+                  <div className="flex items-center gap-2">
+                    <DotLoader />
+                    <h2 className="text-lg sm:text-xl font-bold text-gray-700">AI 正在生成总结...</h2>
+                  </div>
+                  <div className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-blue-50">
+                    <MarkdownContent content={summaryText} className="text-sm" />
+                    {/* 光标闪烁效果 */}
+                    <span className="inline-block w-0.5 h-4 bg-blue-400 ml-0.5 align-middle animate-pulse" />
+                  </div>
+                </div>
+              )}
+
+              {/* 生成失败 */}
               {summaryStatus === "error" && (
                 <div className="bg-white rounded-2xl p-5 sm:p-6 shadow-sm">
                   <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm mb-4">❌ {summaryError}</div>
@@ -229,6 +376,7 @@ export default function UploadPage() {
                 </div>
               )}
 
+              {/* 生成完毕，拆分展示 */}
               {summaryStatus === "done" && (
                 <div className="space-y-3 sm:space-y-4">
                   <h2 className="text-lg sm:text-xl font-bold text-gray-800">📋 AI 论文总结</h2>
@@ -259,24 +407,29 @@ export default function UploadPage() {
                         <p className="mt-1 text-xs">例如："这篇论文用了什么数据集？"</p>
                       </div>
                     )}
-                    {messages.map((msg, i) => (
-                      <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                        <div className={`max-w-[85%] rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 text-sm leading-relaxed whitespace-pre-wrap ${
-                          msg.role === "user"
-                            ? "bg-blue-600 text-white rounded-br-sm"
-                            : "bg-gray-100 text-gray-800 rounded-bl-sm"
-                        }`}>
-                          {msg.content}
+                    {messages.map((msg, i) => {
+                      const isLastMsg = i === messages.length - 1;
+                      const isStreamingThis = isLastMsg && msg.role === "assistant" && chatLoading;
+                      return (
+                        <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                          <div className={`max-w-[85%] rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                            msg.role === "user"
+                              ? "bg-blue-600 text-white rounded-br-sm"
+                              : "bg-gray-100 text-gray-800 rounded-bl-sm"
+                          }`}>
+                            {/* 空内容时显示三点等待动画 */}
+                            {!msg.content && isStreamingThis
+                              ? <span className="flex gap-1 py-0.5"><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" /><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" /><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" /></span>
+                              : msg.content
+                            }
+                            {/* 流式光标 */}
+                            {isStreamingThis && msg.content && (
+                              <span className="inline-block w-0.5 h-3.5 bg-gray-500 ml-0.5 align-middle animate-pulse" />
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                    {chatLoading && (
-                      <div className="flex justify-start">
-                        <div className="bg-gray-100 rounded-2xl rounded-bl-sm px-4 py-3 text-sm text-gray-500">
-                          AI 正在思考...
-                        </div>
-                      </div>
-                    )}
+                      );
+                    })}
                     <div ref={chatBottomRef} />
                   </div>
 

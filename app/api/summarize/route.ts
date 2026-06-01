@@ -1,4 +1,4 @@
-// 后端接口：接收论文文字，调用 Claude API 生成结构化总结
+// 后端接口：接收论文文字，调用 Claude API 生成结构化总结（流式输出）
 // 路径：POST /api/summarize
 // ⚠️ API Key 在服务器端读取，绝不暴露给浏览器
 
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
 
     const truncatedContent = content.slice(0, 80000);
 
-    // 调用 Anthropic API（开发环境走本地代理）
+    // 调用 Anthropic API，开启 stream: true
     const anthropicRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -34,6 +34,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
         max_tokens: 2000,
+        stream: true,
         messages: [
           {
             role: "user",
@@ -58,7 +59,6 @@ ${truncatedContent}
       }),
     });
 
-    // 把 Anthropic 返回的完整错误信息打印出来
     if (!anthropicRes.ok) {
       const errBody = await anthropicRes.text();
       console.error(`Anthropic API 错误 ${anthropicRes.status}:`, errBody);
@@ -68,14 +68,17 @@ ${truncatedContent}
       );
     }
 
-    const data = await anthropicRes.json();
-    const summary = data.content?.[0]?.text ?? "";
-
-    return NextResponse.json({ summary });
+    // 直接把 Anthropic 的 SSE 流透传给前端
+    return new Response(anthropicRes.body, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no", // 禁止 nginx/Vercel 缓冲，确保实时推送
+      },
+    });
   } catch (error) {
     console.error("请求失败:", error);
     const msg = error instanceof Error ? error.message : "请求失败，请重试";
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
-

@@ -1,4 +1,4 @@
-// 后端接口：基于论文内容进行对话
+// 后端接口：基于论文内容进行对话（流式输出）
 // 路径：POST /api/chat
 
 import { NextRequest, NextResponse } from "next/server";
@@ -20,11 +20,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "缺少必要参数" }, { status: 400 });
     }
 
-    // 截取论文内容，避免超出 token 限制
     const truncatedContent = paperContent.slice(0, 60000);
 
-    // 构建发给 Claude 的消息列表
-    // 用 system prompt 注入论文内容作为背景知识
     const anthropicRes = await fetchWithProxy(
       "https://api.anthropic.com/v1/messages",
       {
@@ -37,6 +34,7 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
           max_tokens: 1500,
+          stream: true,
           system: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
 请用中文回答，回答要准确、简洁，并直接基于论文内容。如果论文中没有相关信息，请如实说明。
 
@@ -53,15 +51,19 @@ ${truncatedContent}
       const errBody = await anthropicRes.text();
       console.error(`Anthropic API 错误 ${anthropicRes.status}:`, errBody);
       return NextResponse.json(
-        { error: `AI 回复失败，请重试` },
+        { error: "AI 回复失败，请重试" },
         { status: 500 }
       );
     }
 
-    const data = await anthropicRes.json();
-    const reply = data.content?.[0]?.text ?? "";
-
-    return NextResponse.json({ reply });
+    // 直接把 Anthropic 的 SSE 流透传给前端
+    return new Response(anthropicRes.body, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+      },
+    });
   } catch (error) {
     console.error("对话请求失败:", error);
     return NextResponse.json(
