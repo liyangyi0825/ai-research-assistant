@@ -1,17 +1,11 @@
 import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
+import { Header } from "@/components/Header";
 
 export default function Home() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
-      {/* 顶部导航栏 */}
-      <header className="w-full px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between bg-white/70 backdrop-blur border-b border-gray-200">
-        <div className="flex items-center gap-2">
-          <span className="text-2xl">🔬</span>
-          <span className="font-bold text-lg text-gray-800">AI 科研助手</span>
-        </div>
-        <nav className="hidden sm:block text-sm text-gray-500">大学生科研效率工具</nav>
-      </header>
+      <Header />
 
       {/* 主内容区 */}
       <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-10 sm:py-20 pb-24 sm:pb-20 text-center">

@@ -1,31 +1,46 @@
 // Supabase 客户端工具
-// ─ 服务端（API 路由）和浏览器端都可以用这个文件
-// ─ NEXT_PUBLIC_ 前缀的变量在浏览器和服务器都可见（后续登录功能需要）
-// ─ 普通变量（无前缀）只在服务器可见
-// ─ 为兼容已有配置，两种命名都能工作
+// ─ getSupabaseClient()        简单客户端，无 session，用于反馈等不需要鉴权的接口
+// ─ getSupabaseAuthClient()    Session 感知客户端，从 Cookie 读取登录状态，用于 AI 接口
 
 import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
 
 function getEnvVars() {
-  // 优先读 NEXT_PUBLIC_ 前缀（新命名），兼容旧命名（无前缀）
-  const url =
-    process.env.NEXT_PUBLIC_SUPABASE_URL ??
-    process.env.SUPABASE_URL;
-  const key =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    process.env.SUPABASE_ANON_KEY;
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "";
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY ?? "";
   return { url, key };
 }
 
-/** 通用 Supabase 客户端（服务端 API 路由用） */
+/** 简单客户端（不含用户 session）—— 反馈接口等使用 */
 export function getSupabaseClient() {
   const { url, key } = getEnvVars();
   if (!url || !key) return null;
   return createClient(url, key);
 }
 
-/** 导出 URL 和 Key，供浏览器端直接使用（步骤 2 登录功能需要） */
-export function getSupabaseEnv() {
+/**
+ * Session 感知客户端（从 Cookie 读取登录用户）
+ * 用于需要知道"当前是谁"的 API 路由：用量记录、限额检查、管理页面
+ */
+export async function getSupabaseAuthClient() {
   const { url, key } = getEnvVars();
-  return { url: url ?? "", key: key ?? "" };
+  const cookieStore = await cookies();
+
+  return createServerClient(url, key, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll(cookiesToSet) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) =>
+            cookieStore.set(name, value, options)
+          );
+        } catch {
+          // 在 Server Component 中调用会只读报错，在 Route Handler 中正常
+        }
+      },
+    },
+  });
 }

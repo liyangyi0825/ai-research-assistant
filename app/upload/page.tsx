@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { Header } from "@/components/Header";
 
 // ─── 解析 Anthropic SSE 流，逐块 yield 文字 ───────────────────────────────
 async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
@@ -252,14 +252,7 @@ export default function UploadPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
-      {/* 顶部导航 */}
-      <header className="w-full px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between bg-white/70 backdrop-blur border-b border-gray-200">
-        <Link href="/" className="flex items-center gap-2">
-          <span className="text-2xl">🔬</span>
-          <span className="font-bold text-lg text-gray-800">AI 科研助手</span>
-        </Link>
-        <span className="text-sm text-gray-500">上传论文</span>
-      </header>
+      <Header title="上传论文" />
 
       <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-6 sm:py-12 pb-24 sm:pb-12">
         <div className="w-full max-w-3xl space-y-4 sm:space-y-6">
