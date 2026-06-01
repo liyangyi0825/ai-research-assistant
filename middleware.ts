@@ -21,7 +21,7 @@ export async function middleware(request: NextRequest) {
       getAll() {
         return request.cookies.getAll();
       },
-      setAll(cookiesToSet) {
+      setAll(cookiesToSet: { name: string; value: string; options?: Record<string, unknown> }[]) {
         // 把新 cookie 先写进 request（供后续中间件读取）
         cookiesToSet.forEach(({ name, value }) =>
           request.cookies.set(name, value)
@@ -29,7 +29,8 @@ export async function middleware(request: NextRequest) {
         // 再写进 response（返回给浏览器）
         supabaseResponse = NextResponse.next({ request });
         cookiesToSet.forEach(({ name, value, options }) =>
-          supabaseResponse.cookies.set(name, value, options)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          supabaseResponse.cookies.set(name, value, options as any)
         );
       },
     },
