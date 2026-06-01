@@ -4,7 +4,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { recordUsage } from "@/lib/supabase";
+import { recordUsage, checkUsageLimit } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,6 +13,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "服务器未配置 API Key，请检查 .env.local 文件" },
         { status: 500 }
+      );
+    }
+
+    // 用量限额检查（每月 5 次总结）
+    const { allowed, used, limit } = await checkUsageLimit("summarize");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: `本月 AI 总结次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 }
       );
     }
 

@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { recordUsage } from "@/lib/supabase";
+import { recordUsage, checkUsageLimit } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,6 +12,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: "服务器未配置 API Key" },
         { status: 500 }
+      );
+    }
+
+    // 用量限额检查（每月 30 次对话）
+    const { allowed, used, limit } = await checkUsageLimit("chat");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: `本月对话次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 }
       );
     }
 

@@ -21,6 +21,46 @@ export function getSupabaseClient() {
 }
 
 /**
+ * 检查当前用户本月用量是否超限
+ * @returns allowed: 是否允许继续；used: 本月已用次数；limit: 上限
+ */
+export async function checkUsageLimit(
+  actionType: "summarize" | "chat"
+): Promise<{ allowed: boolean; used: number; limit: number }> {
+  const limits = { summarize: 5, chat: 30 };
+  const limit = limits[actionType];
+
+  try {
+    const supabase = await getSupabaseAuthClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (!user) return { allowed: false, used: 0, limit };
+
+    // 本月第一天 00:00:00
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+    const { count, error } = await supabase
+      .from("usage")
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", user.id)
+      .eq("action_type", actionType)
+      .gte("created_at", startOfMonth);
+
+    if (error) {
+      console.error("查询用量失败:", error.message);
+      return { allowed: true, used: 0, limit }; // 查询失败时放行，不阻断用户
+    }
+
+    const used = count ?? 0;
+    return { allowed: used < limit, used, limit };
+  } catch (err) {
+    console.error("用量检查异常:", err);
+    return { allowed: true, used: 0, limit }; // 异常时放行
+  }
+}
+
+/**
  * 记录一次 AI 用量到 usage 表
  * 失败时只打印日志，不影响主请求
  */
