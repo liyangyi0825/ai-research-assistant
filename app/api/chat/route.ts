@@ -40,18 +40,27 @@ export async function POST(req: NextRequest) {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
+          "anthropic-beta": "prompt-caching-2024-07-31", // 开启 Prompt Caching
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
           max_tokens: 1500,
           stream: true,
-          system: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
+          // system 改为数组格式，对论文内容标记 cache_control
+          // 第一次请求后缓存 5 分钟，后续对话读缓存，费用降约 80%
+          system: [
+            {
+              type: "text",
+              text: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
 请用中文回答，回答要准确、简洁，并直接基于论文内容。如果论文中没有相关信息，请如实说明。
 
 以下是论文的完整内容：
 ---
 ${truncatedContent}
 ---`,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
           messages: messages,
         }),
       }
