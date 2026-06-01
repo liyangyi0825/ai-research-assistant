@@ -46,7 +46,7 @@ export function Header({ title }: HeaderProps) {
         )}
         {email && (
           <>
-            <span className="hidden sm:block text-sm text-gray-500 max-w-[160px] truncate">
+            <span className="text-sm text-gray-500 max-w-[120px] sm:max-w-[180px] truncate">
               {email}
             </span>
             <button
