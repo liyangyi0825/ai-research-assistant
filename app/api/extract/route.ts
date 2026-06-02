@@ -25,10 +25,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 检查文件大小（最大 20MB）
-    if (file.size > 20 * 1024 * 1024) {
+    // 检查文件大小（最大 4MB，Vercel 免费版请求体上限为 4.5MB）
+    if (file.size > 4 * 1024 * 1024) {
       return NextResponse.json(
-        { error: "文件太大，请上传 20MB 以内的 PDF" },
+        { error: "PDF 文件太大（最大 4MB），请压缩后重试" },
         { status: 400 }
       );
     }

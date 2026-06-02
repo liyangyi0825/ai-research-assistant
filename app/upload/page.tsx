@@ -135,9 +135,20 @@ export default function UploadPage() {
       formData.append("file", file);
       const res = await fetch("/api/extract", { method: "POST", body: formData });
       clearTimeout(stageTimer);
-      const data = await res.json();
+
+      // 先尝试解析 JSON；Vercel 超大文件会返回纯文本 413，需单独处理
+      let data: { text?: string; error?: string };
+      try {
+        data = await res.json();
+      } catch {
+        if (res.status === 413) {
+          throw new Error("PDF 文件太大（最大 4MB），请压缩后重试");
+        }
+        throw new Error(`服务器错误（HTTP ${res.status}），请刷新页面后重试`);
+      }
+
       if (!res.ok) throw new Error(data.error || "解析失败");
-      setExtractedText(data.text);
+      setExtractedText(data.text ?? "");
       setExtractStatus("done");
     } catch (err) {
       clearTimeout(stageTimer);
@@ -271,7 +282,7 @@ export default function UploadPage() {
             >
               <div className="text-5xl mb-3 sm:mb-4">📄</div>
               <p className="text-base sm:text-lg font-medium text-gray-700 mb-2">点击选择文件，或拖拽 PDF 到这里</p>
-              <p className="text-sm text-gray-400">仅支持 PDF 格式，最大 20MB</p>
+              <p className="text-sm text-gray-400">仅支持 PDF 格式，最大 4MB</p>
               {extractStatus === "error" && (
                 <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
                   ❌ {extractError}

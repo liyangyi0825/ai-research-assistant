@@ -1,7 +1,7 @@
 // 后端接口：基于论文内容进行对话（流式输出）
 // 路径：POST /api/chat
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
@@ -81,6 +81,20 @@ ${truncatedContent}
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
     let sseBuffer = "";
 
+    // after() 在响应流发完后执行，Vercel 保证它能跑完再关闭函数
+    if (userId) {
+      after(async () => {
+        await insertUsageRecord({
+          userId,
+          actionType: "chat",
+          tokensInput: inputTokens,
+          tokensOutput: outputTokens,
+          cacheCreationTokens: cacheCreate,
+          cacheReadTokens: cacheRead,
+        });
+      });
+    }
+
     void (async () => {
       const reader = anthropicRes.body!.getReader();
       try {
@@ -112,16 +126,6 @@ ${truncatedContent}
         }
       } finally {
         writer.close().catch(() => {});
-        if (userId) {
-          await insertUsageRecord({
-            userId,
-            actionType: "chat",
-            tokensInput: inputTokens,
-            tokensOutput: outputTokens,
-            cacheCreationTokens: cacheCreate,
-            cacheReadTokens: cacheRead,
-          });
-        }
       }
     })();
 
