@@ -4,7 +4,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { recordUsage, checkUsageLimit } from "@/lib/supabase";
+import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,8 +16,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 用量限额检查（每月 5 次总结）
-    const { allowed, used, limit } = await checkUsageLimit("summarize");
+    // 用量限额检查（每月 5 次总结），同时取得 userId 供后续写入
+    const { allowed, used, limit, userId } = await checkUsageLimit("summarize");
     if (!allowed) {
       return NextResponse.json(
         { error: `本月 AI 总结次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
@@ -78,15 +78,69 @@ ${truncatedContent}
       );
     }
 
-    // 记录用量（不影响主流程）
-    await recordUsage("summarize");
+    // ── 流式透传 + 提取 token 用量 ──────────────────────────────────
+    // TransformStream 把 Anthropic SSE 流原封不动转发给前端，
+    // 同时解析 message_start / message_delta 事件拿到真实 token 数，
+    // 流结束后写入 usage 表。
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const decoder = new TextDecoder();
 
-    // 直接把 Anthropic 的 SSE 流透传给前端
-    return new Response(anthropicRes.body, {
+    let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
+    let sseBuffer = "";
+
+    void (async () => {
+      const reader = anthropicRes.body!.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          // 原样转发给前端
+          await writer.write(value);
+
+          // 解析 token 信息
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw || raw === "[DONE]") continue;
+            try {
+              const evt = JSON.parse(raw);
+              if (evt.type === "message_start" && evt.message?.usage) {
+                inputTokens = evt.message.usage.input_tokens ?? 0;
+                cacheCreate = evt.message.usage.cache_creation_input_tokens ?? 0;
+                cacheRead   = evt.message.usage.cache_read_input_tokens ?? 0;
+              } else if (evt.type === "message_delta" && evt.usage) {
+                outputTokens = evt.usage.output_tokens ?? 0;
+              }
+            } catch { /* 跳过无法解析的行 */ }
+          }
+        }
+      } finally {
+        writer.close().catch(() => {});
+        // 流结束后写入真实 token 数据
+        if (userId) {
+          await insertUsageRecord({
+            userId,
+            actionType: "summarize",
+            tokensInput: inputTokens,
+            tokensOutput: outputTokens,
+            cacheCreationTokens: cacheCreate,
+            cacheReadTokens: cacheRead,
+          });
+        }
+      }
+    })();
+
+    return new Response(readable, {
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
-        "X-Accel-Buffering": "no", // 禁止 nginx/Vercel 缓冲，确保实时推送
+        "X-Accel-Buffering": "no",
       },
     });
   } catch (error) {

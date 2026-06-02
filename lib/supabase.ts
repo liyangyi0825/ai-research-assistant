@@ -1,7 +1,8 @@
 // Supabase 客户端工具
 // ─ getSupabaseClient()        简单客户端，无 session，用于反馈等不需要鉴权的接口
 // ─ getSupabaseAuthClient()    Session 感知客户端，从 Cookie 读取登录状态，用于 AI 接口
-// ─ recordUsage()              记录一次 AI 用量到 usage 表
+// ─ checkUsageLimit()          检查本月用量是否超限（同时返回 userId）
+// ─ insertUsageRecord()        写入用量记录（含真实 token 数和费用）
 
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
@@ -35,11 +36,11 @@ export function getSupabaseClient() {
 
 /**
  * 检查当前用户本月用量是否超限
- * @returns allowed: 是否允许继续；used: 本月已用次数；limit: 上限
+ * 同时返回 userId，供后续写入用量记录使用
  */
 export async function checkUsageLimit(
   actionType: "summarize" | "chat"
-): Promise<{ allowed: boolean; used: number; limit: number }> {
+): Promise<{ allowed: boolean; used: number; limit: number; userId: string | null }> {
   const limits = { summarize: 5, chat: 30 };
   const limit = limits[actionType];
 
@@ -47,7 +48,7 @@ export async function checkUsageLimit(
     const supabase = await getSupabaseAuthClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) return { allowed: false, used: 0, limit };
+    if (!user) return { allowed: false, used: 0, limit, userId: null };
 
     // 本月第一天 00:00:00
     const now = new Date();
@@ -62,31 +63,60 @@ export async function checkUsageLimit(
 
     if (error) {
       console.error("查询用量失败:", error.message);
-      return { allowed: true, used: 0, limit }; // 查询失败时放行，不阻断用户
+      return { allowed: true, used: 0, limit, userId: user.id };
     }
 
     const used = count ?? 0;
-    return { allowed: used < limit, used, limit };
+    return { allowed: used < limit, used, limit, userId: user.id };
   } catch (err) {
     console.error("用量检查异常:", err);
-    return { allowed: true, used: 0, limit }; // 异常时放行
+    return { allowed: true, used: 0, limit, userId: null };
   }
 }
 
 /**
- * 记录一次 AI 用量到 usage 表
- * 失败时只打印日志，不影响主请求
+ * 写入用量记录（含真实 token 数和费用）
+ * 使用 Admin Client，在流式响应结束后调用，不依赖 Cookie
+ *
+ * Claude Sonnet 4.5/4.6 定价：
+ *   输入        $3.00 / 百万 token
+ *   输出        $15.00 / 百万 token
+ *   缓存写入    $3.75 / 百万 token（1.25×）
+ *   缓存读取    $0.30 / 百万 token（0.1×）
  */
-export async function recordUsage(actionType: "summarize" | "chat") {
+export async function insertUsageRecord({
+  userId,
+  actionType,
+  tokensInput,
+  tokensOutput,
+  cacheCreationTokens = 0,
+  cacheReadTokens = 0,
+}: {
+  userId: string;
+  actionType: "summarize" | "chat";
+  tokensInput: number;
+  tokensOutput: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+}) {
   try {
-    const supabase = await getSupabaseAuthClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return; // 未登录用户不记录
+    const admin = getSupabaseAdminClient();
+    if (!admin) return;
 
-    const { error } = await supabase.from("usage").insert({
-      user_id: user.id,
+    const costUsd =
+      (tokensInput         / 1_000_000) * 3.00 +
+      (tokensOutput        / 1_000_000) * 15.00 +
+      (cacheCreationTokens / 1_000_000) * 3.75 +
+      (cacheReadTokens     / 1_000_000) * 0.30;
+
+    const { error } = await admin.from("usage").insert({
+      user_id: userId,
       action_type: actionType,
+      tokens_input: tokensInput,
+      tokens_output: tokensOutput,
+      cost_usd: costUsd,
     });
+
     if (error) console.error("用量写入失败:", error.message);
   } catch (err) {
     console.error("用量记录异常:", err);

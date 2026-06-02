@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { recordUsage, checkUsageLimit } from "@/lib/supabase";
+import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 用量限额检查（每月 30 次对话）
-    const { allowed, used, limit } = await checkUsageLimit("chat");
+    // 用量限额检查（每月 30 次对话），同时取得 userId
+    const { allowed, used, limit, userId } = await checkUsageLimit("chat");
     if (!allowed) {
       return NextResponse.json(
         { error: `本月对话次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
@@ -40,14 +40,12 @@ export async function POST(req: NextRequest) {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
-          "anthropic-beta": "prompt-caching-2024-07-31", // 开启 Prompt Caching
+          "anthropic-beta": "prompt-caching-2024-07-31",
         },
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
           max_tokens: 1500,
           stream: true,
-          // system 改为数组格式，对论文内容标记 cache_control
-          // 第一次请求后缓存 5 分钟，后续对话读缓存，费用降约 80%
           system: [
             {
               type: "text",
@@ -75,11 +73,59 @@ ${truncatedContent}
       );
     }
 
-    // 记录用量（不影响主流程）
-    await recordUsage("chat");
+    // ── 流式透传 + 提取 token 用量 ──────────────────────────────────
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const decoder = new TextDecoder();
 
-    // 直接把 Anthropic 的 SSE 流透传给前端
-    return new Response(anthropicRes.body, {
+    let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
+    let sseBuffer = "";
+
+    void (async () => {
+      const reader = anthropicRes.body!.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          await writer.write(value);
+
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw || raw === "[DONE]") continue;
+            try {
+              const evt = JSON.parse(raw);
+              if (evt.type === "message_start" && evt.message?.usage) {
+                inputTokens = evt.message.usage.input_tokens ?? 0;
+                cacheCreate = evt.message.usage.cache_creation_input_tokens ?? 0;
+                cacheRead   = evt.message.usage.cache_read_input_tokens ?? 0;
+              } else if (evt.type === "message_delta" && evt.usage) {
+                outputTokens = evt.usage.output_tokens ?? 0;
+              }
+            } catch { /* 跳过无法解析的行 */ }
+          }
+        }
+      } finally {
+        writer.close().catch(() => {});
+        if (userId) {
+          await insertUsageRecord({
+            userId,
+            actionType: "chat",
+            tokensInput: inputTokens,
+            tokensOutput: outputTokens,
+            cacheCreationTokens: cacheCreate,
+            cacheReadTokens: cacheRead,
+          });
+        }
+      }
+    })();
+
+    return new Response(readable, {
       headers: {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
