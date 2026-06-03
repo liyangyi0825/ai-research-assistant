@@ -48,6 +48,9 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/login") ||
     pathname.startsWith("/auth");
 
+  // ⚠️ 登录功能暂时关闭，所有人可直接访问，无需登录
+  // 恢复时取消下面的注释，并删除这行说明
+  /*
   // 未登录 + 访问需要登录的页面 → 跳转到登录页
   if (!user && !isPublicPath) {
     const loginUrl = request.nextUrl.clone();
@@ -61,6 +64,7 @@ export async function middleware(request: NextRequest) {
     homeUrl.pathname = "/";
     return NextResponse.redirect(homeUrl);
   }
+  */
 
   return supabaseResponse;
 }
