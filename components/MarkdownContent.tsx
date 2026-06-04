@@ -2,6 +2,9 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 interface MarkdownContentProps {
   content: string;
@@ -10,13 +13,14 @@ interface MarkdownContentProps {
 
 /**
  * 渲染 AI 返回的 Markdown 格式文本
- * 支持加粗、列表等基础格式
+ * 支持加粗、列表等基础格式，以及 KaTeX 数学公式（$...$、$$...$$）
  */
 export function MarkdownContent({ content, className = "" }: MarkdownContentProps) {
   return (
     <div className={className}>
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
       components={{
         // 加粗：深色 + font-bold
         strong: ({ children }) => (
