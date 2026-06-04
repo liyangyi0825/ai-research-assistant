@@ -48,8 +48,7 @@ export async function checkUsageLimit(
     const supabase = await getSupabaseAuthClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    // ⚠️ 登录功能暂时关闭，未登录用户也放行（不计入用量）
-    if (!user) return { allowed: true, used: 0, limit, userId: null };
+    if (!user) return { allowed: false, used: 0, limit, userId: null };
 
     // 本月第一天 00:00:00
     const now = new Date();
