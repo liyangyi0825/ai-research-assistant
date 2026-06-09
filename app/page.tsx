@@ -20,26 +20,33 @@ export default function Home() {
           </p>
 
           {/* 功能卡片 */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-7 sm:mb-10">
-            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex sm:flex-col items-center sm:items-start gap-3 sm:gap-0 text-left sm:text-center">
-              <div className="text-3xl sm:mb-2 shrink-0">📄</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-7 sm:mb-10">
+            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex items-center gap-3 text-left">
+              <div className="text-3xl shrink-0">📄</div>
               <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5 sm:mb-1">上传论文</h3>
-                <p className="text-sm text-gray-500">支持 PDF 格式，自动提取文字内容</p>
+                <h3 className="font-semibold text-gray-800 mb-0.5">上传论文 · AI 总结</h3>
+                <p className="text-sm text-gray-500">上传 PDF，自动生成研究问题、方法、结论、创新点</p>
               </div>
             </div>
-            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex sm:flex-col items-center sm:items-start gap-3 sm:gap-0 text-left sm:text-center">
-              <div className="text-3xl sm:mb-2 shrink-0">✨</div>
+            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex items-center gap-3 text-left">
+              <div className="text-3xl shrink-0">💬</div>
               <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5 sm:mb-1">AI 总结</h3>
-                <p className="text-sm text-gray-500">研究问题、方法、结论、创新点，结构清晰</p>
+                <h3 className="font-semibold text-gray-800 mb-0.5">与论文对话</h3>
+                <p className="text-sm text-gray-500">基于论文内容提问，AI 精准回答，还能导出引用格式</p>
               </div>
             </div>
-            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex sm:flex-col items-center sm:items-start gap-3 sm:gap-0 text-left sm:text-center">
-              <div className="text-3xl sm:mb-2 shrink-0">💬</div>
+            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-blue-100 bg-blue-50/50 flex items-center gap-3 text-left">
+              <div className="text-3xl shrink-0">🔍</div>
               <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5 sm:mb-1">论文问答</h3>
-                <p className="text-sm text-gray-500">基于论文内容提问，AI 精准回答</p>
+                <h3 className="font-semibold text-gray-800 mb-0.5">检索词矩阵生成</h3>
+                <p className="text-sm text-gray-500">输入课题，AI 生成 8-10 个精准英文检索词，直达 Google Scholar</p>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex items-center gap-3 text-left opacity-50">
+              <div className="text-3xl shrink-0">📚</div>
+              <div>
+                <h3 className="font-semibold text-gray-800 mb-0.5">更多功能</h3>
+                <p className="text-sm text-gray-500">文献批量对比、参考文献提取……持续开发中</p>
               </div>
             </div>
           </div>
@@ -50,7 +57,13 @@ export default function Home() {
               href="/upload"
               className={buttonVariants({ size: "lg" }) + " w-full sm:w-auto"}
             >
-              开始上传论文
+              上传论文
+            </Link>
+            <Link
+              href="/literature-search"
+              className={buttonVariants({ size: "lg", variant: "outline" }) + " w-full sm:w-auto"}
+            >
+              🔍 生成检索词
             </Link>
           </div>
 
