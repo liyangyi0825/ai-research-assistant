@@ -104,10 +104,25 @@ export default function UploadPage() {
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── 引用格式状态 ──
+  const [citeStatus, setCiteStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [bibtex, setBibtex] = useState("");
+  const [gbt7714, setGbt7714] = useState("");
+  const [copiedBibtex, setCopiedBibtex] = useState(false);
+  const [copiedGbt, setCopiedGbt] = useState(false);
+
   // 自动滚动到对话底部
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // 总结完成后自动触发引用生成（每篇论文只触发一次）
+  useEffect(() => {
+    if (summaryStatus === "done" && citeStatus === "idle") {
+      generateCitation();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [summaryStatus]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // PDF 上传与提取（分阶段进度）
@@ -166,6 +181,11 @@ export default function UploadPage() {
     setSummaryText("");
     setSummaryError("");
     setMessages([]);
+    setCiteStatus("idle");
+    setBibtex("");
+    setGbt7714("");
+    setCopiedBibtex(false);
+    setCopiedGbt(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -205,6 +225,40 @@ export default function UploadPage() {
       setSummaryStatus("error");
       setSummaryError(err instanceof Error ? err.message : "生成失败，请重试");
     }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 生成引用格式（BibTeX + GB/T 7714）
+  // ─────────────────────────────────────────────────────────────────────────────
+  async function generateCitation() {
+    setCiteStatus("loading");
+    try {
+      const res = await fetch("/api/cite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: extractedText }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "引用生成失败");
+      setBibtex(data.bibtex);
+      setGbt7714(data.gbt7714);
+      setCiteStatus("done");
+    } catch {
+      setCiteStatus("error");
+    }
+  }
+
+  async function copyToClipboard(text: string, type: "bibtex" | "gbt") {
+    try {
+      await navigator.clipboard.writeText(text);
+      if (type === "bibtex") {
+        setCopiedBibtex(true);
+        setTimeout(() => setCopiedBibtex(false), 2000);
+      } else {
+        setCopiedGbt(true);
+        setTimeout(() => setCopiedGbt(false), 2000);
+      }
+    } catch { /* 忽略 */ }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -391,6 +445,54 @@ export default function UploadPage() {
                     </div>
                   ))}
                   <Button variant="outline" className="w-full" onClick={handleSummarize}>重新生成总结</Button>
+                </div>
+              )}
+
+              {/* ===== 引用格式导出 ===== */}
+              {citeStatus !== "idle" && (
+                <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                  <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gray-50">
+                    <h2 className="font-semibold text-gray-800">📎 引用格式导出</h2>
+                    <p className="text-xs sm:text-sm text-gray-400 mt-0.5">一键复制到 Overleaf 或中文论文参考文献列表</p>
+                  </div>
+                  <div className="p-4 sm:p-6 space-y-5">
+                    {citeStatus === "loading" && (
+                      <div className="flex items-center gap-2 text-gray-400 text-sm py-1">
+                        <DotLoader />
+                        <span>正在生成引用格式...</span>
+                      </div>
+                    )}
+                    {citeStatus === "error" && (
+                      <div className="text-sm text-red-500 py-1">
+                        ❌ 引用生成失败，
+                        <button className="underline ml-1" onClick={generateCitation}>点击重试</button>
+                      </div>
+                    )}
+                    {citeStatus === "done" && (
+                      <>
+                        {/* BibTeX */}
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">BibTeX（Overleaf / LaTeX）</span>
+                            <Button size="sm" variant="outline" onClick={() => copyToClipboard(bibtex, "bibtex")} className="text-xs h-7 px-3">
+                              {copiedBibtex ? "已复制 ✓" : "复制"}
+                            </Button>
+                          </div>
+                          <pre className="bg-gray-50 rounded-xl p-3 text-xs text-gray-700 overflow-x-auto whitespace-pre-wrap leading-relaxed font-mono border border-gray-100">{bibtex}</pre>
+                        </div>
+                        {/* GB/T 7714 */}
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">GB/T 7714-2015（国标 · 中文论文）</span>
+                            <Button size="sm" variant="outline" onClick={() => copyToClipboard(gbt7714, "gbt")} className="text-xs h-7 px-3">
+                              {copiedGbt ? "已复制 ✓" : "复制"}
+                            </Button>
+                          </div>
+                          <p className="bg-gray-50 rounded-xl p-3 text-sm text-gray-700 leading-relaxed border border-gray-100">{gbt7714}</p>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
 
