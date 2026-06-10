@@ -30,6 +30,17 @@ function buildPrompt(
   }
 
   if (block === 3) {
+    // 没有论文时改用"AI 知识库模式"，直接基于训练知识生成关联概念
+    if (papers.length === 0) {
+      return `请根据你的学术知识，列出与「${concept}」密切相关的 8-12 个学术方法/术语/概念：
+- 格式：**中文术语（English Term）**——与「${concept}」的关联说明（一句话）
+- 按相关程度从高到低排列
+- 只输出列表，不要其他说明
+
+最后加一行：
+> ⚠️ 未找到数据库论文，以上内容来自 AI 知识库，仅供参考`;
+    }
+
     const abstracts = papers
       .map((p, i) =>
         `**第${i + 1}篇**：${p.title}（${p.year}）\n摘要：${(p.abstract ?? "无摘要").slice(0, 300)}`

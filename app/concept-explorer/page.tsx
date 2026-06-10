@@ -215,17 +215,19 @@ export default function ConceptExplorerPage() {
     conceptsTextRef.current = "";
   }
 
-  async function fetchPapers(type: "oldest" | "recent"): Promise<Paper[]> {
+  // 注意：所有 API 调用都接受 term 参数，不依赖 currentConcept state（state 更新是异步的，直接用 term 变量保证正确性）
+  async function fetchPapers(term: string, type: "oldest" | "recent"): Promise<Paper[]> {
     const res = await fetch("/api/concept-explorer/papers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ concept: currentConcept || concept, type }),
+      body: JSON.stringify({ concept: term, type }),
     });
     const data = await res.json();
     return data.papers ?? [];
   }
 
   async function streamBlock(
+    term: string,
     block: number,
     papers: Paper[],
     setText: (t: string) => void,
@@ -238,7 +240,7 @@ export default function ConceptExplorerPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          concept: currentConcept || concept,
+          concept: term,
           block,
           papers,
           originText:   originTextRef.current,
@@ -273,13 +275,13 @@ export default function ConceptExplorerPage() {
 
     // ── 区块 1 + 2：并行启动 ────────────────────────────────────────────────
 
-    // 区块 1：AI 溯源（流式）
+    // 区块 1：AI 溯源（流式）—— 直接传 term，不用 currentConcept state
     setOriginAIStatus("loading");
-    const block1Promise = streamBlock(1, [], setOriginAI, setOriginAIStatus, originTextRef);
+    const block1Promise = streamBlock(term, 1, [], setOriginAI, setOriginAIStatus, originTextRef);
 
     // 区块 1：最早论文（非流式）
     setOldestStatus("loading");
-    const oldestPromise = fetchPapers("oldest").then(papers => {
+    const oldestPromise = fetchPapers(term, "oldest").then(papers => {
       setOldestPapers(papers);
       setOldestStatus("done");
       return papers;
@@ -290,7 +292,7 @@ export default function ConceptExplorerPage() {
 
     // 区块 2：近期论文（非流式）
     setRecentStatus("loading");
-    const recentPromise = fetchPapers("recent").then(papers => {
+    const recentPromise = fetchPapers(term, "recent").then(papers => {
       setRecentPapers(papers);
       setRecentStatus("done");
       return papers;
@@ -301,12 +303,12 @@ export default function ConceptExplorerPage() {
 
     // ── 区块 3：等区块 2 论文回来后开始 ─────────────────────────────────────
     const recentPapersData = await recentPromise;
-    await streamBlock(3, recentPapersData, setConceptsAI, setConceptsStatus, conceptsTextRef);
+    await streamBlock(term, 3, recentPapersData, setConceptsAI, setConceptsStatus, conceptsTextRef);
 
     // ── 区块 4：等区块 1 AI + 区块 3 都完成后开始 ────────────────────────────
     await block1Promise;
     await oldestPromise;
-    await streamBlock(4, recentPapersData, setIdeasAI, setIdeasStatus, { current: "" });
+    await streamBlock(term, 4, recentPapersData, setIdeasAI, setIdeasStatus, { current: "" });
 
     setIsExploring(false);
   }
