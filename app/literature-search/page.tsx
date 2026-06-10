@@ -55,9 +55,17 @@ export default function LiteratureSearchPage() {
     setTimeout(() => setCopiedIndex(null), 2000);
   }
 
-  function openScholar(keywords: string) {
-    const url = `https://scholar.google.com/scholar?q=${encodeURIComponent(keywords)}`;
-    window.open(url, "_blank", "noopener");
+  // 各数据库搜索链接生成
+  function searchUrl(db: string, keywords: string): string {
+    const q = encodeURIComponent(keywords);
+    switch (db) {
+      case "scholar":   return `https://scholar.google.com/scholar?q=${q}`;
+      case "cnki":      return `https://kns.cnki.net/kns8/defaultresult/index?kw=${q}`;
+      case "semantic":  return `https://www.semanticscholar.org/search?q=${q}&sort=Relevance`;
+      case "arxiv":     return `https://arxiv.org/search/?searchtype=all&query=${q}`;
+      case "pubmed":    return `https://pubmed.ncbi.nlm.nih.gov/?term=${q}`;
+      default: return "#";
+    }
   }
 
   return (
@@ -141,23 +149,64 @@ export default function LiteratureSearchPage() {
                   <p className="text-sm text-gray-500 ml-9 mb-3">{item.description}</p>
 
                   {/* 操作按钮 */}
-                  <div className="flex gap-2 ml-9">
-                    <Button
-                      size="sm"
-                      onClick={() => openScholar(item.keywords)}
-                      className="text-xs h-8 gap-1.5"
-                    >
-                      <span>🎓</span>
-                      <span>在 Google Scholar 搜</span>
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => copyKeywords(item.keywords, i)}
-                      className="text-xs h-8 min-w-[60px]"
-                    >
-                      {copiedIndex === i ? "已复制 ✓" : "复制"}
-                    </Button>
+                  <div className="ml-9 space-y-2">
+
+                    {/* 主要数据库 */}
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href={searchUrl("scholar", item.keywords)}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors"
+                      >
+                        🎓 Google Scholar
+                      </a>
+                      <a
+                        href={searchUrl("cnki", item.keywords)}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-medium rounded-lg transition-colors"
+                      >
+                        📚 知网 CNKI
+                      </a>
+                    </div>
+
+                    {/* 次要数据库 */}
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href={searchUrl("semantic", item.keywords)}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 hover:border-gray-400 bg-white text-gray-600 hover:text-gray-800 text-xs font-medium rounded-lg transition-colors"
+                      >
+                        🔬 Semantic Scholar
+                      </a>
+                      <a
+                        href={searchUrl("arxiv", item.keywords)}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 hover:border-gray-400 bg-white text-gray-600 hover:text-gray-800 text-xs font-medium rounded-lg transition-colors"
+                      >
+                        📄 arXiv
+                      </a>
+                    </div>
+
+                    {/* PubMed（折叠式，生命科学/医学专用）+ 复制 */}
+                    <div className="flex items-center justify-between">
+                      <a
+                        href={searchUrl("pubmed", item.keywords)}
+                        target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        🧬 PubMed
+                        <span className="text-gray-300 ml-0.5">· 生命科学/医学</span>
+                      </a>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => copyKeywords(item.keywords, i)}
+                        className="text-xs h-7 min-w-[64px]"
+                      >
+                        {copiedIndex === i ? "已复制 ✓" : "复制"}
+                      </Button>
+                    </div>
+
                   </div>
                 </div>
               ))}
