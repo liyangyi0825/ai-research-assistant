@@ -1,4 +1,4 @@
-// 后端接口：根据研究课题生成精准英文检索词组合
+// 后端接口：根据研究课题生成中英双语检索词组合
 // 路径：POST /api/keywords
 
 import { NextRequest, NextResponse } from "next/server";
@@ -6,8 +6,9 @@ import { fetchWithProxy } from "@/lib/fetch-proxy";
 import { getSupabaseAuthClient } from "@/lib/supabase";
 
 export interface KeywordCombination {
-  keywords: string;
-  description: string;
+  keywordsEn: string;   // 英文版：用 AND 连接，适配 Google Scholar / Semantic Scholar / arXiv
+  keywordsCn: string;   // 中文版：空格分隔，适配知网 / 万方
+  description: string;  // 一句话中文说明
 }
 
 export async function POST(req: NextRequest) {
@@ -38,22 +39,31 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
-        max_tokens: 1200,
+        max_tokens: 1800,
         messages: [
           {
             role: "user",
             content: `你是学术检索专家。用户的研究课题是：「${topic.trim()}」
 
-请生成 8-10 个精准的英文 Google Scholar 检索词组合，全面覆盖这个课题的各个方向。
+请生成 8-10 个检索词组合，每个组合同时提供中英文两个版本，全面覆盖这个课题的各个研究方向。
 
-要求：
-- 每个组合包含 2-4 个关键词，用 AND 连接（如 "deep learning AND medical image segmentation"）
-- 覆盖不同角度：① 核心方法 ② 具体应用/任务 ③ 对比基线或前人工作 ④ 数据集/评测（如适用）
-- 使用学术圈真实使用的英文专业术语，避免过于宽泛
-- description 字段：用一句话的中文说明该组合的检索目标
+英文版（keywordsEn）要求：
+- 2-4 个关键词，用 AND 连接（适配 Google Scholar）
+- 使用学术圈真实使用的英文专业术语
+
+中文版（keywordsCn）要求：
+- 2-4 个关键词，用空格分隔（适配知网，不需要 AND）
+- 使用中国学术圈真正使用的地道中文术语，不要生硬直译
+  ✅ 正确示例：界面工程 钙钛矿太阳能电池 转换效率
+  ❌ 错误示例：界面工程学 钙钛矿型太阳能 效率提升
+- 用户输入中文时直接沿用原有中文术语；用户输入英文时做高质量学术翻译
+
+覆盖角度：① 核心方法 ② 具体应用/任务 ③ 对比基线/前人工作 ④ 数据集/评测（如适用）
+
+description：一句话中文，说明该组合检索的方向
 
 只输出纯 JSON，不要代码块，不要任何解释：
-{"combinations":[{"keywords":"term1 AND term2","description":"中文说明"}]}`,
+{"combinations":[{"keywordsEn":"term1 AND term2","keywordsCn":"术语1 术语2","description":"中文说明"}]}`,
           },
         ],
       }),
