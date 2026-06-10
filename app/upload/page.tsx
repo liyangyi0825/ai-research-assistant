@@ -104,6 +104,24 @@ export default function UploadPage() {
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── 研究笔记上下文（用于增强对话质量）──
+  const [notesContext, setNotesContext] = useState<string>("");
+
+  useEffect(() => {
+    fetch("/api/notes")
+      .then(r => r.json())
+      .then(d => {
+        const notes = d.notes ?? [];
+        if (!notes.length) return;
+        // 取最近 3 条笔记，提炼成简短背景
+        const ctx = notes.slice(0, 3).map((n: { concept: string; related_concepts?: string; user_memo?: string }) =>
+          `概念：${n.concept}｜关联领域：${(n.related_concepts ?? "").replace(/[#*`]/g, "").slice(0, 100)}｜用户想法：${n.user_memo ?? "无"}`
+        ).join("\n");
+        setNotesContext(ctx);
+      })
+      .catch(() => {/* 静默失败 */});
+  }, []);
+
   // ── 引用格式状态 ──
   const [citeStatus, setCiteStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [bibtex, setBibtex] = useState("");
@@ -280,7 +298,11 @@ export default function UploadPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paperContent: extractedText, messages: userMessages }),
+        body: JSON.stringify({
+          paperContent: extractedText,
+          messages: userMessages,
+          notesContext: notesContext || undefined,
+        }),
       });
 
       if (!res.ok) {

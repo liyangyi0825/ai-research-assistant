@@ -39,6 +39,19 @@ export function Header({ title }: HeaderProps) {
         <span className="font-bold text-lg text-gray-800">AI 科研助手</span>
       </Link>
 
+      {/* 中间：导航链接 */}
+      <nav className="hidden sm:flex items-center gap-1">
+        <Link href="/concept-explorer" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
+          🧭 探索
+        </Link>
+        <Link href="/literature-search" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
+          🔍 检索词
+        </Link>
+        <Link href="/my-notes" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
+          📓 我的笔记
+        </Link>
+      </nav>
+
       {/* 右侧：页面标题或用户信息 */}
       <div className="flex items-center gap-3">
         {title && (

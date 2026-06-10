@@ -24,13 +24,18 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { paperContent, messages } = await req.json();
+    const { paperContent, messages, notesContext } = await req.json();
 
     if (!paperContent || !messages?.length) {
       return NextResponse.json({ error: "缺少必要参数" }, { status: 400 });
     }
 
     const truncatedContent = paperContent.slice(0, 60000);
+
+    // 用户研究笔记作为背景上下文（可选）
+    const notesSection = notesContext
+      ? `\n\n【用户的研究背景笔记（供参考，回答时结合论文内容优先）】\n${(notesContext as string).slice(0, 2000)}\n`
+      : "";
 
     const anthropicRes = await fetchWithProxy(
       "https://api.anthropic.com/v1/messages",
@@ -51,7 +56,7 @@ export async function POST(req: NextRequest) {
               type: "text",
               text: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
 请用中文回答，回答要准确、简洁，并直接基于论文内容。如果论文中没有相关信息，请如实说明。
-回答中如涉及数学公式，请用 LaTeX 格式输出：行内公式用 $...$，独立公式用 $$...$$。
+回答中如涉及数学公式，请用 LaTeX 格式输出：行内公式用 $...$，独立公式用 $$...$$。${notesSection}
 
 以下是论文的完整内容：
 ---

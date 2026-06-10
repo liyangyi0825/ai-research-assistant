@@ -18,15 +18,7 @@ interface Paper {
 }
 
 type Status = "idle" | "loading" | "done" | "error";
-
-interface Note {
-  concept: string;
-  blockTitle: string;
-  content: string;
-  savedAt: string;
-}
-
-const NOTES_KEY = "concept-explorer-notes";
+type SaveStatus = "idle" | "saving" | "saved" | "error";
 
 // ─── 工具函数 ────────────────────────────────────────────────────────────────
 
@@ -76,23 +68,14 @@ function Skeleton({ lines = 4 }: { lines?: number }) {
 }
 
 function BlockWrapper({
-  title, icon, borderColor, status, children, onSave,
+  title, icon, borderColor, status, children,
 }: {
   title: string;
   icon: string;
   borderColor: string;
   status: Status;
   children: React.ReactNode;
-  onSave?: () => void;
 }) {
-  const [saved, setSaved] = useState(false);
-
-  function handleSave() {
-    setSaved(true);
-    onSave?.();
-    setTimeout(() => setSaved(false), 2000);
-  }
-
   if (status === "idle") return null;
 
   return (
@@ -100,7 +83,7 @@ function BlockWrapper({
       <div className="px-4 sm:px-6 py-3 border-b border-gray-100 bg-gray-50/50 flex items-center justify-between">
         <h2 className="font-semibold text-gray-800 flex items-center gap-2">
           <span>{icon}</span>
-          <span>{title}</span>
+          <span className="text-sm sm:text-base">{title}</span>
           {status === "loading" && (
             <span className="text-xs font-normal text-gray-400 flex items-center gap-1">
               <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
@@ -109,14 +92,6 @@ function BlockWrapper({
             </span>
           )}
         </h2>
-        {status === "done" && onSave && (
-          <button
-            onClick={handleSave}
-            className="text-xs text-gray-400 hover:text-blue-500 transition-colors flex items-center gap-1"
-          >
-            {saved ? "✓ 已保存" : "🔖 保存到笔记"}
-          </button>
-        )}
       </div>
       <div className="p-4 sm:p-6">{children}</div>
     </div>
@@ -181,35 +156,32 @@ export default function ConceptExplorerPage() {
   const [isExploring, setIsExploring] = useState(false);
   const [currentConcept, setCurrentConcept] = useState("");
 
-  // ── 笔记状态 ──
-  const [notes, setNotes] = useState<Note[]>([]);
-  const [showNotes, setShowNotes] = useState(false);
+  // ── 保存到 Supabase 状态 ──
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [savedNoteId, setSavedNoteId] = useState<string | null>(null);
 
-  // 从 localStorage 初始化笔记（仅客户端）
-  useEffect(() => {
+  async function handleSaveNote() {
+    if (saveStatus === "saving") return;
+    setSaveStatus("saving");
     try {
-      const saved = JSON.parse(localStorage.getItem(NOTES_KEY) ?? "[]");
-      setNotes(saved);
-    } catch { /* ignore */ }
-  }, []);
-
-  function saveNote(conceptName: string, blockTitle: string, content: string) {
-    if (!content.trim()) return;
-    const newNote: Note = { concept: conceptName, blockTitle, content, savedAt: new Date().toISOString() };
-    setNotes(prev => {
-      const updated = [newNote, ...prev].slice(0, 100);
-      try { localStorage.setItem(NOTES_KEY, JSON.stringify(updated)); } catch { /* ignore */ }
-      return updated;
-    });
-    setShowNotes(true); // 保存后自动展开笔记面板
-  }
-
-  function deleteNote(index: number) {
-    setNotes(prev => {
-      const updated = prev.filter((_, i) => i !== index);
-      try { localStorage.setItem(NOTES_KEY, JSON.stringify(updated)); } catch { /* ignore */ }
-      return updated;
-    });
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          concept: currentConcept,
+          origin_summary:   originAI   || null,
+          latest_papers:    recentPapers.length ? recentPapers : null,
+          related_concepts: conceptsAI || null,
+          research_ideas:   ideasAI    || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "保存失败");
+      setSavedNoteId(data.id);
+      setSaveStatus("saved");
+    } catch {
+      setSaveStatus("error");
+    }
   }
 
   // 区块 1：概念溯源
@@ -242,6 +214,8 @@ export default function ConceptExplorerPage() {
     setConceptsAI(""); setConceptsStatus("idle");
     setIdeasAI(""); setIdeasStatus("idle");
     setRecentSearchTerm("");
+    setSaveStatus("idle");
+    setSavedNoteId(null);
     originTextRef.current = "";
     conceptsTextRef.current = "";
   }
@@ -390,7 +364,6 @@ export default function ConceptExplorerPage() {
           <BlockWrapper
             title="概念溯源" icon="📖" borderColor="border-l-blue-500"
             status={originAIStatus !== "idle" ? originAIStatus : oldestStatus}
-            onSave={() => saveNote(currentConcept, "概念溯源", originAI)}
           >
             <div className="space-y-5">
               {/* AI 解释 */}
@@ -428,10 +401,6 @@ export default function ConceptExplorerPage() {
               : "最新进展（近 3 年高引论文）"}
             icon="🔥" borderColor="border-l-green-500"
             status={recentStatus}
-            onSave={() => saveNote(
-              currentConcept, "最新进展",
-              recentPapers.map(p => `${p.title} (${p.year})`).join("\n")
-            )}
           >
             {recentStatus === "loading" && <Skeleton lines={6} />}
             {recentStatus === "done" && recentPapers.length === 0 && (
@@ -450,7 +419,6 @@ export default function ConceptExplorerPage() {
           <BlockWrapper
             title="关联概念提取" icon="🔗" borderColor="border-l-purple-500"
             status={conceptsStatus}
-            onSave={() => saveNote(currentConcept, "关联概念", conceptsAI)}
           >
             {conceptsStatus === "loading" && !conceptsAI && <Skeleton lines={8} />}
             {conceptsAI && <MarkdownContent content={conceptsAI} className="text-sm" />}
@@ -461,82 +429,45 @@ export default function ConceptExplorerPage() {
           <BlockWrapper
             title="研究思路建议" icon="💡" borderColor="border-l-orange-400"
             status={ideasStatus}
-            onSave={() => saveNote(currentConcept, "研究思路", ideasAI)}
           >
             {ideasStatus === "loading" && !ideasAI && <Skeleton lines={6} />}
             {ideasAI && <MarkdownContent content={ideasAI} className="text-sm" />}
             {ideasStatus === "error" && <p className="text-sm text-red-500">研究思路生成失败</p>}
           </BlockWrapper>
 
-          {/* 重新探索 */}
+          {/* 底部操作区：保存 + 重新探索 */}
           {anyResult && !isExploring && (
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => { resetAll(); setConcept(""); setCurrentConcept(""); }}
-            >
-              重新探索另一个概念
-            </Button>
+            <div className="flex flex-col sm:flex-row gap-3">
+              {/* 保存按钮——至少有一个区块生成内容才显示 */}
+              {(originAI || recentPapers.length > 0 || conceptsAI || ideasAI) && (
+                <Button
+                  onClick={handleSaveNote}
+                  disabled={saveStatus === "saving" || saveStatus === "saved"}
+                  className="flex-1"
+                >
+                  {saveStatus === "saving" && "保存中…"}
+                  {saveStatus === "saved"  && "✓ 已保存到我的研究笔记"}
+                  {saveStatus === "error"  && "❌ 保存失败，点击重试"}
+                  {saveStatus === "idle"   && "💾 保存到我的研究笔记"}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => { resetAll(); setConcept(""); setCurrentConcept(""); }}
+              >
+                重新探索另一个概念
+              </Button>
+            </div>
           )}
 
-          {/* ── 我的笔记 ── */}
-          {notes.length > 0 && (
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-              <button
-                className="w-full px-4 sm:px-6 py-3.5 flex items-center justify-between hover:bg-gray-50 transition-colors"
-                onClick={() => setShowNotes(v => !v)}
-              >
-                <span className="font-semibold text-gray-700 flex items-center gap-2">
-                  📓 我的笔记
-                  <span className="text-xs font-normal text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full">
-                    {notes.length} 条
-                  </span>
-                </span>
-                <span className="text-gray-400 text-sm">{showNotes ? "▲ 收起" : "▼ 展开"}</span>
-              </button>
-
-              {showNotes && (
-                <div className="border-t border-gray-100 p-4 sm:p-5 space-y-3">
-                  {notes.map((note, i) => (
-                    <div key={i} className="border border-gray-100 rounded-xl p-3 hover:border-gray-200 transition-colors">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full font-medium">
-                            {note.concept}
-                          </span>
-                          <span className="text-xs text-gray-500">{note.blockTitle}</span>
-                        </div>
-                        <div className="flex items-center gap-3 shrink-0">
-                          <span className="text-xs text-gray-400">
-                            {new Date(note.savedAt).toLocaleDateString("zh-CN")}
-                          </span>
-                          <button
-                            onClick={() => deleteNote(i)}
-                            className="text-xs text-gray-300 hover:text-red-400 transition-colors"
-                          >
-                            删除
-                          </button>
-                        </div>
-                      </div>
-                      <p className="text-xs text-gray-600 leading-relaxed line-clamp-3 whitespace-pre-line">
-                        {note.content.replace(/[#*`>]/g, "").slice(0, 200)}
-                        {note.content.length > 200 && "…"}
-                      </p>
-                    </div>
-                  ))}
-                  <button
-                    onClick={() => {
-                      if (window.confirm("确定清空所有笔记？此操作不可撤销。")) {
-                        setNotes([]);
-                        localStorage.removeItem(NOTES_KEY);
-                      }
-                    }}
-                    className="text-xs text-gray-400 hover:text-red-400 transition-colors"
-                  >
-                    清空所有笔记
-                  </button>
-                </div>
-              )}
+          {/* 保存成功后显示跳转链接 */}
+          {saveStatus === "saved" && savedNoteId && (
+            <div className="bg-green-50 border border-green-200 rounded-xl p-3 text-sm text-green-700 flex items-center justify-between">
+              <span>✅ 探索结果已保存！</span>
+              <a href="/my-notes" className="text-green-600 font-medium hover:underline">
+                查看我的研究笔记 →
+              </a>
             </div>
           )}
 
