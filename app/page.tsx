@@ -42,11 +42,11 @@ export default function Home() {
                 <p className="text-sm text-gray-500">输入课题，AI 生成 8-10 个精准英文检索词，直达 Google Scholar</p>
               </div>
             </div>
-            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex items-center gap-3 text-left opacity-50">
-              <div className="text-3xl shrink-0">📚</div>
+            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-purple-100 bg-purple-50/30 flex items-center gap-3 text-left">
+              <div className="text-3xl shrink-0">🧭</div>
               <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5">更多功能</h3>
-                <p className="text-sm text-gray-500">文献批量对比、参考文献提取……持续开发中</p>
+                <h3 className="font-semibold text-gray-800 mb-0.5">概念探索器</h3>
+                <p className="text-sm text-gray-500">输入专业名词，溯源 + 最新文献 + 关联概念 + 研究思路一站搞定</p>
               </div>
             </div>
           </div>
@@ -64,6 +64,12 @@ export default function Home() {
               className={buttonVariants({ size: "lg", variant: "outline" }) + " w-full sm:w-auto"}
             >
               🔍 生成检索词
+            </Link>
+            <Link
+              href="/concept-explorer"
+              className={buttonVariants({ size: "lg", variant: "outline" }) + " w-full sm:w-auto"}
+            >
+              🧭 概念探索器
             </Link>
           </div>
 
