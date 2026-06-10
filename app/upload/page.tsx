@@ -524,6 +524,15 @@ export default function UploadPage() {
                   <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-gray-100 bg-gray-50">
                     <h2 className="font-semibold text-gray-800">💬 与论文对话</h2>
                     <p className="text-xs sm:text-sm text-gray-400 mt-0.5">针对这篇论文的内容提问，AI 将基于原文回答</p>
+                    {notesContext && (
+                      <div className="mt-2 flex items-start gap-1.5 bg-blue-50 rounded-lg px-3 py-2">
+                        <span className="text-blue-400 text-xs mt-0.5 shrink-0">📓</span>
+                        <p className="text-xs text-blue-600 leading-relaxed">
+                          已加载你的<a href="/my-notes" className="font-medium underline underline-offset-2">研究笔记</a>作为背景——可以这样提问：
+                          <span className="text-blue-500 italic">「结合我研究的界面钝化方向，这篇论文有哪些值得关注的内容？」</span>
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   {/* 消息列表 */}
