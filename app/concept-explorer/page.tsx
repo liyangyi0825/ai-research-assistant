@@ -221,6 +221,7 @@ export default function ConceptExplorerPage() {
   // 区块 2：最新进展
   const [recentPapers, setRecentPapers]   = useState<Paper[]>([]);
   const [recentStatus, setRecentStatus]   = useState<Status>("idle");
+  const [recentSearchTerm, setRecentSearchTerm] = useState(""); // 实际用于搜索的英文词
 
   // 区块 3：关联概念
   const [conceptsAI, setConceptsAI]         = useState("");
@@ -240,6 +241,7 @@ export default function ConceptExplorerPage() {
     setRecentPapers([]); setRecentStatus("idle");
     setConceptsAI(""); setConceptsStatus("idle");
     setIdeasAI(""); setIdeasStatus("idle");
+    setRecentSearchTerm("");
     originTextRef.current = "";
     conceptsTextRef.current = "";
   }
@@ -252,6 +254,8 @@ export default function ConceptExplorerPage() {
       body: JSON.stringify({ concept: term, type }),
     });
     const data = await res.json();
+    // 保存实际的英文搜索词（中文翻译后的结果）
+    if (type === "recent" && data.searchTerm) setRecentSearchTerm(data.searchTerm);
     return data.papers ?? [];
   }
 
@@ -419,7 +423,10 @@ export default function ConceptExplorerPage() {
 
           {/* ── 区块 2：最新进展 ── */}
           <BlockWrapper
-            title="最新进展（近 3 年高引论文）" icon="🔥" borderColor="border-l-green-500"
+            title={recentSearchTerm && recentSearchTerm !== currentConcept
+              ? `最新进展（近 3 年高引论文 · 搜索词：${recentSearchTerm}）`
+              : "最新进展（近 3 年高引论文）"}
+            icon="🔥" borderColor="border-l-green-500"
             status={recentStatus}
             onSave={() => saveNote(
               currentConcept, "最新进展",
