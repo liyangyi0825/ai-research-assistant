@@ -23,6 +23,16 @@ function NoticeInner() {
       });
     }, 600);
 
+    // 广播给同浏览器内其他标签页（通常是原来停在"邮件已发送"的那个标签）
+    // 收到消息的标签页会自动跳转到这里，实现"原标签页跟过来"的效果
+    try {
+      const channel = new BroadcastChannel("supabase_auth");
+      channel.postMessage({ type: "LOGIN_SUCCESS", redirectTo: pathname });
+      channel.close();
+    } catch {
+      // 极少数不支持 BroadcastChannel 的环境，静默忽略
+    }
+
     // 把 loginSuccess 参数从 URL 里清掉，防止刷新重复弹
     const newParams = new URLSearchParams(searchParams.toString());
     newParams.delete("loginSuccess");

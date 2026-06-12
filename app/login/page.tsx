@@ -20,6 +20,26 @@ function LoginForm() {
     }
   }, [searchParams]);
 
+  // 邮件发出后，监听"另一个标签页完成登录"的广播
+  // 收到后原标签页自动跳过去，不用用户手动切换
+  useEffect(() => {
+    if (status !== "sent") return;
+
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel("supabase_auth");
+      channel.addEventListener("message", (event) => {
+        if (event.data?.type === "LOGIN_SUCCESS") {
+          window.location.href = event.data.redirectTo || "/";
+        }
+      });
+    } catch {
+      // 不支持 BroadcastChannel 的环境，静默忽略
+    }
+
+    return () => { channel?.close(); };
+  }, [status]);
+
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
     const trimmedEmail = email.trim();
