@@ -28,11 +28,21 @@ function LoginForm() {
     setStatus("loading");
     setErrorMsg("");
 
+    // 优先用中间件传来的 next 参数（用户原来想去的页面），
+    // 没有则用当前路径，但如果当前就是 /login 则回首页，避免循环
+    const nextParam = searchParams.get("next");
+    const redirectTarget =
+      nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//")
+        ? nextParam
+        : window.location.pathname === "/login"
+        ? "/"
+        : window.location.pathname;
+
     const supabase = getSupabaseBrowserClient();
     const { error } = await supabase.auth.signInWithOtp({
       email: trimmedEmail,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback?redirectTo=${encodeURIComponent(window.location.pathname)}`,
+        emailRedirectTo: `${window.location.origin}/auth/callback?redirectTo=${encodeURIComponent(redirectTarget)}`,
       },
     });
 

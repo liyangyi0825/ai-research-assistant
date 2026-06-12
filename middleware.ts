@@ -48,10 +48,11 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith("/login") ||
     pathname.startsWith("/auth");
 
-  // 未登录 + 访问需要登录的页面 → 跳转到登录页
+  // 未登录 + 访问需要登录的页面 → 跳转到登录页，并带上来源路径
   if (!user && !isPublicPath) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
+    loginUrl.searchParams.set("next", pathname);
     return NextResponse.redirect(loginUrl);
   }
 
