@@ -103,11 +103,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }
 
-    // 用量检查（消耗 chat 配额，仅在 block=1 时检查并记录，避免重复扣除）
-    const { allowed, used, limit, userId } = await checkUsageLimit("chat");
+    // 用量检查（消耗 concept_explore 配额，仅在 block=1 时检查并记录，避免重复扣除）
+    const { allowed, used, limit, userId } = await checkUsageLimit("concept_explore");
     if (!allowed) {
       return NextResponse.json(
-        { error: `本月对话次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { error: `本月概念探索器次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 }
       );
     }
@@ -156,7 +156,7 @@ export async function POST(req: NextRequest) {
       after(async () => {
         await insertUsageRecord({
           userId,
-          actionType: "chat",
+          actionType: "concept_explore",
           tokensInput: inputTokens,
           tokensOutput: outputTokens,
           cacheCreationTokens: cacheCreate,

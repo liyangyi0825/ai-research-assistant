@@ -7,6 +7,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { FREE_MONTHLY_LIMITS, UsageActionType } from "@/lib/limits";
 
 function getEnvVars() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? "";
@@ -39,10 +40,9 @@ export function getSupabaseClient() {
  * 同时返回 userId，供后续写入用量记录使用
  */
 export async function checkUsageLimit(
-  actionType: "summarize" | "chat"
+  actionType: UsageActionType
 ): Promise<{ allowed: boolean; used: number; limit: number; userId: string | null }> {
-  const limits = { summarize: 5, chat: 30 };
-  const limit = limits[actionType];
+  const limit = FREE_MONTHLY_LIMITS[actionType];
 
   try {
     const supabase = await getSupabaseAuthClient();
@@ -93,21 +93,34 @@ export async function insertUsageRecord({
   cacheReadTokens = 0,
 }: {
   userId: string;
-  actionType: "summarize" | "chat";
+  actionType: UsageActionType;
   tokensInput: number;
   tokensOutput: number;
   cacheCreationTokens?: number;
   cacheReadTokens?: number;
 }) {
   try {
+    console.log('[insertUsageRecord] 开始写入:', { userId, actionType, tokensInput, tokensOutput });
+
     const admin = getSupabaseAdminClient();
-    if (!admin) return;
+    if (!admin) {
+      console.error('[insertUsageRecord] getSupabaseAdminClient 返回 null');
+      return;
+    }
 
     const costUsd =
       (tokensInput         / 1_000_000) * 3.00 +
       (tokensOutput        / 1_000_000) * 15.00 +
       (cacheCreationTokens / 1_000_000) * 3.75 +
       (cacheReadTokens     / 1_000_000) * 0.30;
+
+    console.log('[insertUsageRecord] 准备插入数据:', {
+      user_id: userId,
+      action_type: actionType,
+      tokens_input: tokensInput,
+      tokens_output: tokensOutput,
+      cost_usd: costUsd
+    });
 
     const { error } = await admin.from("usage").insert({
       user_id: userId,
@@ -117,9 +130,13 @@ export async function insertUsageRecord({
       cost_usd: costUsd,
     });
 
-    if (error) console.error("用量写入失败:", error.message);
+    if (error) {
+      console.error("[insertUsageRecord] 用量写入失败:", error.message, error);
+    } else {
+      console.log('[insertUsageRecord] 写入成功');
+    }
   } catch (err) {
-    console.error("用量记录异常:", err);
+    console.error("[insertUsageRecord] 用量记录异常:", err);
   }
 }
 

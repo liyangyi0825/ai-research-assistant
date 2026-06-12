@@ -3,9 +3,11 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { getSupabaseAuthClient } from "@/lib/supabase";
+import { getSupabaseAuthClient, insertUsageRecord, checkUsageLimit } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
+  let userId: string | null = null;
+
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
@@ -17,6 +19,16 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       return NextResponse.json({ error: "请先登录" }, { status: 401 });
+    }
+    userId = user.id;
+
+    // 检查本月用量是否超限
+    const { allowed, used, limit } = await checkUsageLimit("bibtex_export");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: `本月 BibTeX 导出次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 }
+      );
     }
 
     const { content } = await req.json();
@@ -69,6 +81,23 @@ ${truncated}
     // 清除可能的 markdown 代码块再解析 JSON
     const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
     const parsed = JSON.parse(cleaned);
+
+    // 写入 usage 记录
+    if (userId) {
+      const inputTokens = data.usage?.input_tokens ?? 0;
+      const outputTokens = data.usage?.output_tokens ?? 0;
+      try {
+        await insertUsageRecord({
+          userId,
+          actionType: "bibtex_export",
+          tokensInput: inputTokens,
+          tokensOutput: outputTokens,
+        });
+      } catch {
+        // 用量记录失败不影响主流程
+        console.error("usage 记录失败");
+      }
+    }
 
     return NextResponse.json({
       bibtex: parsed.bibtex ?? "",
