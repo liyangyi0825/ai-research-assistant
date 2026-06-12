@@ -50,6 +50,9 @@ export function Header({ title }: HeaderProps) {
         <Link href="/my-notes" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
           📓 我的笔记
         </Link>
+        <Link href="/my-profile" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
+          👤 我的档案
+        </Link>
       </nav>
 
       {/* 右侧：页面标题或用户信息 */}

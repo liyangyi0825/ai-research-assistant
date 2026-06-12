@@ -49,6 +49,19 @@ export default function Home() {
                 <p className="text-sm text-gray-500">输入专业名词，溯源 + 最新文献 + 关联概念 + 研究思路一站搞定</p>
               </div>
             </div>
+            <Link
+              href="/my-profile"
+              className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-green-100 bg-green-50/30 flex items-center gap-3 text-left hover:shadow-md hover:border-green-200 transition-all col-span-1 sm:col-span-2"
+            >
+              <div className="text-3xl shrink-0">👤</div>
+              <div>
+                <h3 className="font-semibold text-gray-800 mb-0.5">我的科研档案</h3>
+                <p className="text-sm text-gray-500">告诉 AI 你的研究方向，让每次回答都更贴合你的课题</p>
+              </div>
+              <div className="ml-auto text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full shrink-0">
+                个性化
+              </div>
+            </Link>
           </div>
 
           {/* 行动按钮 */}
@@ -70,6 +83,12 @@ export default function Home() {
               className={buttonVariants({ size: "lg", variant: "outline" }) + " w-full sm:w-auto"}
             >
               🧭 概念探索器
+            </Link>
+            <Link
+              href="/my-profile"
+              className={buttonVariants({ size: "lg", variant: "outline" }) + " w-full sm:w-auto"}
+            >
+              👤 我的档案
             </Link>
           </div>
 
