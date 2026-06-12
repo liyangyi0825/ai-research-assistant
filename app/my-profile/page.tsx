@@ -197,6 +197,20 @@ export default function MyProfilePage() {
     }
   }
 
+  async function resetProfile() {
+    if (!window.confirm("确定要重新填写吗？当前档案将被清空。")) return;
+    try {
+      const res = await fetch("/api/profile", { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      setForm(EMPTY_FORM);
+      setIsEdit(false);
+      setSelectedOptions(Array.from({ length: 5 }, () => []));
+      setView("choose");
+    } catch {
+      setToast("操作失败，请重试");
+    }
+  }
+
   // ── 渲染 ──────────────────────────────────────────────────────────────────
 
   return (
@@ -420,6 +434,17 @@ export default function MyProfilePage() {
                 onSave={() => saveProfile(true)}
                 saving={saving}
               />
+              {/* 重新填写 —— 仅在已有档案时显示，样式刻意低调 */}
+              {isEdit && (
+                <div className="pt-2 text-center">
+                  <button
+                    onClick={resetProfile}
+                    className="text-xs text-gray-400 hover:text-red-400 transition-colors underline underline-offset-2"
+                  >
+                    重新填写档案
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

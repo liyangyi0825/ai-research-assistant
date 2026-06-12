@@ -1,4 +1,4 @@
-// 科研档案 API：GET 读取 / POST 保存（upsert）
+// 科研档案 API：GET 读取 / POST 保存（upsert）/ DELETE 清空
 // 路径：/api/profile
 
 import { NextRequest, NextResponse } from "next/server";
@@ -58,5 +58,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ profile: data });
   } catch {
     return NextResponse.json({ error: "保存失败" }, { status: 500 });
+  }
+}
+
+export async function DELETE() {
+  try {
+    const supabase = await getSupabaseAuthClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
+
+    const { error } = await supabase
+      .from("user_profiles")
+      .delete()
+      .eq("user_id", user.id);
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true });
+  } catch {
+    return NextResponse.json({ error: "删除失败" }, { status: 500 });
   }
 }
