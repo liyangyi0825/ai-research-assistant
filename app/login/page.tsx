@@ -32,8 +32,7 @@ function LoginForm() {
     const { error } = await supabase.auth.signInWithOtp({
       email: trimmedEmail,
       options: {
-        // 登录链接点击后跳转到 /auth/callback 处理 session
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: `${window.location.origin}/auth/callback?redirectTo=${encodeURIComponent(window.location.pathname)}`,
       },
     });
 
@@ -59,6 +58,9 @@ function LoginForm() {
             点击邮件里的按钮即可登录，链接 10 分钟内有效
           </p>
           <p className="text-xs text-gray-400 mt-3">没收到？检查一下垃圾邮件</p>
+          <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-3">
+            ⚠️ 请在<strong>同一台设备同一个浏览器</strong>里点击链接，否则无法自动回到当前页面
+          </p>
           <button
             className="mt-4 text-sm text-blue-500 hover:underline"
             onClick={() => { setStatus("idle"); }}
@@ -70,8 +72,11 @@ function LoginForm() {
         /* ── 输入邮箱 ── */
         <form onSubmit={handleSend} className="bg-white rounded-2xl p-8 shadow-sm">
           <h2 className="text-lg font-semibold text-gray-800 mb-1">登录 / 注册</h2>
-          <p className="text-sm text-gray-500 mb-5">
+          <p className="text-sm text-gray-500 mb-2">
             输入邮箱，我们发给你一个一键登录链接，无需密码
+          </p>
+          <p className="text-xs text-gray-400 mb-5">
+            点击邮件中的链接后会自动回到当前页面
           </p>
 
           <div className="space-y-3">

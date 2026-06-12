@@ -14,6 +14,14 @@ export async function GET(request: NextRequest) {
   const token_hash = searchParams.get("token_hash");
   const type = searchParams.get("type") as EmailOtpType | null;
 
+  // 读取登录前的来源页面，登录成功后跳回去；没有则跳首页
+  const rawRedirect = searchParams.get("redirectTo") ?? "/";
+  // 只允许站内路径（以 / 开头且不是 //），防止开放重定向
+  const redirectPath = rawRedirect.startsWith("/") && !rawRedirect.startsWith("//")
+    ? rawRedirect
+    : "/";
+  const successUrl = `${origin}${redirectPath}?loginSuccess=1`;
+
   // 工厂函数：创建一个把 cookie 写进指定 response 的 Supabase 客户端
   function makeSupabase(response: NextResponse) {
     return createServerClient(
@@ -37,7 +45,7 @@ export async function GET(request: NextRequest) {
 
   // ── 情况 1：PKCE 授权码流程 ──────────────────────────────────────
   if (code) {
-    const response = NextResponse.redirect(`${origin}/`);
+    const response = NextResponse.redirect(successUrl);
     const supabase = makeSupabase(response);
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (!error) return response;
@@ -45,7 +53,7 @@ export async function GET(request: NextRequest) {
 
   // ── 情况 2：Magic Link / 邮件 OTP（token_hash 流程）──────────────
   if (token_hash && type) {
-    const response = NextResponse.redirect(`${origin}/`);
+    const response = NextResponse.redirect(successUrl);
     const supabase = makeSupabase(response);
     const { error } = await supabase.auth.verifyOtp({ type, token_hash });
     if (!error) return response;
