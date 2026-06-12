@@ -1,0 +1,12 @@
+{
+  "name": "anthropic-proxy",
+  "version": "1.0.0",
+  "description": "Anthropic API reverse proxy for China servers",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
