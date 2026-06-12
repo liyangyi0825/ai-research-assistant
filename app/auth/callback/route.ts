@@ -14,6 +14,14 @@ export async function GET(request: NextRequest) {
   const token_hash = searchParams.get("token_hash");
   const type = searchParams.get("type") as EmailOtpType | null;
 
+  // ── 诊断日志（排查问题后可删除）──────────────────────────────────
+  console.log("[auth/callback] 收到回调，完整 URL:", request.url);
+  console.log("[auth/callback] redirectTo 参数:", searchParams.get("redirectTo"));
+  console.log("[auth/callback] code:", code ? "有" : "无");
+  console.log("[auth/callback] token_hash:", token_hash ? "有" : "无");
+  console.log("[auth/callback] type:", type);
+  // ─────────────────────────────────────────────────────────────────
+
   // 读取登录前的来源页面，登录成功后跳回去；没有则跳首页
   const rawRedirect = searchParams.get("redirectTo") ?? "/";
   // 只允许站内路径（以 / 开头且不是 //），防止开放重定向
@@ -21,6 +29,7 @@ export async function GET(request: NextRequest) {
     ? rawRedirect
     : "/";
   const successUrl = `${origin}${redirectPath}?loginSuccess=1`;
+  console.log("[auth/callback] 将跳转到:", successUrl);
 
   // 工厂函数：创建一个把 cookie 写进指定 response 的 Supabase 客户端
   function makeSupabase(response: NextResponse) {
