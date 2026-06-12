@@ -100,11 +100,15 @@ export async function insertUsageRecord({
   cacheReadTokens?: number;
 }) {
   try {
-    console.log('[insertUsageRecord] 开始写入:', { userId, actionType, tokensInput, tokensOutput });
+    console.log('=== usage写入开始 ===');
+    console.log('user_id:', userId);
+    console.log('action_type:', actionType);
+    console.log('tokens_input:', tokensInput);
+    console.log('tokens_output:', tokensOutput);
 
     const admin = getSupabaseAdminClient();
     if (!admin) {
-      console.error('[insertUsageRecord] getSupabaseAdminClient 返回 null');
+      console.error('=== usage写入错误: getSupabaseAdminClient 返回 null ===');
       return;
     }
 
@@ -114,7 +118,7 @@ export async function insertUsageRecord({
       (cacheCreationTokens / 1_000_000) * 3.75 +
       (cacheReadTokens     / 1_000_000) * 0.30;
 
-    console.log('[insertUsageRecord] 准备插入数据:', {
+    console.log('准备插入的数据:', {
       user_id: userId,
       action_type: actionType,
       tokens_input: tokensInput,
@@ -122,7 +126,7 @@ export async function insertUsageRecord({
       cost_usd: costUsd
     });
 
-    const { error } = await admin.from("usage").insert({
+    const result = await admin.from("usage").insert({
       user_id: userId,
       action_type: actionType,
       tokens_input: tokensInput,
@@ -130,13 +134,16 @@ export async function insertUsageRecord({
       cost_usd: costUsd,
     });
 
-    if (error) {
-      console.error("[insertUsageRecord] 用量写入失败:", error.message, error);
+    console.log('写入结果:', result);
+    console.log('写入错误:', result.error);
+
+    if (result.error) {
+      console.error('=== usage写入失败 ===', result.error.message, result.error);
     } else {
-      console.log('[insertUsageRecord] 写入成功');
+      console.log('=== usage写入成功 ===');
     }
   } catch (err) {
-    console.error("[insertUsageRecord] 用量记录异常:", err);
+    console.error('=== usage写入异常 ===', err);
   }
 }
 
