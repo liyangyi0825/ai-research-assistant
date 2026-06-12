@@ -9,7 +9,10 @@ import { NextRequest, NextResponse } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 
 export async function GET(request: NextRequest) {
-  const { searchParams, origin } = new URL(request.url);
+  const { searchParams, origin: requestOrigin } = new URL(request.url);
+  // 生产环境经过 Nginx 反向代理后 request.url 是 localhost:3000，
+  // 用 NEXT_PUBLIC_SITE_URL 覆盖，确保跳转到正确的域名
+  const origin = process.env.NEXT_PUBLIC_SITE_URL || requestOrigin;
   const code = searchParams.get("code");
   const token_hash = searchParams.get("token_hash");
   const type = searchParams.get("type") as EmailOtpType | null;
