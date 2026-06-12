@@ -177,15 +177,6 @@ export default function MyProfilePage() {
     }
   }
 
-  function togglePref(pref: string) {
-    setForm(prev => ({
-      ...prev,
-      ai_preferences: prev.ai_preferences.includes(pref)
-        ? prev.ai_preferences.filter(p => p !== pref)
-        : [...prev.ai_preferences, pref],
-    }));
-  }
-
   // ── 渲染 ──────────────────────────────────────────────────────────────────
 
   return (
@@ -476,7 +467,7 @@ function ProfileForm({
           {AI_PREFS.map(pref => {
             const checked = (form.ai_preferences ?? []).includes(pref);
             return (
-              <label key={pref} className="flex items-center gap-3 cursor-pointer group">
+              <label key={pref} onClick={() => togglePref(pref)} className="flex items-center gap-3 cursor-pointer group">
                 <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${
                   checked ? "bg-blue-600 border-blue-600" : "border-gray-300 group-hover:border-blue-400"
                 }`}>
