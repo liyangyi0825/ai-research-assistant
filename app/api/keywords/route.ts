@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { getSupabaseAuthClient } from "@/lib/supabase";
+import { getSupabaseAuthClient, insertUsageRecord, checkUsageLimit } from "@/lib/supabase";
 
 export interface KeywordCombination {
   keywordsEn: string;   // 英文版：用 AND 连接，适配 Google Scholar / Semantic Scholar / arXiv
@@ -12,6 +12,8 @@ export interface KeywordCombination {
 }
 
 export async function POST(req: NextRequest) {
+  let userId: string | null = null;
+
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
@@ -23,6 +25,16 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       return NextResponse.json({ error: "请先登录" }, { status: 401 });
+    }
+    userId = user.id;
+
+    // 检查本月用量是否超限
+    const { allowed, used, limit } = await checkUsageLimit("keyword_gen");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: `本月关键词生成次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 }
+      );
     }
 
     const { topic } = await req.json();
@@ -81,6 +93,29 @@ description：一句话中文，说明该组合检索的方向
     // 清除可能的 markdown 代码块
     const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
     const parsed = JSON.parse(cleaned);
+
+    // 写入 usage 记录
+    if (userId) {
+      const inputTokens = data.usage?.input_tokens ?? 0;
+      const outputTokens = data.usage?.output_tokens ?? 0;
+
+      console.log('开始写入usage', {userId, actionType: 'keyword_gen', inputTokens, outputTokens});
+
+      try {
+        await insertUsageRecord({
+          userId,
+          actionType: "keyword_gen",
+          tokensInput: inputTokens,
+          tokensOutput: outputTokens,
+        });
+        console.log('写入结果', 'success');
+      } catch (error) {
+        // 用量记录失败不影响主流程
+        console.error('写入错误', error);
+      }
+    } else {
+      console.error('写入错误', 'userId为空');
+    }
 
     return NextResponse.json({
       combinations: parsed.combinations as KeywordCombination[],
