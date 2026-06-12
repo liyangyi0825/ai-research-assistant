@@ -1,6 +1,6 @@
-// 后端接口：从 Semantic Scholar 搜索概念相关论文
+// 后端接口：从 OpenAlex 搜索概念相关论文
 // 路径：POST /api/concept-explorer/papers
-// 中文概念自动翻译成英文再搜索（Semantic Scholar 是英文数据库）
+// 中文概念自动翻译成英文再搜索（OpenAlex 是英文数据库）
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
@@ -16,15 +16,14 @@ export interface Paper {
   doi: string | null;
 }
 
-const S2_BASE = "https://api.semanticscholar.org/graph/v1";
-const FIELDS  = "title,authors,year,abstract,citationCount,externalIds";
+const OA_BASE = "https://api.openalex.org/works";
+const OA_FIELDS = "id,title,authorships,publication_year,abstract_inverted_index,cited_by_count,doi";
+const OA_HEADERS = { "User-Agent": "AI-Research-Assistant/1.0 (mailto:admin@iyanhub.com)" };
 
-// 检测是否包含中文字符
 function hasChinese(text: string): boolean {
   return /[一-鿿]/.test(text);
 }
 
-// 用 Claude 把中文学术概念翻译成英文检索词（轻量调用，max_tokens=60）
 async function translateToEnglish(concept: string, apiKey: string): Promise<string> {
   try {
     const res = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
@@ -47,32 +46,43 @@ async function translateToEnglish(concept: string, apiKey: string): Promise<stri
     const translated = (data.content?.[0]?.text ?? "").trim();
     return translated || concept;
   } catch {
-    return concept; // 翻译失败时退回原词
+    return concept;
   }
 }
 
-function formatAuthors(raw: { name: string }[]): string {
-  if (!raw?.length) return "未知作者";
-  if (raw.length <= 3) return raw.map(a => a.name).join(", ");
-  return `${raw[0].name} et al.`;
+// OpenAlex 摘要以"倒排索引"格式存储，需要还原成普通文本
+function reconstructAbstract(invertedIndex: Record<string, number[]> | null): string | null {
+  if (!invertedIndex) return null;
+  const pairs: [number, string][] = [];
+  for (const [word, positions] of Object.entries(invertedIndex)) {
+    for (const pos of positions) pairs.push([pos, word]);
+  }
+  pairs.sort((a, b) => a[0] - b[0]);
+  return pairs.map(p => p[1]).join(" ") || null;
+}
+
+function formatAuthors(authorships: { author: { display_name: string } }[]): string {
+  if (!authorships?.length) return "未知作者";
+  const names = authorships.map(a => a.author?.display_name).filter(Boolean);
+  if (names.length <= 3) return names.join(", ");
+  return `${names[0]} et al.`;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toPaper(p: any): Paper {
+function toOAPaper(p: any): Paper {
   return {
-    paperId:      p.paperId ?? "",
-    title:        p.title ?? "无标题",
-    authors:      formatAuthors(p.authors ?? []),
-    year:         p.year ?? null,
-    abstract:     p.abstract ?? null,
-    citationCount: p.citationCount ?? 0,
-    doi:          p.externalIds?.DOI ?? null,
+    paperId:       p.id ?? "",
+    title:         p.title ?? "无标题",
+    authors:       formatAuthors(p.authorships ?? []),
+    year:          p.publication_year ?? null,
+    abstract:      reconstructAbstract(p.abstract_inverted_index),
+    citationCount: p.cited_by_count ?? 0,
+    doi:           p.doi ? p.doi.replace("https://doi.org/", "") : null,
   };
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // 验证用户已登录
     const supabase = await getSupabaseAuthClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
@@ -86,7 +96,6 @@ export async function POST(req: NextRequest) {
 
     const rawConcept = concept.trim();
 
-    // 中文概念先翻译成英文，再搜索 Semantic Scholar
     let searchTerm = rawConcept;
     if (hasChinese(rawConcept)) {
       const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -97,62 +106,48 @@ export async function POST(req: NextRequest) {
     }
 
     const q = encodeURIComponent(searchTerm);
-    const headers = { "User-Agent": "AI-Research-Assistant/1.0" };
-
-    // Semantic Scholar 限流时等待后重试一次
-    async function s2Fetch(url: string) {
-      let res = await fetchWithProxy(url, { headers });
-      if (res.status === 429) {
-        console.log("[concept-explorer] Semantic Scholar 429，等待 8s 后重试");
-        await new Promise(r => setTimeout(r, 8000));
-        res = await fetchWithProxy(url, { headers });
-      }
-      return res;
-    }
+    const currentYear = new Date().getFullYear();
 
     if (type === "oldest") {
-      const url = `${S2_BASE}/paper/search?query=${q}&fields=${FIELDS}&limit=50`;
-      const res = await s2Fetch(url);
-
-      if (!res.ok) return NextResponse.json({ papers: [], searchTerm });
-
+      const url = `${OA_BASE}?search=${q}&sort=publication_year:asc&per-page=3&select=${OA_FIELDS}`;
+      const res = await fetchWithProxy(url, { headers: OA_HEADERS });
+      if (!res.ok) {
+        console.error("[concept-explorer] OpenAlex oldest 失败:", res.status);
+        return NextResponse.json({ papers: [], searchTerm });
+      }
       const data = await res.json();
-      const papers: Paper[] = (data.data ?? [])
-        .map(toPaper)
-        .filter((p: Paper) => p.year !== null)
-        .sort((a: Paper, b: Paper) => (a.year ?? 9999) - (b.year ?? 9999))
-        .slice(0, 3);
-
+      const papers: Paper[] = (data.results ?? [])
+        .map(toOAPaper)
+        .filter((p: Paper) => p.year !== null);
       return NextResponse.json({ papers, searchTerm });
     }
 
     if (type === "recent") {
-      // 不在 URL 里加 year 过滤参数——Semantic Scholar 返回的 year 字段
-      // 经常为 null，服务端过滤后容易全部为空；改为取 100 条后自己筛选
-      const url = `${S2_BASE}/paper/search?query=${q}&fields=${FIELDS}&limit=100`;
-      const res = await s2Fetch(url);
+      const year3 = currentYear - 3;
+      const year5 = currentYear - 5;
 
-      if (!res.ok) return NextResponse.json({ papers: [], searchTerm });
+      // 先试近 3 年
+      const url3 = `${OA_BASE}?search=${q}&filter=publication_year:${year3}-${currentYear}&sort=cited_by_count:desc&per-page=8&select=${OA_FIELDS}`;
+      const res3 = await fetchWithProxy(url3, { headers: OA_HEADERS });
 
-      const data = await res.json();
-      const all: Paper[] = (data.data ?? []).map(toPaper);
-
-      const currentYear = new Date().getFullYear();
-
-      // 先试近 3 年（含当前年份），不够 3 条则放宽到近 5 年
-      let recent = all
-        .filter((p: Paper) => p.year !== null && (p.year ?? 0) >= currentYear - 3)
-        .sort((a: Paper, b: Paper) => (b.year ?? 0) - (a.year ?? 0) || b.citationCount - a.citationCount)
-        .slice(0, 8);
-
-      if (recent.length < 3) {
-        recent = all
-          .filter((p: Paper) => p.year !== null && (p.year ?? 0) >= currentYear - 5)
-          .sort((a: Paper, b: Paper) => (b.year ?? 0) - (a.year ?? 0) || b.citationCount - a.citationCount)
-          .slice(0, 8);
+      if (res3.ok) {
+        const data3 = await res3.json();
+        const papers3: Paper[] = (data3.results ?? []).map(toOAPaper).filter((p: Paper) => p.year !== null);
+        if (papers3.length >= 3) {
+          return NextResponse.json({ papers: papers3, searchTerm });
+        }
       }
 
-      return NextResponse.json({ papers: recent, searchTerm });
+      // 近 3 年不足 3 条，放宽到近 5 年
+      const url5 = `${OA_BASE}?search=${q}&filter=publication_year:${year5}-${currentYear}&sort=cited_by_count:desc&per-page=8&select=${OA_FIELDS}`;
+      const res5 = await fetchWithProxy(url5, { headers: OA_HEADERS });
+      if (!res5.ok) {
+        console.error("[concept-explorer] OpenAlex recent 失败:", res5.status);
+        return NextResponse.json({ papers: [], searchTerm });
+      }
+      const data5 = await res5.json();
+      const papers5: Paper[] = (data5.results ?? []).map(toOAPaper).filter((p: Paper) => p.year !== null);
+      return NextResponse.json({ papers: papers5, searchTerm });
     }
 
     return NextResponse.json({ error: "无效的 type 参数" }, { status: 400 });
