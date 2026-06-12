@@ -99,9 +99,20 @@ export async function POST(req: NextRequest) {
     const q = encodeURIComponent(searchTerm);
     const headers = { "User-Agent": "AI-Research-Assistant/1.0" };
 
+    // Semantic Scholar 限流时等待后重试一次
+    async function s2Fetch(url: string) {
+      let res = await fetchWithProxy(url, { headers });
+      if (res.status === 429) {
+        console.log("[concept-explorer] Semantic Scholar 429，等待 8s 后重试");
+        await new Promise(r => setTimeout(r, 8000));
+        res = await fetchWithProxy(url, { headers });
+      }
+      return res;
+    }
+
     if (type === "oldest") {
       const url = `${S2_BASE}/paper/search?query=${q}&fields=${FIELDS}&limit=50`;
-      const res = await fetchWithProxy(url, { headers });
+      const res = await s2Fetch(url);
 
       if (!res.ok) return NextResponse.json({ papers: [], searchTerm });
 
@@ -119,7 +130,7 @@ export async function POST(req: NextRequest) {
       // 不在 URL 里加 year 过滤参数——Semantic Scholar 返回的 year 字段
       // 经常为 null，服务端过滤后容易全部为空；改为取 100 条后自己筛选
       const url = `${S2_BASE}/paper/search?query=${q}&fields=${FIELDS}&limit=100`;
-      const res = await fetchWithProxy(url, { headers });
+      const res = await s2Fetch(url);
 
       if (!res.ok) return NextResponse.json({ papers: [], searchTerm });
 
