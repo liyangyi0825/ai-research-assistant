@@ -116,37 +116,32 @@ export async function POST(req: NextRequest) {
     }
 
     if (type === "recent") {
-      const currentYear = new Date().getFullYear();
-      const url = `${S2_BASE}/paper/search?query=${q}&fields=${FIELDS}&limit=50&year=2022-${currentYear}`;
-
-      console.log("[concept/papers] 开始调用 Semantic Scholar API");
-      console.log("[concept/papers] 搜索词:", searchTerm);
-      console.log("[concept/papers] 请求 URL:", url);
-
+      // 不在 URL 里加 year 过滤参数——Semantic Scholar 返回的 year 字段
+      // 经常为 null，服务端过滤后容易全部为空；改为取 100 条后自己筛选
+      const url = `${S2_BASE}/paper/search?query=${q}&fields=${FIELDS}&limit=100`;
       const res = await fetchWithProxy(url, { headers });
 
-      console.log("[concept/papers] HTTP 状态:", res.status, res.statusText);
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "(无法读取错误体)");
-        console.log("[concept/papers] API 错误:", errText);
-        return NextResponse.json({ papers: [], searchTerm });
-      }
+      if (!res.ok) return NextResponse.json({ papers: [], searchTerm });
 
       const data = await res.json();
-      console.log("[concept/papers] API 返回结果 total:", data.total ?? "(无 total 字段)");
-      console.log("[concept/papers] data.data 数量:", data.data?.length ?? 0);
-      console.log("[concept/papers] 第一条原始数据:", JSON.stringify(data.data?.[0] ?? null));
+      const all: Paper[] = (data.data ?? []).map(toPaper);
 
-      const papers: Paper[] = (data.data ?? [])
-        .map(toPaper)
-        .filter((p: Paper) => (p.year ?? 0) >= 2022)
-        .sort((a: Paper, b: Paper) => b.citationCount - a.citationCount)
+      const currentYear = new Date().getFullYear();
+
+      // 先试近 3 年（含当前年份），不够 3 条则放宽到近 5 年
+      let recent = all
+        .filter((p: Paper) => p.year !== null && (p.year ?? 0) >= currentYear - 3)
+        .sort((a: Paper, b: Paper) => (b.year ?? 0) - (a.year ?? 0) || b.citationCount - a.citationCount)
         .slice(0, 8);
 
-      console.log("[concept/papers] 过滤排序后论文数量:", papers.length);
+      if (recent.length < 3) {
+        recent = all
+          .filter((p: Paper) => p.year !== null && (p.year ?? 0) >= currentYear - 5)
+          .sort((a: Paper, b: Paper) => (b.year ?? 0) - (a.year ?? 0) || b.citationCount - a.citationCount)
+          .slice(0, 8);
+      }
 
-      return NextResponse.json({ papers, searchTerm });
+      return NextResponse.json({ papers: recent, searchTerm });
     }
 
     return NextResponse.json({ error: "无效的 type 参数" }, { status: 400 });

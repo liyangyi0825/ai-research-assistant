@@ -403,9 +403,14 @@ export default function ConceptExplorerPage() {
             status={recentStatus}
           >
             {recentStatus === "loading" && <Skeleton lines={6} />}
+            {recentStatus === "error" && (
+              <p className="text-sm text-gray-400 italic">
+                暂时无法连接论文数据库，请稍后重试
+              </p>
+            )}
             {recentStatus === "done" && recentPapers.length === 0 && (
               <p className="text-sm text-gray-400 italic">
-                未找到近 3 年的数据库结果，以下为 AI 知识库内容，请自行在知网验证
+                暂未在数据库中找到近 3 年相关论文，可参考下方关联概念和研究思路
               </p>
             )}
             {recentPapers.length > 0 && (
