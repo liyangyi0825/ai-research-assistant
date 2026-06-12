@@ -35,6 +35,14 @@ const AI_PREFS = [
   "用简单语言解释专业概念",
 ];
 
+const QUICK_OPTIONS: string[][] = [
+  ["本科大三/大四", "硕士研究生", "博士研究生", "其他"],
+  ["材料科学", "计算机/人工智能", "生物/医学", "化学/化工", "物理", "其他方向"],
+  ["先找综述论文", "直接搜关键词", "导师/师兄推荐", "几种方式都用"],
+  ["找不到合适的文献", "看不懂英文论文", "不知道研究方向", "写作/表达困难", "找不到A和B之间的关联", "其他"],
+  ["暂时没有", "实验为主", "计算模拟", "数据分析", "文献综述"],
+];
+
 const EMPTY_FORM: Profile = {
   research_direction: "",
   research_workflow:  "",
@@ -68,12 +76,13 @@ export default function MyProfilePage() {
   const [isEdit,   setIsEdit]   = useState(false); // 编辑已有档案
 
   // ── 路线 B 状态 ──
-  const [step,          setStep]          = useState(0);
-  const [answers,       setAnswers]       = useState<string[]>(new Array(5).fill(""));
-  const [currentAnswer, setCurrentAnswer] = useState("");
-  const [displayedQ,    setDisplayedQ]    = useState("");
-  const [isTyping,      setIsTyping]      = useState(false);
-  const [summarizing,   setSummarizing]   = useState(false);
+  const [step,            setStep]            = useState(0);
+  const [answers,         setAnswers]         = useState<string[]>(new Array(5).fill(""));
+  const [currentAnswer,   setCurrentAnswer]   = useState("");
+  const [displayedQ,      setDisplayedQ]      = useState("");
+  const [isTyping,        setIsTyping]        = useState(false);
+  const [summarizing,     setSummarizing]     = useState(false);
+  const [selectedOptions, setSelectedOptions] = useState<string[][]>(() => Array.from({ length: 5 }, () => []));
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 初始化：读取已有档案
@@ -116,8 +125,19 @@ export default function MyProfilePage() {
     setStep(0);
     setAnswers(new Array(5).fill(""));
     setCurrentAnswer("");
+    setSelectedOptions(Array.from({ length: 5 }, () => []));
     setView("interview");
     setTimeout(() => typeQuestion(QUESTIONS[0]), 200);
+  }
+
+  // 快捷选项：切换选中，并把选中项拼入输入框
+  function toggleOption(opt: string) {
+    const current = selectedOptions[step];
+    const next = current.includes(opt)
+      ? current.filter(o => o !== opt)
+      : [...current, opt];
+    setSelectedOptions(prev => prev.map((s, i) => (i === step ? next : s)));
+    setCurrentAnswer(next.join("、"));
   }
 
   // 提交当前回答，进入下一题
@@ -304,25 +324,50 @@ export default function MyProfilePage() {
 
                 {/* 输入框 */}
                 {!summarizing && (
-                  <div className="border-t border-gray-100 p-4 flex gap-2">
-                    <textarea
-                      value={currentAnswer}
-                      onChange={e => setCurrentAnswer(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitAnswer(); }
-                      }}
-                      disabled={isTyping}
-                      placeholder={isTyping ? "AI 正在提问…" : "输入你的回答（Enter 发送）"}
-                      rows={2}
-                      className="flex-1 rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 resize-none disabled:opacity-50"
-                    />
-                    <Button
-                      onClick={submitAnswer}
-                      disabled={!currentAnswer.trim() || isTyping}
-                      className="shrink-0 self-end"
-                    >
-                      {step < 4 ? "继续" : "完成"}
-                    </Button>
+                  <div className="border-t border-gray-100 p-4 space-y-3">
+                    {/* 快捷选项 */}
+                    {!isTyping && (
+                      <div className="flex flex-wrap gap-2">
+                        {QUICK_OPTIONS[step].map(opt => {
+                          const active = selectedOptions[step].includes(opt);
+                          return (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() => toggleOption(opt)}
+                              className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                                active
+                                  ? "bg-blue-600 border-blue-600 text-white"
+                                  : "bg-white border-gray-200 text-gray-600 hover:border-blue-400 hover:text-blue-600"
+                              }`}
+                            >
+                              {opt}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {/* 文字输入 */}
+                    <div className="flex gap-2">
+                      <textarea
+                        value={currentAnswer}
+                        onChange={e => setCurrentAnswer(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitAnswer(); }
+                        }}
+                        disabled={isTyping}
+                        placeholder={isTyping ? "AI 正在提问…" : "点击上方快捷选项，或直接输入（Enter 发送）"}
+                        rows={2}
+                        className="flex-1 rounded-xl border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 resize-none disabled:opacity-50"
+                      />
+                      <Button
+                        onClick={submitAnswer}
+                        disabled={!currentAnswer.trim() || isTyping}
+                        className="shrink-0 self-end"
+                      >
+                        {step < 4 ? "继续" : "完成"}
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>
