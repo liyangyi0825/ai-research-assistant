@@ -42,6 +42,16 @@ export default function RootLayout({
           <FeedbackWidget />
           <LoginSuccessNotice />
           <Toaster richColors position="top-center" />
+          <footer className="w-full py-3 text-center">
+            <a
+              href="https://beian.miit.gov.cn"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-gray-400 hover:text-gray-500 transition-colors"
+            >
+              津ICP备2026007356号
+            </a>
+          </footer>
         </body>
     </html>
   );
