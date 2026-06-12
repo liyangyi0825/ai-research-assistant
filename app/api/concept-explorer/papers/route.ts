@@ -118,16 +118,33 @@ export async function POST(req: NextRequest) {
     if (type === "recent") {
       const currentYear = new Date().getFullYear();
       const url = `${S2_BASE}/paper/search?query=${q}&fields=${FIELDS}&limit=50&year=2022-${currentYear}`;
+
+      console.log("[concept/papers] 开始调用 Semantic Scholar API");
+      console.log("[concept/papers] 搜索词:", searchTerm);
+      console.log("[concept/papers] 请求 URL:", url);
+
       const res = await fetchWithProxy(url, { headers });
 
-      if (!res.ok) return NextResponse.json({ papers: [], searchTerm });
+      console.log("[concept/papers] HTTP 状态:", res.status, res.statusText);
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "(无法读取错误体)");
+        console.log("[concept/papers] API 错误:", errText);
+        return NextResponse.json({ papers: [], searchTerm });
+      }
 
       const data = await res.json();
+      console.log("[concept/papers] API 返回结果 total:", data.total ?? "(无 total 字段)");
+      console.log("[concept/papers] data.data 数量:", data.data?.length ?? 0);
+      console.log("[concept/papers] 第一条原始数据:", JSON.stringify(data.data?.[0] ?? null));
+
       const papers: Paper[] = (data.data ?? [])
         .map(toPaper)
         .filter((p: Paper) => (p.year ?? 0) >= 2022)
         .sort((a: Paper, b: Paper) => b.citationCount - a.citationCount)
         .slice(0, 8);
+
+      console.log("[concept/papers] 过滤排序后论文数量:", papers.length);
 
       return NextResponse.json({ papers, searchTerm });
     }
