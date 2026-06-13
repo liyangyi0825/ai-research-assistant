@@ -39,7 +39,7 @@ export default function Home() {
               <div className="text-3xl shrink-0">🔍</div>
               <div>
                 <h3 className="font-semibold text-gray-800 mb-0.5">检索词矩阵生成</h3>
-                <p className="text-sm text-gray-500">输入课题，AI 生成 8-10 个精准英文检索词，直达 Google Scholar</p>
+                <p className="text-sm text-gray-500">输入研究课题，AI 生成中英文检索词，一键直达知网、Google Scholar、arXiv</p>
               </div>
             </div>
             <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-purple-100 bg-purple-50/30 flex items-center gap-3 text-left">
@@ -92,9 +92,6 @@ export default function Home() {
             </Link>
           </div>
 
-          <p className="mt-6 text-xs text-gray-400">
-            目前为开发测试阶段 · MVP 版本
-          </p>
         </div>
       </main>
 
