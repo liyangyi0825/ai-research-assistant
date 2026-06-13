@@ -96,3 +96,4 @@ npm run lint         # 检查代码
 - [x] 调用 Claude API 生成论文总结
 - [x] 与论文对话（基于论文内容问答）
 - [x] 部署到 Vercel
+
