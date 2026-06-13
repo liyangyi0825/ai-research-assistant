@@ -24,9 +24,7 @@ try {
 const nextConfig: NextConfig = {
   experimental: {
     serverActions: {
-      // 允许最大 20MB 的请求体（用于 PDF 上传）
-      // 注意：部署到 Vercel 免费版时平台硬限仍为 4.5MB，迁移到自有服务器后此配置生效
-      bodySizeLimit: "20mb",
+      bodySizeLimit: "50mb",
     },
   },
 };

@@ -175,7 +175,7 @@ export default function UploadPage() {
         data = await res.json();
       } catch {
         if (res.status === 413) {
-          throw new Error("PDF 文件太大，当前服务器限制为 4.5MB，请压缩后重试");
+          throw new Error("PDF 文件太大（最大 50MB），请压缩后重试");
         }
         throw new Error(`服务器错误（HTTP ${res.status}），请刷新页面后重试`);
       }
@@ -358,7 +358,7 @@ export default function UploadPage() {
             >
               <div className="text-5xl mb-3 sm:mb-4">📄</div>
               <p className="text-base sm:text-lg font-medium text-gray-700 mb-2">点击选择文件，或拖拽 PDF 到这里</p>
-              <p className="text-sm text-gray-400">仅支持 PDF 格式，最大 20MB</p>
+              <p className="text-sm text-gray-400">支持 PDF 格式，最大 50MB</p>
               {extractStatus === "error" && (
                 <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
                   ❌ {extractError}

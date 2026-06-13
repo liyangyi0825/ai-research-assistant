@@ -4,19 +4,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractTextFromPDF } from "@/lib/pdf";
 
-// 允许最大 20MB 的请求体
-// Vercel 免费版平台硬限为 4.5MB，迁移到自有服务器后可支持完整 20MB
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
-    // Vercel 平台超限时会直接返回 413 纯文本，formData() 会抛错
     let formData: FormData;
     try {
       formData = await req.formData();
     } catch {
       return NextResponse.json(
-        { error: "PDF 文件太大，当前平台限制为 4.5MB。迁移到自有服务器后可支持最大 20MB。" },
+        { error: "PDF 文件太大，最大支持 50MB" },
         { status: 413 }
       );
     }
@@ -39,10 +36,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 检查文件大小（最大 20MB）
-    if (file.size > 20 * 1024 * 1024) {
+    if (file.size > 50 * 1024 * 1024) {
       return NextResponse.json(
-        { error: "PDF 文件太大（最大 20MB），请压缩后重试" },
+        { error: "PDF 文件太大（最大 50MB），请压缩后重试" },
         { status: 400 }
       );
     }
