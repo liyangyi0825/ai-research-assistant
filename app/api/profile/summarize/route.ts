@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { getSupabaseAuthClient } from "@/lib/supabase";
+import { getSupabaseAuthClient, checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 const QUESTIONS = [
   "你现在读几年级？主要做什么方向的研究？",
@@ -21,6 +21,14 @@ export async function POST(req: NextRequest) {
     const supabase = await getSupabaseAuthClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
+
+    const { allowed, used, limit, userId } = await checkUsageLimit("profile_summarize");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: `本月科研档案整理次数已达上限（${used}/${limit}），下月重置` },
+        { status: 429 }
+      );
+    }
 
     const { answers } = await req.json() as { answers: string[] };
     if (!answers?.length) return NextResponse.json({ error: "缺少回答内容" }, { status: 400 });
@@ -57,6 +65,16 @@ ${qa}
     const text: string = data.content?.[0]?.text ?? "";
     const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
     const profile = JSON.parse(cleaned);
+
+    if (userId) {
+      await insertUsageRecord({
+        userId,
+        actionType: "profile_summarize",
+        tokensInput: data.usage?.input_tokens ?? 0,
+        tokensOutput: data.usage?.output_tokens ?? 0,
+      });
+    }
+
     return NextResponse.json({ profile });
   } catch (err) {
     console.error("Profile summarize error:", err);
