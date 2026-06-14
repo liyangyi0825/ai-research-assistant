@@ -45,6 +45,7 @@ export default async function AdminUsagePage() {
         keywordGen:     count(mon, "keyword_gen"),
         bibtex:         count(mon, "bibtex_export"),
         conceptExplore: count(mon, "concept_explore"),
+        translate:      count(mon, "translate"),
         totalActions:   all.length,
       };
     })
@@ -69,12 +70,13 @@ export default async function AdminUsagePage() {
         </div>
 
         {/* 汇总卡片 */}
-        <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
           <StatCard label={`${monthLabel} 总结`}   value={sum("summarize")}      color="blue" />
           <StatCard label={`${monthLabel} 对话`}   value={sum("chat")}           color="green" />
           <StatCard label={`${monthLabel} 关键词`} value={sum("keywordGen")}     color="violet" />
           <StatCard label={`${monthLabel} BibTeX`} value={sum("bibtex")}         color="amber" />
           <StatCard label={`${monthLabel} 概念`}   value={sum("conceptExplore")} color="teal" />
+          <StatCard label={`${monthLabel} 翻译`}   value={sum("translate")}      color="rose" />
         </div>
 
         {/* 用户明细表 */}
@@ -93,6 +95,7 @@ export default async function AdminUsagePage() {
                     <th className="text-center px-3 py-3">关键词矩阵<br/><span className="text-gray-400 font-normal normal-case">限20次</span></th>
                     <th className="text-center px-3 py-3">BibTeX<br/><span className="text-gray-400 font-normal normal-case">限30次</span></th>
                     <th className="text-center px-3 py-3">概念探索<br/><span className="text-gray-400 font-normal normal-case">限10次</span></th>
+                    <th className="text-center px-3 py-3">全文翻译<br/><span className="text-gray-400 font-normal normal-case">限3次</span></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -104,6 +107,7 @@ export default async function AdminUsagePage() {
                       <td className="px-3 py-3 text-center"><UsageCell value={s.keywordGen}     limit={20} /></td>
                       <td className="px-3 py-3 text-center"><UsageCell value={s.bibtex}         limit={30} /></td>
                       <td className="px-3 py-3 text-center"><UsageCell value={s.conceptExplore} limit={10} /></td>
+                      <td className="px-3 py-3 text-center"><UsageCell value={s.translate}      limit={3} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -111,7 +115,7 @@ export default async function AdminUsagePage() {
             </div>
           )}
           <p className="mt-2 text-xs text-gray-400">
-            月度限额：总结 5 次　对话 30 次　关键词矩阵 20 次　BibTeX 导出 30 次　概念探索器 10 次　·　数据实时刷新
+            月度限额：总结 5 次　对话 30 次　关键词矩阵 20 次　BibTeX 导出 30 次　概念探索器 10 次　全文翻译 3 次　·　数据实时刷新
           </p>
         </section>
 
@@ -162,6 +166,7 @@ function StatCard({ label, value, color }: { label: string; value: number; color
     violet: "bg-violet-50 text-violet-700",
     amber:  "bg-amber-50 text-amber-700",
     teal:   "bg-teal-50 text-teal-700",
+    rose:   "bg-rose-50 text-rose-700",
   };
   return (
     <div className={`rounded-xl p-4 ${colors[color] ?? colors.blue}`}>

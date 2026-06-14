@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { Header } from "@/components/Header";
+import { TranslationView } from "@/components/TranslationView";
 
 // ─── 解析 Anthropic SSE 流，逐块 yield 文字 ───────────────────────────────
 async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
@@ -122,6 +123,9 @@ export default function UploadPage() {
       .catch(() => {/* 静默失败 */});
   }, []);
 
+  // ── 视图切换：summary（默认）| translate（对照翻译）──
+  const [currentView, setCurrentView] = useState<"summary" | "translate">("summary");
+
   // ── 引用格式状态 ──
   const [citeStatus, setCiteStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [bibtex, setBibtex] = useState("");
@@ -204,6 +208,7 @@ export default function UploadPage() {
     setGbt7714("");
     setCopiedBibtex(false);
     setCopiedGbt(false);
+    setCurrentView("summary");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -337,6 +342,16 @@ export default function UploadPage() {
   // 总结是否正在流入（有文字但还没 done）
   const isSummaryStreaming = summaryStatus === "loading" && summaryText.length > 0;
 
+  // 全文翻译视图：全屏替换，不显示普通布局
+  if (currentView === "translate" && extractedText) {
+    return (
+      <TranslationView
+        extractedText={extractedText}
+        onBack={() => setCurrentView("summary")}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       <Header title="上传论文" />
@@ -459,14 +474,33 @@ export default function UploadPage() {
               {/* 生成完毕，拆分展示 */}
               {summaryStatus === "done" && (
                 <div className="space-y-3 sm:space-y-4">
-                  <h2 className="text-lg sm:text-xl font-bold text-gray-800">📋 AI 论文总结</h2>
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-lg sm:text-xl font-bold text-gray-800">📋 AI 论文总结</h2>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-amber-700 border-amber-300 hover:bg-amber-50 shrink-0"
+                      onClick={() => setCurrentView("translate")}
+                    >
+                      🌐 全文翻译
+                    </Button>
+                  </div>
                   {parseSummary(summaryText).map(({ key, icon, content }) => (
                     <div key={key} className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-gray-100">
                       <h3 className="font-semibold text-gray-800 mb-2 sm:mb-3">{icon} {key}</h3>
                       <MarkdownContent content={content} className="text-sm" />
                     </div>
                   ))}
-                  <Button variant="outline" className="w-full" onClick={handleSummarize}>重新生成总结</Button>
+                  <div className="flex gap-2">
+                    <Button variant="outline" className="flex-1" onClick={handleSummarize}>重新生成总结</Button>
+                    <Button
+                      variant="outline"
+                      className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                      onClick={() => setCurrentView("translate")}
+                    >
+                      🌐 全文翻译
+                    </Button>
+                  </div>
                 </div>
               )}
 

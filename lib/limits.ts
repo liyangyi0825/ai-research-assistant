@@ -8,6 +8,7 @@ export const FREE_MONTHLY_LIMITS = {
   bibtex_export: 30,      // BibTeX导出每月30次
   concept_explore: 10,    // 概念探索器每月10次（最贵，限制严格些）
   profile_summarize: 5,   // 科研档案AI整理每月5次
+  translate: 3,           // 全文翻译每月3次（成本较高）
 } as const;
 
 export type UsageActionType = keyof typeof FREE_MONTHLY_LIMITS;
