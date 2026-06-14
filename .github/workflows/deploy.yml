@@ -19,5 +19,5 @@ jobs:
             git pull
             npm install
             npm run build
-            pm2 restart ai-research-assistant --update-env 2>/dev/null || pm2 restart ai-research --update-env 2>/dev/null || echo "PM2重启失败，请手动检查进程名"
+            pm2 reload all --update-env
           command_timeout: 15m
