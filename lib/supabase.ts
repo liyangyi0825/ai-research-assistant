@@ -148,6 +148,30 @@ export async function insertUsageRecord({
 }
 
 /**
+ * 写入搜索历史记录
+ * 使用 Admin Client，规避 RLS，服务端调用
+ */
+export async function insertSearchHistory({
+  userId,
+  type,
+  query,
+}: {
+  userId: string;
+  type: "keyword_gen" | "concept_explore";
+  query: string;
+}) {
+  try {
+    const admin = getSupabaseAdminClient();
+    if (!admin) return;
+    await admin.from("search_history").insert({
+      user_id: userId,
+      type,
+      query: query.slice(0, 500),
+    });
+  } catch { /* 历史记录失败不影响主流程 */ }
+}
+
+/**
  * Session 感知客户端（从 Cookie 读取登录用户）
  * 用于需要知道"当前是谁"的 API 路由：用量记录、限额检查、管理页面
  */

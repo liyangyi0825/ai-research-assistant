@@ -155,6 +155,7 @@ export default function ConceptExplorerPage() {
   const [concept, setConcept] = useState("");
   const [isExploring, setIsExploring] = useState(false);
   const [currentConcept, setCurrentConcept] = useState("");
+  const autoTriggered = useRef(false);
 
   // ── 保存到 Supabase 状态 ──
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
@@ -273,11 +274,24 @@ export default function ConceptExplorerPage() {
     }
   }
 
+  // 支持 /concept-explorer?q=xxx 从历史记录直接跳转并自动搜索
+  useEffect(() => {
+    if (autoTriggered.current) return;
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q) {
+      autoTriggered.current = true;
+      setConcept(q);
+      setTimeout(() => {
+        document.getElementById("explore-btn")?.click();
+      }, 50);
+    }
+  }, []);
+
   async function handleExplore() {
-    if (!concept.trim()) return;
+    const term = concept.trim();
+    if (!term) return;
     resetAll();
     setIsExploring(true);
-    const term = concept.trim();
     setCurrentConcept(term);
 
     // ── 区块 1 + 2：并行启动 ────────────────────────────────────────────────
@@ -350,6 +364,7 @@ export default function ConceptExplorerPage() {
             <div className="flex items-center justify-between">
               <span className="text-xs text-gray-400">按 Enter 或点击按钮开始探索</span>
               <Button
+                id="explore-btn"
                 onClick={handleExplore}
                 disabled={!concept.trim() || isExploring}
                 size="lg"

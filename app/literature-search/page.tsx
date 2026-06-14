@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import type { AnalyzedPaper } from "@/app/api/papers/search/route";
@@ -188,6 +188,20 @@ function SearchResults({
 export default function LiteratureSearchPage() {
   const [topic, setTopic] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const autoTriggered = useRef(false);
+
+  // 支持 /literature-search?q=xxx 从历史记录直接跳转并自动搜索
+  useEffect(() => {
+    if (autoTriggered.current) return;
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q) {
+      autoTriggered.current = true;
+      setTopic(q);
+      setTimeout(() => {
+        document.getElementById("generate-btn")?.click();
+      }, 50);
+    }
+  }, []);
   const [combinations, setCombinations] = useState<KeywordCombination[]>([]);
   const [errorMsg, setErrorMsg] = useState("");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -282,6 +296,7 @@ export default function LiteratureSearchPage() {
             <div className="flex items-center justify-between mt-3">
               <span className="text-xs text-gray-400">Ctrl/Cmd + Enter 快速生成</span>
               <Button
+                id="generate-btn"
                 onClick={handleGenerate}
                 disabled={!topic.trim() || status === "loading"}
                 size="lg"

@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse, after } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
+import { checkUsageLimit, insertUsageRecord, insertSearchHistory } from "@/lib/supabase";
 import type { Paper } from "../papers/route";
 
 function buildPrompt(
@@ -151,8 +151,9 @@ export async function POST(req: NextRequest) {
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
     let sseBuffer = "";
 
-    // block=1 时记录用量（整个探索流程只记录一次）
+    // block=1 时记录用量 + 保存搜索历史（整个探索流程只记录一次）
     if (block === 1 && userId) {
+      insertSearchHistory({ userId, type: "concept_explore", query: concept.trim() });
       after(async () => {
         await insertUsageRecord({
           userId,

@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { getSupabaseAuthClient, insertUsageRecord, checkUsageLimit } from "@/lib/supabase";
+import { getSupabaseAuthClient, insertUsageRecord, checkUsageLimit, insertSearchHistory } from "@/lib/supabase";
 
 export interface KeywordCombination {
   keywordsEn: string;   // 英文版：用 AND 连接，适配 Google Scholar / Semantic Scholar / arXiv
@@ -116,6 +116,9 @@ description：一句话中文，说明该组合检索的方向
     } else {
       console.error('写入错误', 'userId为空');
     }
+
+    // 保存搜索历史（不影响主流程）
+    if (userId) insertSearchHistory({ userId, type: "keyword_gen", query: topic.trim() });
 
     return NextResponse.json({
       combinations: parsed.combinations as KeywordCombination[],
