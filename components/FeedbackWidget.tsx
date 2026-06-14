@@ -3,6 +3,9 @@
 import { useState, useRef } from "react";
 import { Button } from "@/components/ui/button";
 
+const MIN_LEN = 10;
+const MAX_LEN = 500;
+
 export function FeedbackWidget() {
   const [isOpen, setIsOpen] = useState(false);
   const [message, setMessage] = useState("");
@@ -12,10 +15,14 @@ export function FeedbackWidget() {
   const [errorMsg, setErrorMsg] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const remaining = MAX_LEN - message.length;
+  const tooShort = message.trim().length > 0 && message.trim().length < MIN_LEN;
+  const tooLong = message.length > MAX_LEN;
+  const canSubmit = message.trim().length >= MIN_LEN && !tooLong && status !== "loading";
+
   function handleClose() {
-    if (status === "loading") return; // 提交中不允许关闭
+    if (status === "loading") return;
     setIsOpen(false);
-    // 延迟重置，避免关闭动画时内容突变
     setTimeout(() => {
       setMessage("");
       setEmail("");
@@ -27,7 +34,7 @@ export function FeedbackWidget() {
   }
 
   async function handleSubmit() {
-    if (!message.trim() || status === "loading") return;
+    if (!canSubmit) return;
 
     setStatus("loading");
     setErrorMsg("");
@@ -39,16 +46,11 @@ export function FeedbackWidget() {
       if (screenshot) formData.append("screenshot", screenshot);
       formData.append("pageUrl", window.location.href);
 
-      const res = await fetch("/api/feedback", {
-        method: "POST",
-        body: formData,
-      });
-
+      const res = await fetch("/api/feedback", { method: "POST", body: formData });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "提交失败");
 
       setStatus("success");
-      // 2 秒后自动关闭
       setTimeout(() => handleClose(), 2000);
     } catch (err) {
       setStatus("error");
@@ -101,17 +103,29 @@ export function FeedbackWidget() {
 
                 {/* 反馈内容（必填）*/}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                    反馈内容 <span className="text-red-400">*</span>
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-sm font-medium text-gray-700">
+                      反馈内容 <span className="text-red-400">*</span>
+                    </label>
+                    <span className={`text-xs ${tooLong ? "text-red-500 font-medium" : "text-gray-400"}`}>
+                      {remaining < 0 ? `超出 ${-remaining} 字` : `还可输入 ${remaining} 字`}
+                    </span>
+                  </div>
                   <textarea
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
                     placeholder="描述你遇到的问题，或对产品的建议……"
                     rows={4}
                     disabled={status === "loading"}
-                    className="w-full rounded-xl border border-gray-200 px-3 py-2.5 text-base outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 resize-none disabled:opacity-50"
+                    className={`w-full rounded-xl border px-3 py-2.5 text-base outline-none focus:ring-2 resize-none disabled:opacity-50 transition-colors ${
+                      tooLong
+                        ? "border-red-300 focus:border-red-400 focus:ring-red-100"
+                        : "border-gray-200 focus:border-blue-400 focus:ring-blue-100"
+                    }`}
                   />
+                  {tooShort && (
+                    <p className="mt-1 text-xs text-orange-500">至少需要 {MIN_LEN} 个字（还差 {MIN_LEN - message.trim().length} 个）</p>
+                  )}
                 </div>
 
                 {/* 截图上传（可选）*/}
@@ -124,10 +138,7 @@ export function FeedbackWidget() {
                       <span className="text-lg">🖼️</span>
                       <span className="text-sm text-gray-600 flex-1 truncate">{screenshot.name}</span>
                       <button
-                        onClick={() => {
-                          setScreenshot(null);
-                          if (fileInputRef.current) fileInputRef.current.value = "";
-                        }}
+                        onClick={() => { setScreenshot(null); if (fileInputRef.current) fileInputRef.current.value = ""; }}
                         className="text-xs text-gray-400 hover:text-red-500 transition-colors px-1"
                       >
                         删除
@@ -147,10 +158,7 @@ export function FeedbackWidget() {
                     type="file"
                     accept="image/*"
                     className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) setScreenshot(f);
-                    }}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) setScreenshot(f); }}
                   />
                 </div>
 
@@ -179,7 +187,7 @@ export function FeedbackWidget() {
                 {/* 提交按钮 */}
                 <Button
                   onClick={handleSubmit}
-                  disabled={!message.trim() || status === "loading"}
+                  disabled={!canSubmit}
                   size="lg"
                   className="w-full"
                 >
