@@ -46,7 +46,8 @@ export async function middleware(request: NextRequest) {
   // 这些路径不需要登录
   const isPublicPath =
     pathname.startsWith("/login") ||
-    pathname.startsWith("/auth");
+    pathname.startsWith("/auth") ||
+    pathname.startsWith("/reset-password");
 
   // 未登录 + 访问需要登录的页面 → 跳转到登录页，并带上来源路径
   if (!user && !isPublicPath) {
