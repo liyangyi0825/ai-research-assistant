@@ -82,7 +82,7 @@ ${isDefense
 }
 
 【论文内容】
-${paperContent.slice(0, 8000)}`;
+${paperContent.slice(0, 24000)}`;
 
     const claudeRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -93,7 +93,7 @@ ${paperContent.slice(0, 8000)}`;
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
-        max_tokens: 4000,
+        max_tokens: 6000,
         messages: [{ role: "user", content: prompt }],
       }),
     });
