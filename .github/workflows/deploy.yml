@@ -17,6 +17,7 @@ jobs:
           script: |
             cd /var/www/ai-research-assistant
             git pull
+            npm install
             npm run build
             pm2 restart ai-research --update-env
           command_timeout: 10m
