@@ -47,11 +47,8 @@ export function Header({ title }: HeaderProps) {
         <Link href="/literature-search" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
           🔍 检索词
         </Link>
-        <Link href="/search-history" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
-          📋 历史
-        </Link>
         <Link href="/my-notes" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
-          📓 我的笔记
+          📓 笔记与历史
         </Link>
         <Link href="/my-profile" className="text-sm text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
           👤 我的档案
