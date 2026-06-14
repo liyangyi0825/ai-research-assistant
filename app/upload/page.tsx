@@ -126,6 +126,13 @@ export default function UploadPage() {
   // ── 视图切换：summary（默认）| translate（对照翻译）──
   const [currentView, setCurrentView] = useState<"summary" | "translate">("summary");
 
+  // ── PPT 生成状态 ──
+  const [pptStatus, setPptStatus] = useState<"idle" | "selecting" | "loading" | "done" | "error">("idle");
+  const [pptScene, setPptScene] = useState<"defense" | "meeting" | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [pptContent, setPptContent] = useState<any>(null);
+  const [pptError, setPptError] = useState("");
+
   // ── 引用格式状态 ──
   const [citeStatus, setCiteStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [bibtex, setBibtex] = useState("");
@@ -209,6 +216,10 @@ export default function UploadPage() {
     setCopiedBibtex(false);
     setCopiedGbt(false);
     setCurrentView("summary");
+    setPptStatus("idle");
+    setPptScene(null);
+    setPptContent(null);
+    setPptError("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -247,6 +258,31 @@ export default function UploadPage() {
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("error");
       setSummaryError(err instanceof Error ? err.message : "生成失败，请重试");
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 生成 PPT 内容（JSON 结构）
+  // ─────────────────────────────────────────────────────────────────────────────
+  async function handlePptGenerate(scene: "defense" | "meeting") {
+    setPptScene(scene);
+    setPptStatus("loading");
+    setPptError("");
+    setPptContent(null);
+
+    try {
+      const res = await fetch("/api/ppt/generate-content", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paperContent: extractedText, scene }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "生成失败");
+      setPptContent(data.pptContent);
+      setPptStatus("done");
+    } catch (err) {
+      setPptError(err instanceof Error ? err.message : "生成失败，请重试");
+      setPptStatus("error");
     }
   }
 
@@ -491,7 +527,7 @@ export default function UploadPage() {
                       <MarkdownContent content={content} className="text-sm" />
                     </div>
                   ))}
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     <Button variant="outline" className="flex-1" onClick={handleSummarize}>重新生成总结</Button>
                     <Button
                       variant="outline"
@@ -500,6 +536,131 @@ export default function UploadPage() {
                     >
                       🌐 全文翻译
                     </Button>
+                    <Button
+                      variant="outline"
+                      className="text-indigo-700 border-indigo-300 hover:bg-indigo-50"
+                      onClick={() => setPptStatus(s => s === "selecting" ? "idle" : "selecting")}
+                    >
+                      📊 生成 PPT
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* ===== PPT 场景选择 + 结果 ===== */}
+              {summaryStatus === "done" && pptStatus !== "idle" && (
+                <div className="bg-white rounded-2xl shadow-sm border border-indigo-100 overflow-hidden">
+                  <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-indigo-50 bg-indigo-50">
+                    <h2 className="font-semibold text-indigo-800">📊 生成 PPT 幻灯片</h2>
+                    <p className="text-xs sm:text-sm text-indigo-500 mt-0.5">AI 根据论文内容自动规划幻灯片结构（每月限 3 次）</p>
+                  </div>
+
+                  <div className="p-4 sm:p-6 space-y-4">
+                    {/* 场景选择 */}
+                    {pptStatus === "selecting" && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <button
+                          onClick={() => handlePptGenerate("defense")}
+                          className="group text-left p-4 rounded-xl border-2 border-blue-100 hover:border-blue-400 hover:bg-blue-50 transition-all"
+                        >
+                          <div className="text-2xl mb-2">🎓</div>
+                          <div className="font-semibold text-gray-800 text-sm mb-1">毕业 / 学位答辩</div>
+                          <div className="text-xs text-gray-500 leading-relaxed">正式学术风格，深蓝色调<br/>AI 自动决定页数（通常 15-20 页）</div>
+                          <div className="mt-2 text-xs text-blue-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">点击选择 →</div>
+                        </button>
+                        <button
+                          onClick={() => handlePptGenerate("meeting")}
+                          className="group text-left p-4 rounded-xl border-2 border-green-100 hover:border-green-400 hover:bg-green-50 transition-all"
+                        >
+                          <div className="text-2xl mb-2">📊</div>
+                          <div className="font-semibold text-gray-800 text-sm mb-1">组会 / 进展汇报</div>
+                          <div className="text-xs text-gray-500 leading-relaxed">简洁汇报风格，清爽简约<br/>AI 自动决定页数（通常 8-12 页）</div>
+                          <div className="mt-2 text-xs text-green-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">点击选择 →</div>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* 生成中 */}
+                    {pptStatus === "loading" && (
+                      <div className="text-center py-6">
+                        <div className="flex justify-center mb-3"><DotLoader /></div>
+                        <p className="text-sm text-gray-600">AI 正在规划幻灯片结构…</p>
+                        <p className="text-xs text-gray-400 mt-1">通常需要 10-20 秒</p>
+                      </div>
+                    )}
+
+                    {/* 生成失败 */}
+                    {pptStatus === "error" && (
+                      <div className="space-y-3">
+                        <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-red-500 text-sm">❌ {pptError}</div>
+                        <Button size="sm" variant="outline" onClick={() => setPptStatus("selecting")}>重新选择场景</Button>
+                      </div>
+                    )}
+
+                    {/* 生成完成：展示 JSON 结构 */}
+                    {pptStatus === "done" && pptContent && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm font-semibold text-gray-700">
+                              ✅ 内容结构已生成：{pptContent.total_pages} 页
+                              <span className="ml-2 text-xs font-normal text-gray-400">
+                                ({pptScene === "defense" ? "🎓 答辩风格" : "📊 组会风格"})
+                              </span>
+                            </p>
+                            <p className="text-xs text-gray-400 mt-0.5">
+                              {pptContent.slides?.length} 张幻灯片 ·
+                              {pptContent.slides?.filter((s: {type: string}) => s.type === "content").length} 页内容
+                            </p>
+                          </div>
+                          <Button size="sm" variant="outline" onClick={() => setPptStatus("selecting")} className="text-xs">
+                            换场景
+                          </Button>
+                        </div>
+
+                        {/* 幻灯片结构预览 */}
+                        <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                          {pptContent.slides?.map((slide: {type: string; title?: string; number?: string; items?: string[]; points?: string[]}, i: number) => (
+                            <div key={i} className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs ${
+                              slide.type === "cover"    ? "bg-indigo-50 text-indigo-700" :
+                              slide.type === "contents" ? "bg-purple-50 text-purple-700" :
+                              slide.type === "section"  ? "bg-blue-50 text-blue-700" :
+                              slide.type === "ending"   ? "bg-gray-50 text-gray-500" :
+                              "bg-white border border-gray-100 text-gray-700"
+                            }`}>
+                              <span className="shrink-0 font-mono text-gray-300 w-6 text-right">{i + 1}</span>
+                              <span className="shrink-0 font-medium w-12">
+                                {slide.type === "cover"    ? "封面" :
+                                 slide.type === "contents" ? "目录" :
+                                 slide.type === "section"  ? `第${slide.number}章` :
+                                 slide.type === "ending"   ? "结尾" : "内容"}
+                              </span>
+                              <span className="flex-1 truncate">
+                                {slide.type === "contents"
+                                  ? (slide.items ?? []).join(" · ")
+                                  : slide.type === "content"
+                                  ? `${slide.title}（${slide.points?.length ?? 0} 要点）`
+                                  : slide.title ?? ""}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* JSON 原始数据（供确认结构用） */}
+                        <details className="group">
+                          <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-600 select-none">
+                            查看完整 JSON 结构 ▶
+                          </summary>
+                          <pre className="mt-2 bg-gray-50 rounded-xl p-3 text-xs text-gray-600 overflow-x-auto overflow-y-auto max-h-80 leading-relaxed font-mono border border-gray-100 whitespace-pre-wrap">
+                            {JSON.stringify(pptContent, null, 2)}
+                          </pre>
+                        </details>
+
+                        <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 text-xs text-amber-700">
+                          ⏳ PPT 文件生成功能即将推出，确认结构后可下载 .pptx 文件
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
