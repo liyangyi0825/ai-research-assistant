@@ -4,12 +4,13 @@
 export const FREE_MONTHLY_LIMITS = {
   summarize: 5,           // 论文总结每月5次
   chat: 30,               // 对话每月30次
-  keyword_gen: 20,        // 关键词矩阵每月20次
-  bibtex_export: 30,      // BibTeX导出每月30次
-  concept_explore: 10,    // 概念探索器每月10次（最贵，限制严格些）
-  profile_summarize: 5,   // 科研档案AI整理每月5次
   translate: 3,           // 全文翻译每月3次（成本较高）
   ppt_generate: 3,        // 生成PPT每月3次
+  concept_explore: 10,    // 概念探索器每月10次
+  keyword_gen: 20,        // 关键词矩阵每月20次
+  bibtex_export: 30,      // BibTeX导出每月30次
+  extract_refs: 10,       // PDF文件提取每月10次
+  profile_summarize: 5,   // 科研档案AI整理每月5次
 } as const;
 
 export type UsageActionType = keyof typeof FREE_MONTHLY_LIMITS;

@@ -3,11 +3,21 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { extractTextFromPDF } from "@/lib/pdf";
+import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {
+    // 用量检查（每月最多提取 10 次 PDF）
+    const { allowed, used, limit, userId } = await checkUsageLimit("extract_refs");
+    if (!allowed) {
+      return NextResponse.json(
+        { error: `本月 PDF 上传次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 }
+      );
+    }
+
     let formData: FormData;
     try {
       formData = await req.formData();
@@ -45,6 +55,11 @@ export async function POST(req: NextRequest) {
 
     // 提取文字
     const text = await extractTextFromPDF(file);
+
+    // 记录用量（不影响主流程；PDF提取无 AI token，填0）
+    if (userId) {
+      insertUsageRecord({ userId, actionType: "extract_refs", tokensInput: 0, tokensOutput: 0 }).catch(() => {});
+    }
 
     return NextResponse.json({ text });
   } catch (error) {

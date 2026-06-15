@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Sidebar } from "./Sidebar";
 
 // 这些路径不显示侧边栏
-const AUTH_PATHS = ["/login", "/auth", "/reset-password"];
+const AUTH_PATHS = ["/login", "/auth", "/reset-password", "/admin"];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
