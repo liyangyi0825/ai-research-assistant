@@ -725,20 +725,6 @@ function UploadPageInner() {
                   })}
                   <div className="flex gap-2 flex-wrap">
                     <Button variant="outline" className="flex-1" onClick={handleSummarize}>重新生成总结</Button>
-                    <Button
-                      variant="outline"
-                      className="text-amber-700 border-amber-300 hover:bg-amber-50"
-                      onClick={() => setCurrentView("translate")}
-                    >
-                      🌐 全文翻译
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="text-indigo-700 border-indigo-300 hover:bg-indigo-50"
-                      onClick={() => setPptStatus(s => s === "selecting" ? "idle" : "selecting")}
-                    >
-                      📊 生成 PPT
-                    </Button>
                   </div>
                 </div>
               )}
