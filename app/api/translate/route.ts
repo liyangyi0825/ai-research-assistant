@@ -53,7 +53,7 @@ ${limited.join("\n[PARA]\n")}`;
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
-        max_tokens: 8000,
+        max_tokens: 2000,
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),
