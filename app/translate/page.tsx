@@ -52,16 +52,14 @@ export default function TranslatePage() {
       if (!res.ok) throw new Error(data.error || "解析失败");
       setExtractedText(data.text ?? "");
       setStage("done");
-      // 保存论文记录，标记已使用翻译功能
+      // 保存论文记录
       fetch("/api/my-papers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: file.name.replace(/\.pdf$/i, ""),
-          fileName: file.name,
-          extractedText: data.text ?? "",
-          charCount: (data.text ?? "").length,
-          featuresUsed: ["translate"],
+          title:    file.name.replace(/\.pdf$/i, ""),
+          content:  data.text ?? "",
+          fileSize: file.size,
         }),
       }).catch(() => {});
     } catch (err) {

@@ -26,7 +26,6 @@ export default function PptPage() {
   const [fileName, setFileName] = useState("");
   const [uploadError, setUploadError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const paperIdRef = useRef<string | null>(null);
 
   // PPT 生成
   const [pptStatus, setPptStatus] = useState<PptStatus>("idle");
@@ -67,21 +66,16 @@ export default function PptPage() {
       setExtractedText(data.text ?? "");
       setUploadStage("done");
       setPptStatus("selecting");
-      // 保存论文记录，功能标签在 PPT 生成完成后再标记
+      // 保存论文记录
       fetch("/api/my-papers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: file.name.replace(/\.pdf$/i, ""),
-          fileName: file.name,
-          extractedText: data.text ?? "",
-          charCount: (data.text ?? "").length,
-          featuresUsed: [],
+          title:    file.name.replace(/\.pdf$/i, ""),
+          content:  data.text ?? "",
+          fileSize: file.size,
         }),
-      })
-        .then(r => r.json())
-        .then(d => { if (d.id) paperIdRef.current = d.id; })
-        .catch(() => {});
+      }).catch(() => {});
     } catch (err) {
       clearTimeout(stageTimer);
       setUploadError(err instanceof Error ? err.message : "上传失败，请重试");
@@ -98,7 +92,6 @@ export default function PptPage() {
     setPptScene(null);
     setPptContent(null);
     setPptError("");
-    paperIdRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -117,15 +110,6 @@ export default function PptPage() {
       if (!res.ok) throw new Error(data.error || "生成失败");
       setPptContent(data.pptContent);
       setPptStatus("done");
-      // 标记已使用 PPT 功能
-      const id = paperIdRef.current;
-      if (id) {
-        fetch(`/api/my-papers/${id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ feature: "ppt" }),
-        }).catch(() => {});
-      }
     } catch (err) {
       setPptError(err instanceof Error ? err.message : "生成失败，请重试");
       setPptStatus("error");

@@ -135,7 +135,7 @@ export function Sidebar({ onClose }: SidebarProps) {
               {recentPapers.map((paper) => (
                 <li key={paper.id}>
                   <Link
-                    href={`/upload?paper=${paper.id}`}
+                    href={`/paper/${paper.id}`}
                     onClick={onClose}
                     className="flex flex-col px-3 py-2 rounded-lg transition-all hover:bg-slate-700/60 group"
                   >

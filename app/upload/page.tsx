@@ -94,8 +94,7 @@ function UploadPageInner() {
   const [extractError, setExtractError] = useState("");
   const [fileName, setFileName] = useState("");
 
-  // ── 论文数据库记录 ──
-  const paperIdRef = useRef<string | null>(null);
+  // (no paper-id ref needed — we don't track per-feature usage)
 
   // ── AI 总结状态 ──
   // loading = 等待第一个 token；streaming = 文字正在流入；done = 完成
@@ -171,45 +170,26 @@ function UploadPageInner() {
         if (!res.ok) return;
         const { paper } = await res.json();
         if (!paper) return;
-        setFileName(paper.file_name || paper.title);
-        setExtractedText(paper.extracted_text || "");
+        setFileName(paper.title);
+        setExtractedText(paper.content || "");
         setExtractStatus("done");
-        paperIdRef.current = paper.id;
       } catch { /* 静默失败 */ }
     }
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── 论文记录辅助函数 ──
-  async function savePaperToDB(text: string, file_name: string) {
+  // ── 提取完成后保存到数据库 ──
+  async function savePaperToDB(text: string, file: File) {
     try {
-      const res = await fetch("/api/my-papers", {
+      await fetch("/api/my-papers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: file_name.replace(/\.pdf$/i, ""),
-          fileName: file_name,
-          extractedText: text,
-          charCount: text.length,
-          featuresUsed: [],
+          title:    file.name.replace(/\.pdf$/i, ""),
+          content:  text,
+          fileSize: file.size,
         }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        paperIdRef.current = data.id;
-      }
-    } catch { /* 静默失败 */ }
-  }
-
-  async function markFeature(feature: string) {
-    const id = paperIdRef.current;
-    if (!id) return;
-    try {
-      await fetch(`/api/my-papers/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ feature }),
       });
     } catch { /* 静默失败 */ }
   }
@@ -255,7 +235,7 @@ function UploadPageInner() {
       if (!res.ok) throw new Error(data.error || "解析失败");
       setExtractedText(data.text ?? "");
       setExtractStatus("done");
-      savePaperToDB(data.text ?? "", file.name);
+      savePaperToDB(data.text ?? "", file);
     } catch (err) {
       clearTimeout(stageTimer);
       setExtractStatus("error");
@@ -282,7 +262,6 @@ function UploadPageInner() {
     setPptScene(null);
     setPptContent(null);
     setPptError("");
-    paperIdRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -317,7 +296,6 @@ function UploadPageInner() {
 
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("done");
-      markFeature("summary");
     } catch (err) {
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("error");
@@ -344,7 +322,6 @@ function UploadPageInner() {
       if (!res.ok) throw new Error(data.error || "生成失败");
       setPptContent(data.pptContent);
       setPptStatus("done");
-      markFeature("ppt");
     } catch (err) {
       setPptError(err instanceof Error ? err.message : "生成失败，请重试");
       setPptStatus("error");
@@ -613,7 +590,7 @@ function UploadPageInner() {
                       size="sm"
                       variant="outline"
                       className="text-amber-700 border-amber-300 hover:bg-amber-50 shrink-0"
-                      onClick={() => { setCurrentView("translate"); markFeature("translate"); }}
+                      onClick={() => setCurrentView("translate")}
                     >
                       🌐 全文翻译
                     </Button>
@@ -629,7 +606,7 @@ function UploadPageInner() {
                     <Button
                       variant="outline"
                       className="text-amber-700 border-amber-300 hover:bg-amber-50"
-                      onClick={() => { setCurrentView("translate"); markFeature("translate"); }}
+                      onClick={() => setCurrentView("translate")}
                     >
                       🌐 全文翻译
                     </Button>

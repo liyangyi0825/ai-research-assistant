@@ -8,17 +8,9 @@ import { Header } from "@/components/Header";
 interface Paper {
   id: string;
   title: string;
-  file_name: string | null;
-  char_count: number;
-  features_used: string[];
+  file_size: number | null;
   created_at: string;
 }
-
-const FEATURE_CFG: Record<string, { icon: string; label: string; cls: string }> = {
-  summary:   { icon: "📋", label: "总结",  cls: "bg-blue-50 text-blue-600 border-blue-100" },
-  translate: { icon: "🌐", label: "翻译",  cls: "bg-amber-50 text-amber-600 border-amber-100" },
-  ppt:       { icon: "🎯", label: "PPT",   cls: "bg-purple-50 text-purple-600 border-purple-100" },
-};
 
 const PAGE_SIZE = 20;
 
@@ -28,14 +20,20 @@ function formatDate(iso: string) {
   });
 }
 
+function formatFileSize(bytes: number | null): string {
+  if (!bytes) return "";
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function MyPapersPage() {
   const router = useRouter();
-  const [papers, setPapers]     = useState<Paper[]>([]);
-  const [total, setTotal]       = useState(0);
-  const [page, setPage]         = useState(1);
-  const [search, setSearch]     = useState("");
-  const [query, setQuery]       = useState(""); // debounced
-  const [loading, setLoading]   = useState(true);
+  const [papers, setPapers]   = useState<Paper[]>([]);
+  const [total, setTotal]     = useState(0);
+  const [page, setPage]       = useState(1);
+  const [search, setSearch]   = useState("");
+  const [query, setQuery]     = useState(""); // debounced
+  const [loading, setLoading] = useState(true);
 
   // 300 ms debounce
   useEffect(() => {
@@ -47,11 +45,11 @@ export default function MyPapersPage() {
     setLoading(true);
     try {
       const params = new URLSearchParams({
-        page: page.toString(),
+        page:     page.toString(),
         pageSize: PAGE_SIZE.toString(),
         ...(query ? { search: query } : {}),
       });
-      const res = await fetch(`/api/my-papers?${params}`);
+      const res  = await fetch(`/api/my-papers?${params}`);
       const data = await res.json();
       setPapers(data.papers ?? []);
       setTotal(data.total ?? 0);
@@ -116,7 +114,7 @@ export default function MyPapersPage() {
           <div className="text-center py-16 text-gray-400">
             <div className="text-5xl mb-4">📭</div>
             <p className="text-base">
-              {query ? `没有找到「${query}」相关的论文` : "还没有上传过论文"}
+              {query ? `没有找到「${query}」相关的论文` : "还没有上传过论文，去上传第一篇吧"}
             </p>
             {!query && (
               <Link href="/upload" className="mt-3 inline-block text-sm text-blue-500 hover:underline">
@@ -142,52 +140,25 @@ export default function MyPapersPage() {
               {papers.map((paper) => (
                 <div
                   key={paper.id}
-                  onClick={() => router.push(`/upload?paper=${paper.id}`)}
+                  onClick={() => router.push(`/paper/${paper.id}`)}
                   className="bg-white rounded-xl border border-gray-100 px-4 py-3.5 hover:border-blue-200 hover:shadow-sm transition-all cursor-pointer group"
                 >
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      {/* 标题 */}
-                      <p className="font-semibold text-gray-800 text-sm leading-snug group-hover:text-blue-600 transition-colors">
+                      <p className="font-semibold text-gray-800 text-sm leading-snug group-hover:text-blue-600 transition-colors truncate">
                         {paper.title}
                       </p>
-                      {/* 文件名（如与标题不同则显示） */}
-                      {paper.file_name && paper.file_name !== paper.title && (
-                        <p className="text-xs text-gray-400 mt-0.5 truncate">{paper.file_name}</p>
-                      )}
-                      {/* 时间 + 字符数 */}
                       <p className="text-xs text-gray-400 mt-1">
                         {formatDate(paper.created_at)}
-                        {paper.char_count > 0 && (
-                          <span className="ml-2 text-gray-300">·</span>
-                        )}
-                        {paper.char_count > 0 && (
-                          <span className="ml-2">{paper.char_count.toLocaleString()} 字符</span>
+                        {paper.file_size && (
+                          <>
+                            <span className="mx-1.5 text-gray-300">·</span>
+                            {formatFileSize(paper.file_size)}
+                          </>
                         )}
                       </p>
                     </div>
-
-                    {/* 功能标签 */}
-                    <div className="flex gap-1.5 shrink-0 flex-wrap justify-end">
-                      {paper.features_used.length === 0 ? (
-                        <span className="text-xs text-gray-300 px-2 py-0.5 rounded-full border border-gray-100">
-                          未分析
-                        </span>
-                      ) : (
-                        paper.features_used.map((f) => {
-                          const cfg = FEATURE_CFG[f];
-                          if (!cfg) return null;
-                          return (
-                            <span
-                              key={f}
-                              className={`text-xs px-2 py-0.5 rounded-full border font-medium ${cfg.cls}`}
-                            >
-                              {cfg.icon} {cfg.label}
-                            </span>
-                          );
-                        })
-                      )}
-                    </div>
+                    <span className="shrink-0 text-gray-300 group-hover:text-blue-400 transition-colors text-sm">→</span>
                   </div>
                 </div>
               ))}
@@ -203,9 +174,7 @@ export default function MyPapersPage() {
                 >
                   ← 上一页
                 </button>
-                <span className="text-sm text-gray-500">
-                  {page} / {totalPages} 页
-                </span>
+                <span className="text-sm text-gray-500">{page} / {totalPages} 页</span>
                 <button
                   onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   disabled={page === totalPages}
