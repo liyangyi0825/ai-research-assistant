@@ -30,17 +30,23 @@ export async function POST(req: NextRequest) {
     // 最多翻译 80 段，避免超 token 限制
     const limited = paragraphs.slice(0, 80);
 
-    const prompt = `你是专业的科技论文翻译专家，请将以下英文论文段落逐段翻译成中文。
+    const prompt = `你是专业的科技论文翻译专家。你的任务是将给定的 ${limited.length} 个英文段落逐一翻译成中文。
 
-翻译规则：
-1. 严格按照原文段落顺序逐段翻译，不得合并段落、不得拆分段落
-2. 章节标题保留原有编号，例如"1. Introduction"译为"1. 引言"，"2.1 Methods"译为"2.1 方法"
-3. 专业术语用"中文（English）"格式，例如"界面钝化（interface passivation）"
-4. 人名、机构名、期刊名、数据集名称保留英文原文
-5. 每段译文之间用 [|||] 分隔，数量必须与原文段落数完全一致（共 ${limited.length} 段就输出 ${limited.length} 段译文）
-6. 只输出译文，不要解释，不要重复原文
+【核心要求——必须严格遵守】
+- 输入有 ${limited.length} 个段落，你必须输出恰好 ${limited.length} 个译文，一一对应，不得多也不得少
+- 段落之间用 [|||] 分隔，除此之外不要输出任何其他内容
+- 禁止合并段落、禁止拆分段落、禁止跳过段落
+- 禁止输出原文、禁止解释、禁止加注释
 
-需要翻译的段落（共 ${limited.length} 段，段落之间用 [PARA] 分隔）：
+翻译规范：
+1. 章节标题保留原有编号，例如"1. Introduction"→"1. 引言"，"2.1 Methods"→"2.1 方法"
+2. 专业术语格式：中文（English），例如"界面钝化（interface passivation）"
+3. 人名、机构名、期刊名、数据集名称保留英文原文
+
+输出格式示例（假设输入3段）：
+第一段的中文译文[|||]第二段的中文译文[|||]第三段的中文译文
+
+现在请翻译以下 ${limited.length} 个段落（段落之间用 [PARA] 标记分隔）：
 
 ${limited.join("\n[PARA]\n")}`;
 

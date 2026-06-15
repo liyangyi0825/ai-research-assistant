@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 
 // ── SSE 流解析 ─────────────────────────────────────────────────────────────
@@ -44,12 +44,17 @@ interface Para { text: string; type: ParaType; }
 // 判断是否为标题类行（数字编号、全大写、Abstract、References 等）
 function looksLikeHeading(line: string): boolean {
   if (line.length >= 150) return false;
+  if (line.length < 2) return false;
+  // 全大写行：无小写字母、有大写字母、至少 6 字符（覆盖 INTRODUCTION / MATERIALS AND METHODS 等）
+  const isAllCaps = !/[a-z]/.test(line) && /[A-Z]/.test(line) && line.length >= 6;
   return (
     /^abstract$/i.test(line) ||
     /^(references?|bibliography|works\s+cited)$/i.test(line) ||
-    /^(\d+\.[\d.]* +\S)/.test(line) ||   // 1. Intro / 1.1 Methods
-    /^[IVX]+\. +[A-Z]/.test(line) ||      // II. RELATED WORK
-    /^[A-Z][A-Z\s\-:,]{5,}[A-Z]$/.test(line) // ALL CAPS HEADING
+    /^keywords?\s*:/i.test(line) ||              // Keywords: / Key Words:
+    /^\d+\.[\d.]*\s+\S/.test(line) ||            // 1. Intro / 1.1 Methods
+    /^\d+\s+[A-Z]/.test(line) ||                 // 1 Introduction（无点）
+    /^[IVX]+\.\s+[A-Z]/.test(line) ||            // II. RELATED WORK
+    isAllCaps                                     // 全大写标题
   );
 }
 
@@ -258,6 +263,19 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
     .filter(Boolean)
     .join("\n\n");
 
+  // 计算摘要正文段落（Abstract 标题之后、下一个标题之前的普通段落）
+  const abstractBodyIdxs = useMemo(() => {
+    const idxs = new Set<number>();
+    let inAbstract = false;
+    for (let i = 0; i < paragraphs.length; i++) {
+      const p = paragraphs[i];
+      if (p.type === "abstract") { inAbstract = true; continue; }
+      if (inAbstract && (p.type === "heading" || p.type === "reference")) { inAbstract = false; }
+      if (inAbstract && p.type === "paragraph") idxs.add(i);
+    }
+    return idxs;
+  }, [paragraphs]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       {/* ── 顶部工具栏 ── */}
@@ -308,6 +326,7 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
               const zh = translations[i] ?? "";
               const isHeadingType = para.type === "heading" || para.type === "abstract";
               const isRef = para.type === "reference";
+              const isAbstractBody = abstractBodyIdxs.has(i);
 
               // 有内容且不是当前流式段落 → 已完成
               const isDone = !isRef && !!zh.trim() && i !== streamingParaIdx;
@@ -318,13 +337,21 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
                 <div
                   key={i}
                   className={`grid grid-cols-1 md:grid-cols-2 ${
-                    isHeadingType ? "border-l-4 border-l-blue-400" : isRef ? "opacity-60" : ""
+                    isHeadingType
+                      ? "border-l-4 border-l-blue-500 mt-2"
+                      : isAbstractBody
+                      ? "border-l-4 border-l-blue-200"
+                      : isRef
+                      ? "opacity-60"
+                      : ""
                   }`}
                 >
                   {/* 左：英文原文 */}
                   <div className={`px-4 py-3 md:border-r border-gray-100 leading-relaxed ${
                     isHeadingType
-                      ? "font-bold text-gray-900 text-[15px] bg-blue-50/80"
+                      ? "font-bold text-gray-900 text-base bg-gray-50"
+                      : isAbstractBody
+                      ? "text-sm text-gray-700 bg-blue-50/30 pl-6"
                       : isRef
                       ? "text-xs text-gray-500 bg-gray-50"
                       : "text-sm text-gray-700 bg-blue-50/30"
@@ -336,12 +363,14 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
                   </div>
 
                   {/* 右：中文译文 */}
-                  <div className={`px-4 py-3 leading-relaxed bg-white relative group ${
+                  <div className={`px-4 py-3 leading-relaxed relative group ${
                     isHeadingType
-                      ? "font-bold text-gray-900 text-[15px]"
+                      ? "font-bold text-gray-900 text-base bg-gray-50"
+                      : isAbstractBody
+                      ? "text-sm text-gray-800 bg-white pl-6"
                       : isRef
-                      ? "text-xs text-gray-500"
-                      : "text-sm text-gray-800"
+                      ? "text-xs text-gray-500 bg-white"
+                      : "text-sm text-gray-800 bg-white"
                   }`}>
                     {isRef ? (
                       zh // 参考文献右侧显示英文原文
