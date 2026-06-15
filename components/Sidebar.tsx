@@ -10,10 +10,10 @@ const NAV_GROUPS = [
     items: [
       { icon: "📄", label: "上传论文", href: "/upload" },
       { icon: "💬", label: "与论文对话", href: "/upload" },
+      { icon: "🌐", label: "全文翻译", href: "/upload" },
       { icon: "🔍", label: "生成检索词", href: "/literature-search" },
       { icon: "🧭", label: "概念探索器", href: "/concept-explorer" },
       { icon: "🎯", label: "论文转 PPT", href: "/upload" },
-      { icon: "🌐", label: "全文翻译", href: "/upload" },
     ],
   },
   {
@@ -46,12 +46,19 @@ export function Sidebar({ onClose }: SidebarProps) {
     window.location.href = "/login";
   }
 
+  function openFeedback() {
+    window.dispatchEvent(new Event("open-feedback"));
+    onClose?.();
+  }
+
   function isActive(href: string) {
     if (href === "/upload") {
       return pathname === "/" || pathname === "/upload";
     }
     return pathname === href || pathname.startsWith(href + "/");
   }
+
+  const avatarLetter = email ? email[0].toUpperCase() : "U";
 
   return (
     <aside
@@ -70,7 +77,6 @@ export function Sidebar({ onClose }: SidebarProps) {
             易研
           </span>
         </Link>
-        {/* 移动端关闭按钮 */}
         {onClose && (
           <button
             onClick={onClose}
@@ -114,7 +120,6 @@ export function Sidebar({ onClose }: SidebarProps) {
                           : "text-slate-300 hover:bg-slate-700/60 hover:text-white"
                       }`}
                     >
-                      {/* 左侧蓝色高亮竖线 */}
                       {active && (
                         <span
                           className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r"
@@ -130,37 +135,75 @@ export function Sidebar({ onClose }: SidebarProps) {
             </ul>
           </div>
         ))}
+
+        {/* 其他 */}
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider px-3 mb-1.5" style={{ color: "#64748B" }}>
+            其他
+          </p>
+          <ul className="space-y-0.5">
+            <li>
+              <button
+                onClick={openFeedback}
+                className="relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all w-full text-left text-slate-300 hover:bg-slate-700/60 hover:text-white"
+              >
+                <span className="text-base leading-none">💬</span>
+                <span>意见反馈</span>
+              </button>
+            </li>
+            <li>
+              <Link
+                href="/help"
+                onClick={onClose}
+                className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
+                  pathname === "/help"
+                    ? "bg-slate-700 text-white font-medium"
+                    : "text-slate-300 hover:bg-slate-700/60 hover:text-white"
+                }`}
+              >
+                {pathname === "/help" && (
+                  <span
+                    className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r"
+                    style={{ background: "#3B82F6" }}
+                  />
+                )}
+                <span className="text-base leading-none">❓</span>
+                <span>帮助中心</span>
+              </Link>
+            </li>
+          </ul>
+        </div>
       </nav>
 
       {/* ── 底部用户信息 ─────────────────────────────────── */}
       <div className="px-2 pb-3 pt-2 border-t border-slate-700">
-        {email && (
-          <p className="text-xs truncate px-3 mb-1.5" style={{ color: "#94A3B8" }}>
-            {email}
+        {/* 头像 + 邮箱 + 退出 */}
+        <div className="flex items-center gap-2.5 px-2 py-2">
+          <div
+            className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-sm font-bold text-white"
+            style={{ background: "#3B82F6" }}
+          >
+            {avatarLetter}
+          </div>
+          <p className="text-xs truncate flex-1" style={{ color: "#94A3B8" }}>
+            {email ?? "未登录"}
           </p>
-        )}
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-2 w-full px-3 py-2 text-sm rounded-lg transition-all"
-          style={{ color: "#94A3B8" }}
-          onMouseEnter={e => {
-            (e.currentTarget as HTMLButtonElement).style.color = "#F87171";
-            (e.currentTarget as HTMLButtonElement).style.background = "rgba(239,68,68,0.1)";
-          }}
-          onMouseLeave={e => {
-            (e.currentTarget as HTMLButtonElement).style.color = "#94A3B8";
-            (e.currentTarget as HTMLButtonElement).style.background = "transparent";
-          }}
-        >
-          <span>🚪</span>
-          <span>退出登录</span>
-        </button>
+          <button
+            onClick={handleLogout}
+            title="退出登录"
+            className="shrink-0 text-slate-500 hover:text-red-400 transition-colors p-1 rounded"
+            aria-label="退出登录"
+          >
+            🚪
+          </button>
+        </div>
+
         {/* ICP 备案 */}
         <a
           href="https://beian.miit.gov.cn"
           target="_blank"
           rel="noopener noreferrer"
-          className="block text-center text-xs mt-2 transition-colors"
+          className="block text-center text-xs mt-1.5 transition-colors"
           style={{ color: "#334155" }}
           onMouseEnter={e => (e.currentTarget.style.color = "#64748B")}
           onMouseLeave={e => (e.currentTarget.style.color = "#334155")}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 
 const MIN_LEN = 10;
@@ -8,6 +8,12 @@ const MAX_LEN = 500;
 
 export function FeedbackWidget() {
   const [isOpen, setIsOpen] = useState(false);
+
+  useEffect(() => {
+    function onOpenFeedback() { setIsOpen(true); }
+    window.addEventListener("open-feedback", onOpenFeedback);
+    return () => window.removeEventListener("open-feedback", onOpenFeedback);
+  }, []);
   const [message, setMessage] = useState("");
   const [email, setEmail] = useState("");
   const [screenshot, setScreenshot] = useState<File | null>(null);
