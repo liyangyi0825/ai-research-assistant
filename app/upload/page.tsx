@@ -132,6 +132,7 @@ export default function UploadPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [pptContent, setPptContent] = useState<any>(null);
   const [pptError, setPptError] = useState("");
+  const [pptDownloading, setPptDownloading] = useState(false);
 
   // ── 引用格式状态 ──
   const [citeStatus, setCiteStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -283,6 +284,38 @@ export default function UploadPage() {
     } catch (err) {
       setPptError(err instanceof Error ? err.message : "生成失败，请重试");
       setPptStatus("error");
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 下载 PPTX 文件（把已生成的 JSON 结构渲染成二进制，不消耗 AI 配额）
+  // ─────────────────────────────────────────────────────────────────────────────
+  async function handlePptDownload() {
+    if (!pptContent || pptDownloading) return;
+    setPptDownloading(true);
+    try {
+      const res = await fetch("/api/ppt/generate-file", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pptContent }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || "下载失败");
+      }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `${pptContent.title || "演示文稿"}.pptx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "下载失败，请重试");
+    } finally {
+      setPptDownloading(false);
     }
   }
 
@@ -620,45 +653,57 @@ export default function UploadPage() {
 
                         {/* 幻灯片结构预览 */}
                         <div className="space-y-1.5 max-h-64 overflow-y-auto">
-                          {pptContent.slides?.map((slide: {type: string; title?: string; number?: string; items?: string[]; points?: string[]}, i: number) => (
-                            <div key={i} className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs ${
-                              slide.type === "cover"    ? "bg-indigo-50 text-indigo-700" :
-                              slide.type === "contents" ? "bg-purple-50 text-purple-700" :
-                              slide.type === "section"  ? "bg-blue-50 text-blue-700" :
-                              slide.type === "ending"   ? "bg-gray-50 text-gray-500" :
-                              "bg-white border border-gray-100 text-gray-700"
-                            }`}>
-                              <span className="shrink-0 font-mono text-gray-300 w-6 text-right">{i + 1}</span>
-                              <span className="shrink-0 font-medium w-12">
-                                {slide.type === "cover"    ? "封面" :
-                                 slide.type === "contents" ? "目录" :
-                                 slide.type === "section"  ? `第${slide.number}章` :
-                                 slide.type === "ending"   ? "结尾" : "内容"}
-                              </span>
-                              <span className="flex-1 truncate">
-                                {slide.type === "contents"
-                                  ? (slide.items ?? []).join(" · ")
-                                  : slide.type === "content"
-                                  ? `${slide.title}（${slide.points?.length ?? 0} 要点）`
-                                  : slide.title ?? ""}
-                              </span>
-                            </div>
-                          ))}
+                          {pptContent.slides?.map((slide: {type: string; title?: string; number?: string; items?: string[]; points?: string[]; stats?: unknown[]; headers?: string[]; columns?: unknown[]}, i: number) => {
+                            const typeLabel =
+                              slide.type === "cover"      ? "封面" :
+                              slide.type === "contents"   ? "目录" :
+                              slide.type === "section"    ? `第${slide.number}章` :
+                              slide.type === "ending"     ? "结尾" :
+                              slide.type === "stats"      ? "数据" :
+                              slide.type === "table"      ? "表格" :
+                              slide.type === "comparison" ? "对比" : "内容";
+                            const colorClass =
+                              slide.type === "cover"      ? "bg-indigo-50 text-indigo-700" :
+                              slide.type === "contents"   ? "bg-purple-50 text-purple-700" :
+                              slide.type === "section"    ? "bg-blue-50 text-blue-700" :
+                              slide.type === "ending"     ? "bg-gray-50 text-gray-500" :
+                              slide.type === "stats"      ? "bg-amber-50 text-amber-700" :
+                              slide.type === "table"      ? "bg-teal-50 text-teal-700" :
+                              slide.type === "comparison" ? "bg-orange-50 text-orange-700" :
+                              "bg-white border border-gray-100 text-gray-700";
+                            const detail =
+                              slide.type === "contents"
+                                ? (slide.items ?? []).join(" · ")
+                                : slide.type === "content"
+                                ? `${slide.title}（${slide.points?.length ?? 0} 要点）`
+                                : slide.type === "stats"
+                                ? `${slide.title}（${(slide.stats ?? []).length} 个数据卡片）`
+                                : slide.type === "table"
+                                ? `${slide.title}（${(slide.headers ?? []).length} 列）`
+                                : slide.type === "comparison"
+                                ? `${slide.title}（${(slide.columns ?? []).length} 列对比）`
+                                : slide.title ?? "";
+                            return (
+                              <div key={i} className={`flex items-start gap-2 px-3 py-2 rounded-lg text-xs ${colorClass}`}>
+                                <span className="shrink-0 font-mono text-gray-300 w-6 text-right">{i + 1}</span>
+                                <span className="shrink-0 font-medium w-12">{typeLabel}</span>
+                                <span className="flex-1 truncate">{detail}</span>
+                              </div>
+                            );
+                          })}
                         </div>
 
-                        {/* JSON 原始数据（供确认结构用） */}
-                        <details className="group">
-                          <summary className="cursor-pointer text-xs text-gray-400 hover:text-gray-600 select-none">
-                            查看完整 JSON 结构 ▶
-                          </summary>
-                          <pre className="mt-2 bg-gray-50 rounded-xl p-3 text-xs text-gray-600 overflow-x-auto overflow-y-auto max-h-80 leading-relaxed font-mono border border-gray-100 whitespace-pre-wrap">
-                            {JSON.stringify(pptContent, null, 2)}
-                          </pre>
-                        </details>
-
-                        <div className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2 text-xs text-amber-700">
-                          ⏳ PPT 文件生成功能即将推出，确认结构后可下载 .pptx 文件
-                        </div>
+                        {/* 下载按钮 */}
+                        <Button
+                          onClick={handlePptDownload}
+                          disabled={pptDownloading}
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
+                        >
+                          {pptDownloading
+                            ? "正在生成 PPTX…"
+                            : "⬇ 下载 PPTX 文件"}
+                        </Button>
+                        <p className="text-xs text-center text-gray-400">生成 PPTX 不消耗额外次数</p>
                       </div>
                     )}
                   </div>
