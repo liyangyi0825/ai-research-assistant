@@ -399,9 +399,6 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
         )}
       </main>
 
-      <footer className="text-center py-3 text-xs text-gray-400 border-t border-gray-200 bg-white/50 mt-4">
-        专业术语已保留英文原文（括号标注）· 人名机构名保留英文 · 参考文献保留英文
-      </footer>
     </div>
   );
 }

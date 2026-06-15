@@ -153,15 +153,6 @@ export default function PptPage() {
         <div className="w-full max-w-3xl space-y-5">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-1">🎯 论文转 PPT</h1>
-            <p className="text-sm sm:text-base text-gray-500">
-              上传 PDF 论文，AI 自动提取数据与结论，生成结构完整的幻灯片
-            </p>
-          </div>
-
-          {/* 说明 */}
-          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
-            <span className="font-medium">📌 说明：</span>
-            直接上传 PDF 即可，无需先生成论文总结。AI 会自动读取全文，重点提取数据、图表和核心结论。
           </div>
 
           {/* 上传区 */}
@@ -231,9 +222,6 @@ export default function PptPage() {
               <div className="bg-white rounded-2xl shadow-sm border border-indigo-100 overflow-hidden">
                 <div className="px-4 sm:px-6 py-3 sm:py-4 border-b border-indigo-50 bg-indigo-50">
                   <h2 className="font-semibold text-indigo-800">📊 生成 PPT 幻灯片</h2>
-                  <p className="text-xs sm:text-sm text-indigo-500 mt-0.5">
-                    AI 根据论文内容自动规划幻灯片结构，重点呈现数据与结论
-                  </p>
                 </div>
 
                 <div className="p-4 sm:p-6 space-y-4">
@@ -303,7 +291,6 @@ export default function PptPage() {
                       >
                         {pptDownloading ? "正在生成 PPTX…" : "⬇ 下载 PPTX 文件"}
                       </Button>
-                      <p className="text-xs text-center text-gray-400">下载不消耗额外次数</p>
                     </div>
                   )}
                 </div>

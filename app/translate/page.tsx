@@ -96,15 +96,6 @@ export default function TranslatePage() {
         <div className="w-full max-w-2xl space-y-6">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-1">🌐 全文对照翻译</h1>
-            <p className="text-sm sm:text-base text-gray-500">
-              上传 PDF 论文，AI 逐段翻译，原文与译文左右对照显示
-            </p>
-          </div>
-
-          {/* 提示说明 */}
-          <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800">
-            <span className="font-medium">📌 说明：</span>
-            直接上传 PDF 即可开始翻译，无需先生成论文总结，也不消耗总结额度。
           </div>
 
           {/* 上传区 */}
