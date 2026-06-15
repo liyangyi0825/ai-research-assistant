@@ -153,6 +153,9 @@ export default function PptPage() {
         <div className="w-full max-w-3xl space-y-5">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-1">🎯 论文转 PPT</h1>
+            <p className="text-sm sm:text-base text-gray-500">
+              上传 PDF 论文，AI 自动提取数据与结论，生成结构完整的幻灯片
+            </p>
           </div>
 
           {/* 上传区 */}

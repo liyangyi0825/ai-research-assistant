@@ -96,6 +96,9 @@ export default function TranslatePage() {
         <div className="w-full max-w-2xl space-y-6">
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-1">🌐 全文对照翻译</h1>
+            <p className="text-sm sm:text-base text-gray-500">
+              上传 PDF 论文，AI 逐段翻译，原文与译文左右对照显示
+            </p>
           </div>
 
           {/* 上传区 */}
