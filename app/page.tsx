@@ -1,104 +1,113 @@
-import Link from "next/link";
-import { buttonVariants } from "@/components/ui/button";
-import { Header } from "@/components/Header";
+"use client";
+import { useRef } from "react";
+import { useRouter } from "next/navigation";
 
 export default function Home() {
+  const router = useRouter();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  function handleFile(file: File) {
+    if (!file.name.toLowerCase().endsWith(".pdf")) return;
+    // 把文件存到 sessionStorage key，让 /upload 页面读取
+    // 当前框架阶段：直接跳转 /upload，具体流程在那里处理
+    router.push("/upload");
+  }
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
-      <Header />
+    <div
+      className="flex flex-col items-center justify-center min-h-full px-4 py-12"
+      style={{ background: "#F8FAFC" }}
+    >
+      {/* 标题区 */}
+      <div className="text-center mb-10">
+        <h1 className="text-3xl sm:text-4xl font-bold mb-3" style={{ color: "#0F172A" }}>
+          上传论文，开始 AI 分析
+        </h1>
+        <p className="text-base sm:text-lg" style={{ color: "#64748B" }}>
+          自动生成结构化总结，与论文对话，生成 PPT，一键翻译
+        </p>
+      </div>
 
-      {/* 主内容区 */}
-      <main className="flex-1 flex flex-col items-center justify-center px-4 sm:px-6 py-10 sm:py-20 pb-24 sm:pb-20 text-center">
-        <div className="max-w-2xl mx-auto w-full">
-          {/* 标题 */}
-          <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-3 sm:mb-4 leading-tight">
-            读论文，从此不再费力
-          </h1>
-          <p className="text-base sm:text-xl text-gray-600 mb-6 sm:mb-8 leading-relaxed">
-            上传 PDF 论文，AI 自动生成结构化总结，还能跟论文"对话"——
-            研究问题、方法、结论，一目了然。
-          </p>
-
-          {/* 功能卡片 */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 mb-7 sm:mb-10">
-            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex items-center gap-3 text-left">
-              <div className="text-3xl shrink-0">📄</div>
-              <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5">上传论文 · AI 总结</h3>
-                <p className="text-sm text-gray-500">上传 PDF，自动生成研究问题、方法、结论、创新点</p>
-              </div>
-            </div>
-            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-gray-100 flex items-center gap-3 text-left">
-              <div className="text-3xl shrink-0">💬</div>
-              <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5">与论文对话</h3>
-                <p className="text-sm text-gray-500">基于论文内容提问，AI 精准回答，还能导出引用格式</p>
-              </div>
-            </div>
-            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-blue-100 bg-blue-50/50 flex items-center gap-3 text-left">
-              <div className="text-3xl shrink-0">🔍</div>
-              <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5">检索词矩阵生成</h3>
-                <p className="text-sm text-gray-500">输入研究课题，AI 生成中英文检索词，一键直达知网、Google Scholar、arXiv</p>
-              </div>
-            </div>
-            <div className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-purple-100 bg-purple-50/30 flex items-center gap-3 text-left">
-              <div className="text-3xl shrink-0">🧭</div>
-              <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5">概念探索器</h3>
-                <p className="text-sm text-gray-500">输入专业名词，溯源 + 最新文献 + 关联概念 + 研究思路一站搞定</p>
-              </div>
-            </div>
-            <Link
-              href="/my-profile"
-              className="bg-white rounded-xl p-4 sm:p-5 shadow-sm border border-green-100 bg-green-50/30 flex items-center gap-3 text-left hover:shadow-md hover:border-green-200 transition-all col-span-1 sm:col-span-2"
-            >
-              <div className="text-3xl shrink-0">👤</div>
-              <div>
-                <h3 className="font-semibold text-gray-800 mb-0.5">我的科研档案</h3>
-                <p className="text-sm text-gray-500">告诉 AI 你的研究方向，让每次回答都更贴合你的课题</p>
-              </div>
-              <div className="ml-auto text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full shrink-0">
-                个性化
-              </div>
-            </Link>
+      {/* 上传区域 */}
+      <div
+        className="w-full max-w-xl cursor-pointer rounded-2xl border-2 border-dashed transition-all group"
+        style={{ borderColor: "#CBD5E1", background: "#FFFFFF" }}
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          const file = e.dataTransfer.files?.[0];
+          if (file) handleFile(file);
+        }}
+        onMouseEnter={e => {
+          (e.currentTarget as HTMLDivElement).style.borderColor = "#3B82F6";
+          (e.currentTarget as HTMLDivElement).style.background = "#EFF6FF";
+        }}
+        onMouseLeave={e => {
+          (e.currentTarget as HTMLDivElement).style.borderColor = "#CBD5E1";
+          (e.currentTarget as HTMLDivElement).style.background = "#FFFFFF";
+        }}
+      >
+        <div className="flex flex-col items-center justify-center py-16 px-8 gap-4">
+          {/* 图标 */}
+          <div
+            className="w-16 h-16 rounded-2xl flex items-center justify-center text-3xl shadow-sm"
+            style={{ background: "#EFF6FF" }}
+          >
+            📄
           </div>
 
-          {/* 行动按钮 */}
-          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Link
-              href="/upload"
-              className={buttonVariants({ size: "lg" }) + " w-full sm:w-auto"}
-            >
-              上传论文
-            </Link>
-            <Link
-              href="/literature-search"
-              className={buttonVariants({ size: "lg", variant: "outline" }) + " w-full sm:w-auto"}
-            >
-              🔍 生成检索词
-            </Link>
-            <Link
-              href="/concept-explorer"
-              className={buttonVariants({ size: "lg", variant: "outline" }) + " w-full sm:w-auto"}
-            >
-              🧭 概念探索器
-            </Link>
-            <Link
-              href="/my-profile"
-              className={buttonVariants({ size: "lg", variant: "outline" }) + " w-full sm:w-auto"}
-            >
-              👤 我的档案
-            </Link>
+          <div className="text-center">
+            <p className="font-semibold text-base mb-1" style={{ color: "#1E293B" }}>
+              点击选择文件，或拖拽 PDF 到这里
+            </p>
+            <p className="text-sm" style={{ color: "#94A3B8" }}>
+              支持 PDF 格式，最大 50MB
+            </p>
           </div>
 
+          <button
+            onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
+            className="mt-2 px-6 py-2.5 rounded-lg text-sm font-medium text-white transition-all"
+            style={{ background: "#3B82F6" }}
+            onMouseEnter={e => (e.currentTarget.style.background = "#2563EB")}
+            onMouseLeave={e => (e.currentTarget.style.background = "#3B82F6")}
+          >
+            选择文件上传
+          </button>
         </div>
-      </main>
 
-      {/* 底部 */}
-      <footer className="text-center py-4 text-xs text-gray-400 border-t border-gray-200 bg-white/50">
-        AI 科研助手 · 大学生文献阅读效率工具
-      </footer>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".pdf"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleFile(file);
+          }}
+        />
+      </div>
+
+      {/* 功能亮点（三列小卡片） */}
+      <div className="w-full max-w-xl mt-10 grid grid-cols-3 gap-3">
+        {[
+          { icon: "✨", text: "AI 论文总结" },
+          { icon: "💬", text: "与论文对话" },
+          { icon: "🎯", text: "一键生成 PPT" },
+        ].map((item) => (
+          <div
+            key={item.text}
+            className="flex flex-col items-center gap-1.5 py-4 rounded-xl text-center"
+            style={{ background: "#FFFFFF", border: "1px solid #E2E8F0" }}
+          >
+            <span className="text-xl">{item.icon}</span>
+            <span className="text-xs font-medium" style={{ color: "#475569" }}>
+              {item.text}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { FeedbackWidget } from "@/components/FeedbackWidget";
 import { LoginSuccessNotice } from "@/components/LoginSuccessNotice";
+import { AppShell } from "@/components/AppShell";
 import { Toaster } from "sonner";
 import "./globals.css";
 
@@ -37,21 +38,13 @@ export default function RootLayout({
       lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
-          {children}
+      <body className="h-full">
+          <AppShell>
+            {children}
+          </AppShell>
           <FeedbackWidget />
           <LoginSuccessNotice />
           <Toaster richColors position="top-center" />
-          <footer className="w-full py-3 text-center">
-            <a
-              href="https://beian.miit.gov.cn"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-gray-400 hover:text-gray-500 transition-colors"
-            >
-              津ICP备2026007356号
-            </a>
-          </footer>
         </body>
     </html>
   );
