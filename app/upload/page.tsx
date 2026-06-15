@@ -115,6 +115,10 @@ function UploadPageInner() {
   // ── 论文 ID（用于保存笔记时记录来源）──
   const [paperId, setPaperId] = useState<string | null>(null);
 
+  // ── 总结历史加载状态 ──
+  const [summaryFromDB, setSummaryFromDB]       = useState(false);
+  const [summaryUpdatedAt, setSummaryUpdatedAt] = useState<string | null>(null);
+
   // ── 保存笔记状态（按模块 key / 消息 index）──
   const [sectionSaveStatus, setSectionSaveStatus] = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
   const [chatSaveStatus, setChatSaveStatus]       = useState<Record<number, "idle" | "saving" | "saved" | "error">>({});
@@ -160,9 +164,9 @@ function UploadPageInner() {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // 总结完成后自动触发引用生成（每篇论文只触发一次）
+  // 总结完成后自动触发引用生成（从 DB 加载的已有总结不重复生成）
   useEffect(() => {
-    if (summaryStatus === "done" && citeStatus === "idle") {
+    if (summaryStatus === "done" && citeStatus === "idle" && !summaryFromDB) {
       generateCitation();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -182,6 +186,16 @@ function UploadPageInner() {
         setFileName(paper.title);
         setExtractedText(paper.content || "");
         setExtractStatus("done");
+
+        // 加载已保存的总结（有则直接显示，不需要重新生成）
+        const summaryRes  = await fetch(`/api/paper-summaries?paperId=${id}`);
+        const summaryData = await summaryRes.json();
+        if (summaryData.summary?.summary_content) {
+          setSummaryFromDB(true);
+          setSummaryUpdatedAt(summaryData.summary.updated_at ?? summaryData.summary.created_at);
+          setSummaryText(summaryData.summary.summary_content);
+          setSummaryStatus("done");
+        }
       } catch { /* 静默失败 */ }
     }
     load();
@@ -279,6 +293,8 @@ function UploadPageInner() {
     setPaperId(null);
     setSectionSaveStatus({});
     setChatSaveStatus({});
+    setSummaryFromDB(false);
+    setSummaryUpdatedAt(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -343,6 +359,8 @@ function UploadPageInner() {
     setSummaryStatus("loading");
     setSummaryError("");
     setSummaryText("");
+    setSummaryFromDB(false);
+    setSummaryUpdatedAt(null);
 
     try {
       const res = await fetch("/api/summarize", {
@@ -366,6 +384,14 @@ function UploadPageInner() {
 
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("done");
+      // 自动保存总结到数据库（静默，不影响用户体验）
+      if (paperId && fullText) {
+        fetch("/api/paper-summaries", {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body:    JSON.stringify({ paperId, summaryContent: fullText }),
+        }).catch(() => { /* 静默失败 */ });
+      }
     } catch (err) {
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("error");
@@ -655,7 +681,14 @@ function UploadPageInner() {
               {summaryStatus === "done" && (
                 <div className="space-y-3 sm:space-y-4">
                   <div className="flex items-center justify-between">
-                    <h2 className="text-lg sm:text-xl font-bold text-gray-800">📋 AI 论文总结</h2>
+                    <div>
+                      <h2 className="text-lg sm:text-xl font-bold text-gray-800">📋 AI 论文总结</h2>
+                      {summaryFromDB && summaryUpdatedAt && (
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          上次生成于 {new Date(summaryUpdatedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      )}
+                    </div>
                     <Button
                       size="sm"
                       variant="outline"
