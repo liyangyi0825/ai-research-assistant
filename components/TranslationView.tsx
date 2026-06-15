@@ -107,7 +107,7 @@ function splitIntoParagraphs(text: string): Para[] {
     result.push({ text: p, type });
   }
 
-  return result.slice(0, 120);
+  return result.slice(0, 300);
 }
 
 // ── 骨架屏 ─────────────────────────────────────────────────────────────────
@@ -188,6 +188,7 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paragraphs: texts }),
+        signal: AbortSignal.timeout(30000), // 30 秒超时
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -226,18 +227,23 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
     }
 
     // ── 循环翻译所有批次 ─────────────────────────────────────────────────
-    try {
-      setStatus("streaming");
-      for (let b = 0; b < translatableIdxs.length; b += BATCH_SIZE) {
-        const batchIdxs = translatableIdxs.slice(b, b + BATCH_SIZE);
+    setStatus("streaming");
+    for (let b = 0; b < translatableIdxs.length; b += BATCH_SIZE) {
+      const batchIdxs = translatableIdxs.slice(b, b + BATCH_SIZE);
+      try {
         await translateBatch(batchIdxs);
-        setProgressDone(b + batchIdxs.length);
+      } catch (e) {
+        // 这批失败 → 标记失败文字，继续下一批，不停止整体流程
+        console.error("第", b / BATCH_SIZE + 1, "批翻译失败:", e);
+        setTranslations(prev => {
+          const next = [...prev];
+          batchIdxs.forEach(idx => { next[idx] = "【翻译失败，请刷新页面重试】"; });
+          return next;
+        });
       }
-      setStatus("done");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "翻译失败，请重试");
-      setStatus("error");
+      setProgressDone(b + batchIdxs.length);
     }
+    setStatus("done");
   }, []);
 
   useEffect(() => {
