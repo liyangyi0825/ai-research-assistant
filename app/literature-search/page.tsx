@@ -190,6 +190,8 @@ function SearchResults({
   recommendText,
   recommendStatus,
   labelMap,
+  onSaveRecommend,
+  recommendSaveStatus,
 }: {
   papers: AnalyzedPaper[];
   topic: string;
@@ -198,6 +200,8 @@ function SearchResults({
   recommendText: string;
   recommendStatus: RecommendStatus;
   labelMap?: Record<string, PaperLabel>;
+  onSaveRecommend?: () => void;
+  recommendSaveStatus?: "idle" | "saving" | "saved" | "error";
 }) {
   const sorted = [...papers].sort((a, b) =>
     sortBy === "stars"
@@ -223,12 +227,20 @@ function SearchResults({
             {recommendStatus === "error" && (
               <span className="text-xs text-red-500">分析失败，请重新搜索</span>
             )}
-            {recommendStatus === "done" && recommendText && (
+            {recommendStatus === "done" && recommendText && onSaveRecommend && (
               <button
-                onClick={() => toast.info("「保存单条到笔记」功能即将上线 ✨")}
-                className="ml-auto text-xs text-amber-600 hover:text-blue-500 transition-colors flex items-center gap-1"
+                onClick={onSaveRecommend}
+                disabled={recommendSaveStatus === "saving" || recommendSaveStatus === "saved"}
+                className={`ml-auto text-xs transition-colors flex items-center gap-1 ${
+                  recommendSaveStatus === "saved" ? "text-green-500 cursor-default" :
+                  recommendSaveStatus === "error" ? "text-red-400 hover:text-red-500" :
+                  "text-amber-600 hover:text-blue-500"
+                }`}
               >
-                💾 保存到笔记
+                {recommendSaveStatus === "saving" ? "保存中…" :
+                 recommendSaveStatus === "saved"  ? "✓ 已保存" :
+                 recommendSaveStatus === "error"  ? "❌ 重试" :
+                 "💾 保存到笔记"}
               </button>
             )}
           </div>
@@ -319,9 +331,10 @@ export default function LiteratureSearchPage() {
   const [sortBy, setSortBy]               = useState<SortBy>("stars");
 
   // AI 综合推荐状态（每个组合独立）
-  const [recommendStatus, setRecommendStatus] = useState<Record<number, RecommendStatus>>({});
-  const [recommendText,   setRecommendText]   = useState<Record<number, string>>({});
-  const [paperLabels,     setPaperLabels]     = useState<Record<number, Record<string, PaperLabel>>>({});
+  const [recommendStatus,     setRecommendStatus]     = useState<Record<number, RecommendStatus>>({});
+  const [recommendText,       setRecommendText]       = useState<Record<number, string>>({});
+  const [paperLabels,         setPaperLabels]         = useState<Record<number, Record<string, PaperLabel>>>({});
+  const [recommendSaveStatus, setRecommendSaveStatus] = useState<Record<number, "idle" | "saving" | "saved" | "error">>({});
 
   const autoTriggered = useRef(false);
 
@@ -349,6 +362,7 @@ export default function LiteratureSearchPage() {
     setRecommendStatus({});
     setRecommendText({});
     setPaperLabels({});
+    setRecommendSaveStatus({});
 
     try {
       const res = await fetch("/api/keywords", {
@@ -481,6 +495,30 @@ export default function LiteratureSearchPage() {
     } catch (err) {
       console.error("推荐分析失败:", err);
       setRecommendStatus(prev => ({ ...prev, [index]: "error" }));
+    }
+  }
+
+  async function handleSaveRecommend(index: number) {
+    if (recommendSaveStatus[index] === "saving" || recommendSaveStatus[index] === "saved") return;
+    setRecommendSaveStatus(prev => ({ ...prev, [index]: "saving" }));
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          concept:        topic,
+          origin_summary: recommendText[index] || "",
+          source_type:    "keyword",
+          source_id:      null,
+          source_title:   topic,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      setRecommendSaveStatus(prev => ({ ...prev, [index]: "saved" }));
+      toast.success("已保存到研究笔记");
+    } catch {
+      setRecommendSaveStatus(prev => ({ ...prev, [index]: "error" }));
+      toast.error("保存失败，请重试");
     }
   }
 
@@ -651,6 +689,8 @@ export default function LiteratureSearchPage() {
                           recommendText={recommendText[i] ?? ""}
                           recommendStatus={recommendStatus[i] ?? "idle"}
                           labelMap={paperLabels[i]}
+                          onSaveRecommend={() => handleSaveRecommend(i)}
+                          recommendSaveStatus={recommendSaveStatus[i] ?? "idle"}
                         />
                       )}
                     </div>

@@ -162,6 +162,35 @@ export default function ConceptExplorerPage() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [savedNoteId, setSavedNoteId] = useState<string | null>(null);
 
+  // 各区块独立的保存状态
+  const [blockSaveStatus, setBlockSaveStatus] = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
+
+  // 保存单个区块内容
+  async function handleSaveBlock(blockLabel: string, content: string) {
+    if (blockSaveStatus[blockLabel] === "saving" || blockSaveStatus[blockLabel] === "saved") return;
+    setBlockSaveStatus(prev => ({ ...prev, [blockLabel]: "saving" }));
+    try {
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          concept:        `${currentConcept} · ${blockLabel}`,
+          origin_summary: content,
+          source_type:    "concept",
+          source_id:      null,
+          source_title:   currentConcept,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      setBlockSaveStatus(prev => ({ ...prev, [blockLabel]: "saved" }));
+      toast.success("已保存到研究笔记");
+    } catch {
+      setBlockSaveStatus(prev => ({ ...prev, [blockLabel]: "error" }));
+      toast.error("保存失败，请重试");
+    }
+  }
+
+  // 保存完整探索结果
   async function handleSaveNote() {
     if (saveStatus === "saving") return;
     setSaveStatus("saving");
@@ -170,11 +199,14 @@ export default function ConceptExplorerPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          concept: currentConcept,
+          concept:          currentConcept,
           origin_summary:   originAI   || null,
           latest_papers:    recentPapers.length ? recentPapers : null,
           related_concepts: conceptsAI || null,
           research_ideas:   ideasAI    || null,
+          source_type:      "concept",
+          source_id:        null,
+          source_title:     currentConcept,
         }),
       });
       const data = await res.json();
@@ -218,6 +250,7 @@ export default function ConceptExplorerPage() {
     setRecentSearchTerm("");
     setSaveStatus("idle");
     setSavedNoteId(null);
+    setBlockSaveStatus({});
     originTextRef.current = "";
     conceptsTextRef.current = "";
   }
@@ -388,10 +421,18 @@ export default function ConceptExplorerPage() {
                   <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide">AI 分析</p>
                   {originAIStatus === "done" && originAI && (
                     <button
-                      onClick={() => toast.info("「保存单条到笔记」功能即将上线 ✨")}
-                      className="text-xs text-gray-400 hover:text-blue-500 transition-colors flex items-center gap-1"
+                      onClick={() => handleSaveBlock("概念溯源", originAI)}
+                      disabled={blockSaveStatus["概念溯源"] === "saving" || blockSaveStatus["概念溯源"] === "saved"}
+                      className={`text-xs transition-colors flex items-center gap-1 ${
+                        blockSaveStatus["概念溯源"] === "saved" ? "text-green-500 cursor-default" :
+                        blockSaveStatus["概念溯源"] === "error" ? "text-red-400 hover:text-red-500" :
+                        "text-gray-400 hover:text-blue-500"
+                      }`}
                     >
-                      💾 保存到笔记
+                      {blockSaveStatus["概念溯源"] === "saving" ? "保存中…" :
+                       blockSaveStatus["概念溯源"] === "saved"  ? "✓ 已保存" :
+                       blockSaveStatus["概念溯源"] === "error"  ? "❌ 重试"  :
+                       "💾 保存到笔记"}
                     </button>
                   )}
                 </div>
@@ -456,10 +497,18 @@ export default function ConceptExplorerPage() {
               <>
                 <MarkdownContent content={conceptsAI} className="text-sm" />
                 <button
-                  onClick={() => toast.info("「保存单条到笔记」功能即将上线 ✨")}
-                  className="mt-3 text-xs text-gray-400 hover:text-blue-500 transition-colors flex items-center gap-1"
+                  onClick={() => handleSaveBlock("关联概念", conceptsAI)}
+                  disabled={blockSaveStatus["关联概念"] === "saving" || blockSaveStatus["关联概念"] === "saved"}
+                  className={`mt-3 text-xs transition-colors flex items-center gap-1 ${
+                    blockSaveStatus["关联概念"] === "saved" ? "text-green-500 cursor-default" :
+                    blockSaveStatus["关联概念"] === "error" ? "text-red-400 hover:text-red-500" :
+                    "text-gray-400 hover:text-blue-500"
+                  }`}
                 >
-                  💾 保存到笔记
+                  {blockSaveStatus["关联概念"] === "saving" ? "保存中…" :
+                   blockSaveStatus["关联概念"] === "saved"  ? "✓ 已保存" :
+                   blockSaveStatus["关联概念"] === "error"  ? "❌ 重试"  :
+                   "💾 保存到笔记"}
                 </button>
               </>
             )}
@@ -476,10 +525,18 @@ export default function ConceptExplorerPage() {
               <>
                 <MarkdownContent content={ideasAI} className="text-sm" />
                 <button
-                  onClick={() => toast.info("「保存单条到笔记」功能即将上线 ✨")}
-                  className="mt-3 text-xs text-gray-400 hover:text-blue-500 transition-colors flex items-center gap-1"
+                  onClick={() => handleSaveBlock("研究思路", ideasAI)}
+                  disabled={blockSaveStatus["研究思路"] === "saving" || blockSaveStatus["研究思路"] === "saved"}
+                  className={`mt-3 text-xs transition-colors flex items-center gap-1 ${
+                    blockSaveStatus["研究思路"] === "saved" ? "text-green-500 cursor-default" :
+                    blockSaveStatus["研究思路"] === "error" ? "text-red-400 hover:text-red-500" :
+                    "text-gray-400 hover:text-blue-500"
+                  }`}
                 >
-                  💾 保存到笔记
+                  {blockSaveStatus["研究思路"] === "saving" ? "保存中…" :
+                   blockSaveStatus["研究思路"] === "saved"  ? "✓ 已保存" :
+                   blockSaveStatus["研究思路"] === "error"  ? "❌ 重试"  :
+                   "💾 保存到笔记"}
                 </button>
               </>
             )}

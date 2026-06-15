@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
 
-    const { concept, origin_summary, latest_papers, related_concepts, research_ideas } =
+    const { concept, origin_summary, latest_papers, related_concepts, research_ideas, source_type, source_id, source_title } =
       await req.json();
 
     if (!concept?.trim()) {
@@ -44,6 +44,9 @@ export async function POST(req: NextRequest) {
         latest_papers:    latest_papers    || null,
         related_concepts: related_concepts || null,
         research_ideas:   research_ideas   || null,
+        source_type:      source_type      || null,
+        source_id:        source_id        || null,
+        source_title:     source_title     || null,
       })
       .select("id")
       .single();

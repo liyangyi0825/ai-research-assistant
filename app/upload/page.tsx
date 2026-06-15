@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { Header } from "@/components/Header";
 import { TranslationView } from "@/components/TranslationView";
+import { toast } from "sonner";
 import { PptSlidePreview } from "@/components/PptSlidePreview";
 
 // ─── 解析 Anthropic SSE 流，逐块 yield 文字 ───────────────────────────────
@@ -111,6 +112,13 @@ function UploadPageInner() {
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // ── 论文 ID（用于保存笔记时记录来源）──
+  const [paperId, setPaperId] = useState<string | null>(null);
+
+  // ── 保存笔记状态（按模块 key / 消息 index）──
+  const [sectionSaveStatus, setSectionSaveStatus] = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
+  const [chatSaveStatus, setChatSaveStatus]       = useState<Record<number, "idle" | "saving" | "saved" | "error">>({});
+
   // ── 研究笔记上下文（用于增强对话质量）──
   const [notesContext, setNotesContext] = useState<string>("");
 
@@ -164,6 +172,7 @@ function UploadPageInner() {
   useEffect(() => {
     const id = searchParams.get("paper");
     if (!id) return;
+    setPaperId(id);
     async function load() {
       try {
         const res = await fetch(`/api/my-papers/${id}`);
@@ -179,10 +188,10 @@ function UploadPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── 提取完成后保存到数据库 ──
+  // ── 提取完成后保存到数据库，并记录 paperId 供笔记来源追踪 ──
   async function savePaperToDB(text: string, file: File) {
     try {
-      await fetch("/api/my-papers", {
+      const res  = await fetch("/api/my-papers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -191,6 +200,8 @@ function UploadPageInner() {
           fileSize: file.size,
         }),
       });
+      const data = await res.json();
+      if (data.id) setPaperId(data.id);
     } catch { /* 静默失败 */ }
   }
 
@@ -211,6 +222,9 @@ function UploadPageInner() {
     setSummaryStatus("idle");
     setSummaryText("");
     setMessages([]);
+    setPaperId(null);
+    setSectionSaveStatus({});
+    setChatSaveStatus({});
 
     // 1.5 秒后切换到"正在提取文字"阶段（如果请求还没完成）
     const stageTimer = setTimeout(() => setUploadStage("extracting"), 1500);
@@ -262,7 +276,63 @@ function UploadPageInner() {
     setPptScene(null);
     setPptContent(null);
     setPptError("");
+    setPaperId(null);
+    setSectionSaveStatus({});
+    setChatSaveStatus({});
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  // ─── 保存总结模块到笔记 ──────────────────────────────────────────────────────
+  async function handleSaveSection(sectionKey: string, content: string) {
+    if (sectionSaveStatus[sectionKey] === "saving") return;
+    setSectionSaveStatus(prev => ({ ...prev, [sectionKey]: "saving" }));
+    try {
+      const paperTitle = fileName.replace(/\.pdf$/i, "");
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          concept:        sectionKey,
+          origin_summary: content,
+          source_type:    "summary",
+          source_id:      paperId ?? null,
+          source_title:   paperTitle,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      setSectionSaveStatus(prev => ({ ...prev, [sectionKey]: "saved" }));
+      toast.success("已保存到研究笔记");
+    } catch {
+      setSectionSaveStatus(prev => ({ ...prev, [sectionKey]: "error" }));
+      toast.error("保存失败，请重试");
+    }
+  }
+
+  // ─── 保存 AI 对话回复到笔记 ─────────────────────────────────────────────────
+  async function handleSaveChatMsg(index: number, content: string) {
+    if (chatSaveStatus[index] === "saving" || chatSaveStatus[index] === "saved") return;
+    setChatSaveStatus(prev => ({ ...prev, [index]: "saving" }));
+    try {
+      const paperTitle = fileName.replace(/\.pdf$/i, "");
+      const snippet    = content.slice(0, 50).trim() + (content.length > 50 ? "…" : "");
+      const res = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          concept:        snippet || "对话回复",
+          origin_summary: content,
+          source_type:    "chat",
+          source_id:      paperId ?? null,
+          source_title:   paperTitle,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      setChatSaveStatus(prev => ({ ...prev, [index]: "saved" }));
+      toast.success("已保存到研究笔记");
+    } catch {
+      setChatSaveStatus(prev => ({ ...prev, [index]: "error" }));
+      toast.error("保存失败，请重试");
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -595,12 +665,31 @@ function UploadPageInner() {
                       🌐 全文翻译
                     </Button>
                   </div>
-                  {parseSummary(summaryText).map(({ key, icon, content }) => (
-                    <div key={key} className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-gray-100">
-                      <h3 className="font-semibold text-gray-800 mb-2 sm:mb-3">{icon} {key}</h3>
-                      <MarkdownContent content={content} className="text-sm" />
-                    </div>
-                  ))}
+                  {parseSummary(summaryText).map(({ key, icon, content }) => {
+                    const saveStatus = sectionSaveStatus[key] ?? "idle";
+                    return (
+                      <div key={key} className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-gray-100">
+                        <div className="flex items-center justify-between mb-2 sm:mb-3">
+                          <h3 className="font-semibold text-gray-800">{icon} {key}</h3>
+                          <button
+                            onClick={() => handleSaveSection(key, content)}
+                            disabled={saveStatus === "saving" || saveStatus === "saved"}
+                            className={`text-xs transition-colors flex items-center gap-1 shrink-0 ${
+                              saveStatus === "saved" ? "text-green-500 cursor-default" :
+                              saveStatus === "error" ? "text-red-400 hover:text-red-500" :
+                              "text-gray-400 hover:text-blue-500"
+                            }`}
+                          >
+                            {saveStatus === "saving" ? "保存中…" :
+                             saveStatus === "saved"  ? "✓ 已保存" :
+                             saveStatus === "error"  ? "❌ 重试" :
+                             "💾 保存到笔记"}
+                          </button>
+                        </div>
+                        <MarkdownContent content={content} className="text-sm" />
+                      </div>
+                    );
+                  })}
                   <div className="flex gap-2 flex-wrap">
                     <Button variant="outline" className="flex-1" onClick={handleSummarize}>重新生成总结</Button>
                     <Button
@@ -778,23 +867,42 @@ function UploadPageInner() {
                     {messages.map((msg, i) => {
                       const isLastMsg = i === messages.length - 1;
                       const isStreamingThis = isLastMsg && msg.role === "assistant" && chatLoading;
+                      const msgSaveStatus = chatSaveStatus[i] ?? "idle";
                       return (
                         <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                          <div className={`max-w-[85%] rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 text-sm leading-relaxed whitespace-pre-wrap ${
-                            msg.role === "user"
-                              ? "bg-blue-600 text-white rounded-br-sm"
-                              : "bg-gray-100 text-gray-800 rounded-bl-sm"
-                          }`}>
-                            {/* 空内容时显示三点等待动画 */}
-                            {!msg.content && isStreamingThis
-                              ? <span className="flex gap-1 py-0.5"><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" /><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" /><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" /></span>
-                              : msg.content
-                            }
-                            {/* 流式光标 */}
-                            {isStreamingThis && msg.content && (
-                              <span className="inline-block w-0.5 h-3.5 bg-gray-500 ml-0.5 align-middle animate-pulse" />
-                            )}
-                          </div>
+                          {msg.role === "user" ? (
+                            <div className="max-w-[85%] rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 text-sm leading-relaxed whitespace-pre-wrap bg-blue-600 text-white rounded-br-sm">
+                              {msg.content}
+                            </div>
+                          ) : (
+                            <div className="max-w-[85%] flex flex-col items-start gap-1">
+                              <div className="rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 text-sm leading-relaxed whitespace-pre-wrap bg-gray-100 text-gray-800 rounded-bl-sm w-full">
+                                {!msg.content && isStreamingThis
+                                  ? <span className="flex gap-1 py-0.5"><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" /><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" /><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" /></span>
+                                  : msg.content
+                                }
+                                {isStreamingThis && msg.content && (
+                                  <span className="inline-block w-0.5 h-3.5 bg-gray-500 ml-0.5 align-middle animate-pulse" />
+                                )}
+                              </div>
+                              {!isStreamingThis && msg.content && (
+                                <button
+                                  onClick={() => handleSaveChatMsg(i, msg.content)}
+                                  disabled={msgSaveStatus === "saving" || msgSaveStatus === "saved"}
+                                  className={`text-xs transition-colors flex items-center gap-1 px-1 ${
+                                    msgSaveStatus === "saved" ? "text-green-500 cursor-default" :
+                                    msgSaveStatus === "error" ? "text-red-400 hover:text-red-500" :
+                                    "text-gray-400 hover:text-blue-500"
+                                  }`}
+                                >
+                                  {msgSaveStatus === "saving" ? "保存中…" :
+                                   msgSaveStatus === "saved"  ? "✓ 已保存" :
+                                   msgSaveStatus === "error"  ? "❌ 重试" :
+                                   "💾 保存到笔记"}
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
