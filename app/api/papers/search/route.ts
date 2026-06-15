@@ -56,16 +56,26 @@ export async function POST(req: NextRequest) {
         `?query=${encodeURIComponent(keywords)}` +
         `&fields=title,authors,year,abstract,citationCount,externalIds&limit=10`;
 
+      console.log("[search] 搜索词:", keywords);
+      console.log("[search] Semantic Scholar URL:", semUrl);
+
       const semRes = await fetch(semUrl, {
         headers: { "User-Agent": "AI-Research-Assistant/1.0" },
         signal: AbortSignal.timeout(10000),
       });
 
+      console.log("[search] Semantic Scholar 状态:", semRes.status);
+
       if (semRes.ok) {
         const semData = await semRes.json();
+        console.log("[search] Semantic Scholar 返回:", JSON.stringify(semData).slice(0, 300));
         rawPapers = semData.data ?? [];
+      } else {
+        const errText = await semRes.text();
+        console.log("[search] Semantic Scholar 错误内容:", errText.slice(0, 200));
       }
-    } catch {
+    } catch (err) {
+      console.log("[search] Semantic Scholar 异常:", (err as Error).message);
       // 超时或网络错误，尝试 OpenAlex 备用
     }
 
@@ -78,13 +88,18 @@ export async function POST(req: NextRequest) {
           `&select=id,title,authorships,publication_year,abstract_inverted_index,cited_by_count,doi` +
           `&per-page=10&sort=cited_by_count:desc`;
 
+        console.log("[search] 尝试 OpenAlex，URL:", oaUrl);
+
         const oaRes = await fetch(oaUrl, {
           headers: { "User-Agent": "AI-Research-Assistant/1.0" },
           signal: AbortSignal.timeout(10000),
         });
 
+        console.log("[search] OpenAlex 状态:", oaRes.status);
+
         if (oaRes.ok) {
           const oaData = await oaRes.json();
+          console.log("[search] OpenAlex 返回:", JSON.stringify(oaData).slice(0, 300));
           rawPapers = (oaData.results ?? []).map((w: {
             id: string;
             title: string;
@@ -102,9 +117,16 @@ export async function POST(req: NextRequest) {
             citationCount: w.cited_by_count ?? null,
             externalIds: w.doi ? { DOI: w.doi.replace("https://doi.org/", "") } : null,
           }));
+        } else {
+          const errText = await oaRes.text();
+          console.log("[search] OpenAlex 错误内容:", errText.slice(0, 200));
         }
-      } catch { /* 两个 API 都失败，返回空 */ }
+      } catch (err) {
+        console.log("[search] OpenAlex 异常:", (err as Error).message);
+      }
     }
+
+    console.log("[search] 最终获取论文数:", rawPapers.length);
 
     if (rawPapers.length === 0) {
       return NextResponse.json({ papers: [], warning: "未找到相关论文，请尝试修改关键词" });

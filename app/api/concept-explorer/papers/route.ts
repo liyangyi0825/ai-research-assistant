@@ -110,12 +110,16 @@ export async function POST(req: NextRequest) {
 
     if (type === "oldest") {
       const url = `${OA_BASE}?search=${q}&sort=publication_year:asc&per-page=3&select=${OA_FIELDS}`;
+      console.log("[concept-papers] oldest URL:", url);
       const res = await fetchWithProxy(url, { headers: OA_HEADERS });
+      console.log("[concept-papers] oldest 状态:", res.status);
       if (!res.ok) {
-        console.error("[concept-explorer] OpenAlex oldest 失败:", res.status);
+        const errText = await res.text();
+        console.error("[concept-papers] OpenAlex oldest 错误:", res.status, errText.slice(0, 200));
         return NextResponse.json({ papers: [], searchTerm });
       }
       const data = await res.json();
+      console.log("[concept-papers] oldest 返回:", JSON.stringify(data).slice(0, 300));
       const papers: Paper[] = (data.results ?? [])
         .map(toOAPaper)
         .filter((p: Paper) => p.year !== null);
@@ -128,10 +132,13 @@ export async function POST(req: NextRequest) {
 
       // 先试近 3 年
       const url3 = `${OA_BASE}?search=${q}&filter=publication_year:${year3}-${currentYear}&sort=cited_by_count:desc&per-page=8&select=${OA_FIELDS}`;
+      console.log("[concept-papers] recent url3:", url3);
       const res3 = await fetchWithProxy(url3, { headers: OA_HEADERS });
+      console.log("[concept-papers] recent 3y 状态:", res3.status);
 
       if (res3.ok) {
         const data3 = await res3.json();
+        console.log("[concept-papers] recent 3y 返回:", JSON.stringify(data3).slice(0, 300));
         const papers3: Paper[] = (data3.results ?? []).map(toOAPaper).filter((p: Paper) => p.year !== null);
         if (papers3.length >= 3) {
           return NextResponse.json({ papers: papers3, searchTerm });
@@ -140,12 +147,16 @@ export async function POST(req: NextRequest) {
 
       // 近 3 年不足 3 条，放宽到近 5 年
       const url5 = `${OA_BASE}?search=${q}&filter=publication_year:${year5}-${currentYear}&sort=cited_by_count:desc&per-page=8&select=${OA_FIELDS}`;
+      console.log("[concept-papers] recent url5:", url5);
       const res5 = await fetchWithProxy(url5, { headers: OA_HEADERS });
+      console.log("[concept-papers] recent 5y 状态:", res5.status);
       if (!res5.ok) {
-        console.error("[concept-explorer] OpenAlex recent 失败:", res5.status);
+        const errText = await res5.text();
+        console.error("[concept-papers] OpenAlex recent 错误:", res5.status, errText.slice(0, 200));
         return NextResponse.json({ papers: [], searchTerm });
       }
       const data5 = await res5.json();
+      console.log("[concept-papers] recent 5y 返回:", JSON.stringify(data5).slice(0, 300));
       const papers5: Paper[] = (data5.results ?? []).map(toOAPaper).filter((p: Paper) => p.year !== null);
       return NextResponse.json({ papers: papers5, searchTerm });
     }
