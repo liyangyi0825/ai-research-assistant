@@ -127,38 +127,26 @@ export async function POST(req: NextRequest) {
     }
 
     if (type === "recent") {
-      const year3 = currentYear - 3;
-      const year5 = currentYear - 5;
-
-      // 先试近 3 年
-      const url3 = `${OA_BASE}?search=${q}&filter=publication_year:${year3}-${currentYear}&sort=cited_by_count:desc&per-page=8&select=${OA_FIELDS}`;
-      console.log("[concept-papers] recent url3:", url3);
-      const res3 = await fetchWithProxy(url3, { headers: OA_HEADERS });
-      console.log("[concept-papers] recent 3y 状态:", res3.status);
-
-      if (res3.ok) {
-        const data3 = await res3.json();
-        console.log("[concept-papers] recent 3y 返回:", JSON.stringify(data3).slice(0, 300));
-        const papers3: Paper[] = (data3.results ?? []).map(toOAPaper).filter((p: Paper) => p.year !== null);
-        if (papers3.length >= 3) {
-          return NextResponse.json({ papers: papers3, searchTerm });
-        }
-      }
-
-      // 近 3 年不足 3 条，放宽到近 5 年
-      const url5 = `${OA_BASE}?search=${q}&filter=publication_year:${year5}-${currentYear}&sort=cited_by_count:desc&per-page=8&select=${OA_FIELDS}`;
-      console.log("[concept-papers] recent url5:", url5);
-      const res5 = await fetchWithProxy(url5, { headers: OA_HEADERS });
-      console.log("[concept-papers] recent 5y 状态:", res5.status);
-      if (!res5.ok) {
-        const errText = await res5.text();
-        console.error("[concept-papers] OpenAlex recent 错误:", res5.status, errText.slice(0, 200));
+      // 不依赖年份过滤（OpenAlex 对最新年份收录滞后），
+      // 直接按发表年份降序取最新 8 篇，再优先展示 5 年内的论文
+      const url = `${OA_BASE}?search=${q}&sort=publication_year:desc&per-page=8&select=${OA_FIELDS}`;
+      console.log("[concept-papers] recent URL:", url);
+      const res = await fetchWithProxy(url, { headers: OA_HEADERS });
+      console.log("[concept-papers] recent 状态:", res.status);
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error("[concept-papers] OpenAlex recent 错误:", res.status, errText.slice(0, 200));
         return NextResponse.json({ papers: [], searchTerm });
       }
-      const data5 = await res5.json();
-      console.log("[concept-papers] recent 5y 返回:", JSON.stringify(data5).slice(0, 300));
-      const papers5: Paper[] = (data5.results ?? []).map(toOAPaper).filter((p: Paper) => p.year !== null);
-      return NextResponse.json({ papers: papers5, searchTerm });
+      const data = await res.json();
+      console.log("[concept-papers] recent 返回:", JSON.stringify(data).slice(0, 300));
+      const allPapers: Paper[] = (data.results ?? []).map(toOAPaper).filter((p: Paper) => p.year !== null);
+
+      // 优先返回近 5 年的论文；若不足 3 篇则返回全部
+      const year5 = currentYear - 5;
+      const recent5 = allPapers.filter(p => (p.year ?? 0) >= year5);
+      const papers = recent5.length >= 3 ? recent5 : allPapers;
+      return NextResponse.json({ papers, searchTerm });
     }
 
     return NextResponse.json({ error: "无效的 type 参数" }, { status: 400 });
