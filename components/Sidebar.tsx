@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 const NAV_GROUPS = [
@@ -51,6 +52,7 @@ interface SidebarProps {
 
 export function Sidebar({ onClose }: SidebarProps) {
   const pathname = usePathname();
+  const router   = useRouter();
   const [email, setEmail]               = useState<string | null>(null);
   const [recentPapers, setRecentPapers] = useState<RecentPaper[]>([]);
 
@@ -69,6 +71,22 @@ export function Sidebar({ onClose }: SidebarProps) {
       .then(d => setRecentPapers(d.papers ?? []))
       .catch(() => { /* 静默失败 */ });
   }, [pathname]);
+
+  async function handleDeletePaper(id: string, title: string) {
+    if (!confirm(`确定删除这篇论文的记录吗？\n「${title.slice(0, 60)}」\n\n删除后无法恢复。`)) return;
+    try {
+      const res = await fetch(`/api/my-papers/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      setRecentPapers(prev => prev.filter(p => p.id !== id));
+      // 如果正在查看这篇论文，跳转回论文库
+      if (pathname === `/paper/${id}` || pathname.startsWith(`/paper/${id}?`)) {
+        toast.success("论文已删除");
+        router.push("/my-papers");
+      }
+    } catch {
+      toast.error("删除失败，请重试");
+    }
+  }
 
   async function handleLogout() {
     const supabase = getSupabaseBrowserClient();
@@ -133,19 +151,26 @@ export function Sidebar({ onClose }: SidebarProps) {
             </p>
             <ul className="space-y-0.5">
               {recentPapers.map((paper) => (
-                <li key={paper.id}>
+                <li key={paper.id} className="group relative rounded-lg hover:bg-slate-700/60 transition-all">
                   <Link
                     href={`/paper/${paper.id}`}
                     onClick={onClose}
-                    className="flex flex-col px-3 py-2 rounded-lg transition-all hover:bg-slate-700/60 group"
+                    className="flex flex-col px-3 py-2 pr-7"
                   >
-                    <span className="text-xs text-slate-300 truncate leading-snug group-hover:text-white">
+                    <span className="text-xs text-slate-300 truncate leading-snug group-hover:text-white transition-colors">
                       {paper.title}
                     </span>
                     <span className="text-[10px] mt-0.5" style={{ color: "#475569" }}>
                       {formatRelativeTime(paper.created_at)}
                     </span>
                   </Link>
+                  <button
+                    onClick={() => handleDeletePaper(paper.id, paper.title)}
+                    title="删除"
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-slate-500 hover:text-red-400"
+                  >
+                    ×
+                  </button>
                 </li>
               ))}
               <li>

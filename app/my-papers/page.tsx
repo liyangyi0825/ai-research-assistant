@@ -61,6 +61,21 @@ export default function MyPapersPage() {
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
+  async function handleDelete(id: string, title: string) {
+    if (!confirm(`确定删除这篇论文的记录吗？\n「${title.slice(0, 60)}」\n\n删除后无法恢复。`)) return;
+    try {
+      const res = await fetch(`/api/my-papers/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert((data as { error?: string }).error || "删除失败，请重试");
+        return;
+      }
+      fetchPapers();
+    } catch {
+      alert("删除失败，请重试");
+    }
+  }
+
   return (
     <div className="min-h-full" style={{ background: "#F8FAFC" }}>
       <Header title="我的论文" />
@@ -158,7 +173,13 @@ export default function MyPapersPage() {
                         )}
                       </p>
                     </div>
-                    <span className="shrink-0 text-gray-300 group-hover:text-blue-400 transition-colors text-sm">→</span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDelete(paper.id, paper.title); }}
+                      title="删除"
+                      className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg text-gray-300 hover:text-red-500 hover:bg-red-50"
+                    >
+                      🗑
+                    </button>
                   </div>
                 </div>
               ))}
