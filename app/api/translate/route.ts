@@ -33,10 +33,12 @@ export async function POST(req: NextRequest) {
     const prompt = `你是专业的科技论文翻译专家，请将以下英文论文段落逐段翻译成中文。
 
 翻译规则：
-1. 专业术语用"中文（English）"格式，例如"界面钝化（interface passivation）"
-2. 人名、机构名、期刊名保留英文
-3. 每段译文之间用 [|||] 分隔（一一对应，不能多也不能少）
-4. 只输出译文，不要序号、不要解释、不要重复原文
+1. 严格按照原文段落顺序逐段翻译，不得合并段落、不得拆分段落
+2. 章节标题保留原有编号，例如"1. Introduction"译为"1. 引言"，"2.1 Methods"译为"2.1 方法"
+3. 专业术语用"中文（English）"格式，例如"界面钝化（interface passivation）"
+4. 人名、机构名、期刊名、数据集名称保留英文原文
+5. 每段译文之间用 [|||] 分隔，数量必须与原文段落数完全一致（共 ${limited.length} 段就输出 ${limited.length} 段译文）
+6. 只输出译文，不要解释，不要重复原文
 
 需要翻译的段落（共 ${limited.length} 段，段落之间用 [PARA] 分隔）：
 

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 
-// ── SSE 流解析（与 upload/page.tsx 相同的逻辑）────────────────────────────
+// ── SSE 流解析 ─────────────────────────────────────────────────────────────
 async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
@@ -37,16 +37,62 @@ async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
   }
 }
 
-// ── 把论文原文拆成段落 ────────────────────────────────────────────────────
-function splitParagraphs(text: string): string[] {
-  return text
-    .split(/\n{2,}/)
-    .map(p => p.replace(/\n/g, " ").trim())
-    .filter(p => p.length > 40)   // 过滤掉太短的行（页码、页眉等）
-    .slice(0, 80);                 // 最多80段
+// ── 段落类型 ───────────────────────────────────────────────────────────────
+type ParaType = "heading" | "abstract" | "paragraph" | "reference";
+
+interface Para {
+  text: string;
+  type: ParaType;
 }
 
-// ── 骨架屏：翻译加载中 ───────────────────────────────────────────────────
+// ── 把原文拆成带类型的段落 ──────────────────────────────────────────────────
+function splitIntoParagraphs(text: string): Para[] {
+  const blocks = text.split(/\n{2,}/);
+  const result: Para[] = [];
+  let inRefs = false;
+
+  for (const block of blocks) {
+    const p = block.replace(/\n/g, " ").trim();
+    if (!p) continue;
+
+    const isRefsHeading = /^(references?|bibliography|works\s+cited)$/i.test(p);
+
+    const isHeadingLike =
+      p.length < 150 &&
+      (
+        /^abstract$/i.test(p) ||
+        isRefsHeading ||
+        /^(\d+\.[\d.]* +\S)/.test(p) ||        // 1. Introduction / 1.1 Methods
+        /^[IVX]+\. +[A-Z]/.test(p) ||           // II. RELATED WORK
+        /^[A-Z][A-Z\s\-:,]{5,}[A-Z]$/.test(p)  // ALL CAPS HEADING
+      );
+
+    // 过滤噪音（页码、页眉等）——但保留标题类短行
+    if (p.length < 20 && !isHeadingLike) continue;
+
+    let type: ParaType;
+    if (inRefs) {
+      type = "reference";
+    } else if (/^abstract$/i.test(p)) {
+      type = "abstract";
+    } else if (isRefsHeading) {
+      type = "heading"; // "References" 标题本身翻译成"参考文献"
+    } else if (isHeadingLike) {
+      type = "heading";
+    } else {
+      type = "paragraph";
+    }
+
+    // 遇到参考文献标题后，后续全部标记为 reference
+    if (isRefsHeading) inRefs = true;
+
+    result.push({ text: p, type });
+  }
+
+  return result.slice(0, 100);
+}
+
+// ── 骨架屏 ─────────────────────────────────────────────────────────────────
 function Skeleton() {
   return (
     <div className="space-y-2 animate-pulse">
@@ -57,7 +103,7 @@ function Skeleton() {
   );
 }
 
-// ── 复制按钮 ─────────────────────────────────────────────────────────────
+// ── 复制按钮 ──────────────────────────────────────────────────────────────
 function CopyBtn({ text, label = "复制" }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);
   async function handleCopy() {
@@ -77,7 +123,7 @@ function CopyBtn({ text, label = "复制" }: { text: string; label?: string }) {
   );
 }
 
-// ── 主组件 ───────────────────────────────────────────────────────────────
+// ── 主组件 ────────────────────────────────────────────────────────────────
 interface Props {
   extractedText: string;
   onBack: () => void;
@@ -85,21 +131,35 @@ interface Props {
 }
 
 export function TranslationView({ extractedText, onBack, backLabel = "← 返回总结" }: Props) {
-  const [paragraphs, setParagraphs]     = useState<string[]>([]);
+  const [paragraphs, setParagraphs]     = useState<Para[]>([]);
   const [translations, setTranslations] = useState<string[]>([]);
   const [status, setStatus]             = useState<"loading" | "streaming" | "done" | "error">("loading");
   const [error, setError]               = useState("");
 
-  const startTranslation = useCallback(async (paras: string[]) => {
+  const startTranslation = useCallback(async (paras: Para[]) => {
     setStatus("loading");
     setError("");
-    setTranslations([]);
+
+    // 参考文献条目直接保留英文原文，其余初始化为空字符串
+    setTranslations(paras.map(p => p.type === "reference" ? p.text : ""));
+
+    // 只把非参考文献段落发给 AI 翻译
+    const translatableIdxs: number[] = paras
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => p.type !== "reference")
+      .map(({ i }) => i);
+
+    const toTranslate = translatableIdxs.map(i => paras[i].text);
+    if (toTranslate.length === 0) {
+      setStatus("done");
+      return;
+    }
 
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paragraphs: paras }),
+        body: JSON.stringify({ paragraphs: toTranslate }),
       });
 
       if (!res.ok) {
@@ -112,19 +172,24 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
 
       for await (const chunk of streamAnthropicSSE(res)) {
         accumulated += chunk;
-
-        // 每次新 chunk 到来，按 [|||] 分割，更新已完成的段落译文
         const parts = accumulated.split("[|||]");
-        setTranslations(
-          parts.map((p, i) =>
-            // 最后一段还没收到结束符，可能仍在流入，其余段落都完成了
-            i < parts.length - 1 ? p.trim() : p
-          )
-        );
+
+        setTranslations(prev => {
+          const next = [...prev];
+          parts.forEach((part, apiIdx) => {
+            const paraIdx = translatableIdxs[apiIdx];
+            if (paraIdx !== undefined) {
+              next[paraIdx] = apiIdx < parts.length - 1 ? part.trim() : part;
+            }
+          });
+          return next;
+        });
       }
 
-      // 流结束后清理最后一段的首尾空格
-      setTranslations(prev => prev.map(t => t.trim()));
+      // 流结束后清理尾部空格（不动参考文献条目）
+      setTranslations(prev =>
+        prev.map((t, i) => (paras[i]?.type === "reference" ? t : t.trim()))
+      );
       setStatus("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "翻译失败，请重试");
@@ -133,24 +198,23 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
   }, []);
 
   useEffect(() => {
-    const paras = splitParagraphs(extractedText);
+    const paras = splitIntoParagraphs(extractedText);
     setParagraphs(paras);
     startTranslation(paras);
   }, [extractedText, startTranslation]);
 
-  // 拼接所有已完成的译文，供「复制全文翻译」使用
-  const allTranslation = translations
-    .filter((t, i) => i < paragraphs.length && t.trim())
+  // 拼接非参考文献的译文供「复制全文」使用
+  const allTranslation = paragraphs
+    .map((p, i) => (p.type !== "reference" && translations[i]?.trim()) ? translations[i].trim() : null)
+    .filter(Boolean)
     .join("\n\n");
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
-      {/* ── 顶部工具栏 ──────────────────────────────────────────────── */}
+      {/* ── 顶部工具栏 ── */}
       <div className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-gray-200 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
-          <Button variant="outline" size="sm" onClick={onBack}>
-            {backLabel}
-          </Button>
+          <Button variant="outline" size="sm" onClick={onBack}>{backLabel}</Button>
           <span className="text-sm font-medium text-gray-700">📖 全文对照翻译</span>
           {status === "streaming" && (
             <span className="text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full">翻译中…</span>
@@ -172,9 +236,8 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
         </div>
       </div>
 
-      {/* ── 内容区 ─────────────────────────────────────────────────── */}
+      {/* ── 内容区 ── */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-0 sm:px-4 py-0 sm:py-4">
-
         {status === "error" && (
           <div className="m-4 p-4 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm">
             ❌ {error}
@@ -190,49 +253,98 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
 
         {paragraphs.length > 0 && (
           <div className="divide-y divide-gray-200 bg-white sm:rounded-xl overflow-hidden sm:shadow-sm">
-            {paragraphs.map((en, i) => {
-              const zh = translations[i];
-              const isDone   = status === "done" || (typeof zh === "string" && zh.trim() && i < translations.length - 1);
-              const isActive = i === translations.length - 1 && status === "streaming";
+            {(() => {
+              // 计算当前正在流式输出的段落索引
+              let streamingParaIdx = -1;
+              if (status === "streaming") {
+                for (let j = 0; j < paragraphs.length; j++) {
+                  if (paragraphs[j]?.type !== "reference" && translations[j]) {
+                    streamingParaIdx = j;
+                  }
+                }
+              }
 
-              return (
-                <div
-                  key={i}
-                  className="grid grid-cols-1 md:grid-cols-2"
-                >
-                  {/* 左：英文原文 */}
-                  <div className="px-4 py-4 md:border-r border-gray-100 bg-blue-50/30 text-sm text-gray-700 leading-relaxed">
-                    <span className="text-blue-300 text-xs mr-2 select-none">{i + 1}</span>
-                    {en}
-                  </div>
+              return paragraphs.map((para, i) => {
+                const zh = translations[i];
+                const isHeadingType = para.type === "heading" || para.type === "abstract";
+                const isRef = para.type === "reference";
+                const isDone =
+                  status === "done" ||
+                  (!isRef && typeof zh === "string" && zh.trim().length > 0 && i < streamingParaIdx);
+                const isActive = i === streamingParaIdx && !isRef;
 
-                  {/* 右：中文译文 */}
-                  <div className="px-4 py-4 text-sm text-gray-800 leading-relaxed bg-white relative group">
-                    {isDone && zh ? (
-                      <>
-                        <span className="hidden group-hover:block absolute top-2 right-2">
-                          <CopyBtn text={zh} />
-                        </span>
-                        {zh}
-                      </>
-                    ) : isActive && zh ? (
-                      <>
-                        {zh}
-                        <span className="inline-block w-0.5 h-3.5 bg-amber-400 ml-0.5 align-middle animate-pulse" />
-                      </>
-                    ) : (
-                      <Skeleton />
-                    )}
+                return (
+                  <div
+                    key={i}
+                    className={`grid grid-cols-1 md:grid-cols-2 ${
+                      isHeadingType
+                        ? "border-l-4 border-l-blue-400"
+                        : isRef
+                        ? "opacity-60"
+                        : ""
+                    }`}
+                  >
+                    {/* 左：英文原文 */}
+                    <div
+                      className={`px-4 py-3 md:border-r border-gray-100 leading-relaxed ${
+                        isHeadingType
+                          ? "font-bold text-gray-900 text-[15px] bg-blue-50/80"
+                          : isRef
+                          ? "text-xs text-gray-500 bg-gray-50"
+                          : "text-sm text-gray-700 bg-blue-50/30"
+                      }`}
+                    >
+                      {!isHeadingType && !isRef && (
+                        <span className="text-blue-300 text-xs mr-2 select-none">{i + 1}</span>
+                      )}
+                      {para.text}
+                    </div>
+
+                    {/* 右：中文译文 */}
+                    <div
+                      className={`px-4 py-3 leading-relaxed bg-white relative group ${
+                        isHeadingType
+                          ? "font-bold text-gray-900 text-[15px]"
+                          : isRef
+                          ? "text-xs text-gray-500"
+                          : "text-sm text-gray-800"
+                      }`}
+                    >
+                      {isRef ? (
+                        // 参考文献右侧显示英文原文（不翻译）
+                        zh
+                      ) : isDone && zh ? (
+                        <>
+                          {!isHeadingType && (
+                            <span className="hidden group-hover:block absolute top-2 right-2">
+                              <CopyBtn text={zh} />
+                            </span>
+                          )}
+                          {zh}
+                        </>
+                      ) : isActive && zh ? (
+                        <>
+                          {zh}
+                          <span className="inline-block w-0.5 h-3.5 bg-amber-400 ml-0.5 align-middle animate-pulse" />
+                        </>
+                      ) : isHeadingType && zh ? (
+                        zh
+                      ) : isRef ? (
+                        zh
+                      ) : (
+                        <Skeleton />
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              });
+            })()}
           </div>
         )}
       </main>
 
       <footer className="text-center py-3 text-xs text-gray-400 border-t border-gray-200 bg-white/50 mt-4">
-        专业术语已保留英文原文（括号标注）·　人名机构名保留英文
+        专业术语已保留英文原文（括号标注）· 人名机构名保留英文 · 参考文献保留英文
       </footer>
     </div>
   );
