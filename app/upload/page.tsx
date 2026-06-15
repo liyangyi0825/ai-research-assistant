@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { Header } from "@/components/Header";
@@ -83,13 +84,18 @@ interface Message {
   content: string;
 }
 
-export default function UploadPage() {
+function UploadPageInner() {
+  const searchParams = useSearchParams();
+
   // ── PDF 提取状态 ──
   const [extractStatus, setExtractStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [uploadStage, setUploadStage] = useState<"uploading" | "extracting">("uploading");
   const [extractedText, setExtractedText] = useState("");
   const [extractError, setExtractError] = useState("");
   const [fileName, setFileName] = useState("");
+
+  // ── 论文数据库记录 ──
+  const paperIdRef = useRef<string | null>(null);
 
   // ── AI 总结状态 ──
   // loading = 等待第一个 token；streaming = 文字正在流入；done = 完成
@@ -155,6 +161,59 @@ export default function UploadPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summaryStatus]);
 
+  // URL 参数 ?paper=<id> 时自动从数据库加载已有论文
+  useEffect(() => {
+    const id = searchParams.get("paper");
+    if (!id) return;
+    async function load() {
+      try {
+        const res = await fetch(`/api/my-papers/${id}`);
+        if (!res.ok) return;
+        const { paper } = await res.json();
+        if (!paper) return;
+        setFileName(paper.file_name || paper.title);
+        setExtractedText(paper.extracted_text || "");
+        setExtractStatus("done");
+        paperIdRef.current = paper.id;
+      } catch { /* 静默失败 */ }
+    }
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── 论文记录辅助函数 ──
+  async function savePaperToDB(text: string, file_name: string) {
+    try {
+      const res = await fetch("/api/my-papers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: file_name.replace(/\.pdf$/i, ""),
+          fileName: file_name,
+          extractedText: text,
+          charCount: text.length,
+          featuresUsed: [],
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        paperIdRef.current = data.id;
+      }
+    } catch { /* 静默失败 */ }
+  }
+
+  async function markFeature(feature: string) {
+    const id = paperIdRef.current;
+    if (!id) return;
+    try {
+      await fetch(`/api/my-papers/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feature }),
+      });
+    } catch { /* 静默失败 */ }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────────
   // PDF 上传与提取（分阶段进度）
   // ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +255,7 @@ export default function UploadPage() {
       if (!res.ok) throw new Error(data.error || "解析失败");
       setExtractedText(data.text ?? "");
       setExtractStatus("done");
+      savePaperToDB(data.text ?? "", file.name);
     } catch (err) {
       clearTimeout(stageTimer);
       setExtractStatus("error");
@@ -222,6 +282,7 @@ export default function UploadPage() {
     setPptScene(null);
     setPptContent(null);
     setPptError("");
+    paperIdRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -256,6 +317,7 @@ export default function UploadPage() {
 
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("done");
+      markFeature("summary");
     } catch (err) {
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("error");
@@ -282,6 +344,7 @@ export default function UploadPage() {
       if (!res.ok) throw new Error(data.error || "生成失败");
       setPptContent(data.pptContent);
       setPptStatus("done");
+      markFeature("ppt");
     } catch (err) {
       setPptError(err instanceof Error ? err.message : "生成失败，请重试");
       setPptStatus("error");
@@ -550,7 +613,7 @@ export default function UploadPage() {
                       size="sm"
                       variant="outline"
                       className="text-amber-700 border-amber-300 hover:bg-amber-50 shrink-0"
-                      onClick={() => setCurrentView("translate")}
+                      onClick={() => { setCurrentView("translate"); markFeature("translate"); }}
                     >
                       🌐 全文翻译
                     </Button>
@@ -566,7 +629,7 @@ export default function UploadPage() {
                     <Button
                       variant="outline"
                       className="text-amber-700 border-amber-300 hover:bg-amber-50"
-                      onClick={() => setCurrentView("translate")}
+                      onClick={() => { setCurrentView("translate"); markFeature("translate"); }}
                     >
                       🌐 全文翻译
                     </Button>
@@ -783,5 +846,13 @@ export default function UploadPage() {
         </div>
       </main>
     </div>
+  );
+}
+
+export default function UploadPage() {
+  return (
+    <Suspense fallback={null}>
+      <UploadPageInner />
+    </Suspense>
   );
 }
