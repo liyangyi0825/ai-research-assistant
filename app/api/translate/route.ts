@@ -27,15 +27,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "段落内容为空" }, { status: 400 });
     }
 
-    // 最多翻译 80 段，避免超 token 限制
-    const limited = paragraphs.slice(0, 80);
-
-    const prompt = `你是专业的科技论文翻译专家。你的任务是将给定的 ${limited.length} 个英文段落逐一翻译成中文。
+    const prompt = `你是专业的科技论文翻译专家。你的任务是将给定的 ${paragraphs.length} 个文本块逐一翻译成中文。
 
 【核心要求——必须严格遵守】
-- 输入有 ${limited.length} 个段落，你必须输出恰好 ${limited.length} 个译文，一一对应，不得多也不得少
-- 段落之间用 [|||] 分隔，除此之外不要输出任何其他内容
-- 禁止合并段落、禁止拆分段落、禁止跳过段落
+- 输入有 ${paragraphs.length} 个文本块，你必须输出恰好 ${paragraphs.length} 个译文，一一对应，不得多也不得少
+- 文本块之间用 [|||] 分隔，除此之外不要输出任何其他内容
+- 禁止合并文本块、禁止拆分文本块、禁止跳过文本块
 - 禁止输出原文、禁止解释、禁止加注释
 
 翻译规范：
@@ -43,12 +40,12 @@ export async function POST(req: NextRequest) {
 2. 专业术语格式：中文（English），例如"界面钝化（interface passivation）"
 3. 人名、机构名、期刊名、数据集名称保留英文原文
 
-输出格式示例（假设输入3段）：
-第一段的中文译文[|||]第二段的中文译文[|||]第三段的中文译文
+输出格式示例（假设输入3块）：
+第一块的中文译文[|||]第二块的中文译文[|||]第三块的中文译文
 
-现在请翻译以下 ${limited.length} 个段落（段落之间用 [PARA] 标记分隔）：
+现在请翻译以下 ${paragraphs.length} 个文本块（文本块之间用 [PARA] 标记分隔）：
 
-${limited.join("\n[PARA]\n")}`;
+${paragraphs.join("\n[PARA]\n")}`;
 
     const anthropicRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -59,7 +56,7 @@ ${limited.join("\n[PARA]\n")}`;
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
-        max_tokens: 2000,
+        max_tokens: 4000,
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),

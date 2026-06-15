@@ -37,82 +37,100 @@ async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
   }
 }
 
-// ── 段落类型 ───────────────────────────────────────────────────────────────
-type ParaType = "heading" | "abstract" | "paragraph" | "reference";
-interface Para { text: string; type: ParaType; }
+// ── 块类型 ─────────────────────────────────────────────────────────────────
+type ChunkType = "heading" | "paragraph" | "reference";
+interface Chunk { text: string; type: ChunkType; }
 
-// 判断是否为标题类行（数字编号、全大写、Abstract、References 等）
-function looksLikeHeading(line: string): boolean {
-  if (line.length >= 150) return false;
-  if (line.length < 2) return false;
-  // 全大写行：无小写字母、有大写字母、至少 6 字符（覆盖 INTRODUCTION / MATERIALS AND METHODS 等）
-  const isAllCaps = !/[a-z]/.test(line) && /[A-Z]/.test(line) && line.length >= 6;
-  return (
-    /^abstract$/i.test(line) ||
-    /^(references?|bibliography|works\s+cited)$/i.test(line) ||
-    /^keywords?\s*:/i.test(line) ||              // Keywords: / Key Words:
-    /^\d+\.[\d.]*\s+\S/.test(line) ||            // 1. Intro / 1.1 Methods
-    /^\d+\s+[A-Z]/.test(line) ||                 // 1 Introduction（无点）
-    /^[IVX]+\.\s+[A-Z]/.test(line) ||            // II. RELATED WORK
-    isAllCaps                                     // 全大写标题
-  );
+// 判断一段文本是否像章节标题
+function isHeadingText(s: string): boolean {
+  const t = s.trim();
+  if (t.length < 2 || t.length > 200) return false;
+  // 常见独立关键词（大小写不限）
+  if (/^(abstract|keywords?|references?|bibliography|acknowledgements?|notation|appendix)\.?$/i.test(t)) return true;
+  // 数字编号：1 Introduction / 2.1 Methods / 3.2.1 Analysis
+  if (/^\d+(\.\d+)*[\s.]\s*[A-Z一-鿿]/.test(t) && t.length < 120) return true;
+  // 罗马数字：II. RELATED WORK
+  if (/^[IVX]+\.\s+[A-Z]/.test(t) && t.length < 120) return true;
+  // 单词全大写（INTRODUCTION / CONCLUSIONS 等）
+  const words = t.split(/\s+/);
+  if (words.length === 1 && /^[A-Z]{4,}$/.test(t)) return true;
+  // 多词全大写（MATERIALS AND METHODS 等）
+  if (words.length >= 2 && words.length <= 10 && !/[a-z]/.test(t) && /[A-Z]/.test(t) && t.length >= 4) return true;
+  return false;
 }
 
-// ── 把原文拆成带类型的段落 ──────────────────────────────────────────────────
-// 按单个 \n 拆分，把连续非空行合并成段落块，
-// 遇到标题行（数字编号/全大写）或空行则另起一块。
-function splitIntoParagraphs(text: string): Para[] {
-  const lines = text.split("\n").map(l => l.trim());
-  const blocks: string[] = [];
-  let current: string[] = [];
+function isReferencesStart(s: string): boolean {
+  return /^(references?|bibliography|works\s+cited)\.?$/i.test(s.trim());
+}
 
-  function flush() {
-    if (current.length === 0) return;
-    blocks.push(current.join(" "));
-    current = [];
-  }
+// ── 句子切分（正文内容使用） ────────────────────────────────────────────────
+// 按句子结尾（。？！ 以及后跟空格的 .?!）切句，每 3-5 句或 400-600 字符一块
+function sentenceChunks(body: string): string[] {
+  if (!body.trim()) return [];
 
-  for (const line of lines) {
-    if (!line) {
-      flush();
+  const marked = body.replace(/([。？！]|[.?!](?=\s))/g, "$1\n");
+  const sentences = marked.split("\n").map(s => s.trim()).filter(s => s.length > 0);
+
+  const result: string[] = [];
+  let cur = "";
+  let count = 0;
+
+  for (const sent of sentences) {
+    // 超长无标点大块 → 按空格强制切到 600 字符以内
+    if (sent.length > 600) {
+      if (cur) { result.push(cur); cur = ""; count = 0; }
+      let rem = sent;
+      while (rem.length > 600) {
+        let cut = 600;
+        while (cut > 400 && rem[cut] !== " ") cut--;
+        if (cut <= 400) cut = 600;
+        result.push(rem.slice(0, cut).trim());
+        rem = rem.slice(cut).trim();
+      }
+      if (rem) { cur = rem; count = 1; }
       continue;
     }
-    if (looksLikeHeading(line)) {
-      flush();           // 先把前面积累的段落保存
-      blocks.push(line); // 标题单独成块
-      continue;
-    }
-    current.push(line);
-  }
-  flush();
 
-  // 分类 + 过滤页码等噪音
-  const result: Para[] = [];
+    cur += (cur ? " " : "") + sent;
+    count++;
+
+    const flush = (count >= 3 && cur.length >= 400) || count >= 5 || cur.length >= 600;
+    if (flush) { result.push(cur); cur = ""; count = 0; }
+  }
+  if (cur.trim()) result.push(cur.trim());
+  return result;
+}
+
+// ── 智能分块主函数 ─────────────────────────────────────────────────────────
+// 先按 \n 拆行，标题独立成块，正文按句子切分，参考文献单独标记
+function smartChunk(text: string): Chunk[] {
+  const rawLines = text.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+  const result: Chunk[] = [];
   let inRefs = false;
+  let bodyBuf = "";
 
-  for (const p of blocks) {
-    if (p.length < 10) continue; // 太短 = 噪音
-
-    const isRefsHeading = /^(references?|bibliography|works\s+cited)$/i.test(p);
-
-    let type: ParaType;
-    if (inRefs) {
-      type = "reference";
-    } else if (/^abstract$/i.test(p)) {
-      type = "abstract";
-    } else if (isRefsHeading) {
-      type = "heading"; // "References" 标题本身翻译为"参考文献"
-    } else if (looksLikeHeading(p)) {
-      type = "heading";
-    } else {
-      type = "paragraph";
+  function flushBody() {
+    if (!bodyBuf.trim()) return;
+    const type: ChunkType = inRefs ? "reference" : "paragraph";
+    for (const c of sentenceChunks(bodyBuf)) {
+      result.push({ text: c, type });
     }
-
-    if (isRefsHeading) inRefs = true;
-    result.push({ text: p, type });
+    bodyBuf = "";
   }
 
-  return result.slice(0, 300);
+  for (const line of rawLines) {
+    if (isHeadingText(line)) {
+      flushBody();
+      result.push({ text: line, type: "heading" });
+      if (isReferencesStart(line)) inRefs = true;
+    } else {
+      bodyBuf += (bodyBuf ? " " : "") + line;
+    }
+  }
+  flushBody();
+
+  return result.slice(0, 500);
 }
 
 // ── 骨架屏 ─────────────────────────────────────────────────────────────────
@@ -153,30 +171,28 @@ interface Props {
   backLabel?: string;
 }
 
-const BATCH_SIZE = 4; // 每次调用 API 翻译的段落数
+const BATCH_SIZE = 3;
 
 export function TranslationView({ extractedText, onBack, backLabel = "← 返回总结" }: Props) {
-  const [paragraphs, setParagraphs]             = useState<Para[]>([]);
-  const [translations, setTranslations]         = useState<string[]>([]);
-  const [status, setStatus]                     = useState<"loading" | "streaming" | "done" | "error">("loading");
-  const [error, setError]                       = useState("");
-  const [progressDone, setProgressDone]         = useState(0);
-  const [progressTotal, setProgressTotal]       = useState(0);
-  // 当前正在流式输出的段落索引（-1 = 无）
-  const [streamingParaIdx, setStreamingParaIdx] = useState(-1);
+  const [chunks, setChunks]               = useState<Chunk[]>([]);
+  const [translations, setTranslations]   = useState<string[]>([]);
+  const [status, setStatus]               = useState<"loading" | "streaming" | "done" | "error">("loading");
+  const [error, setError]                 = useState("");
+  const [progressDone, setProgressDone]   = useState(0);
+  const [progressTotal, setProgressTotal] = useState(0);
+  const [streamingIdx, setStreamingIdx]   = useState(-1);
 
-  const startTranslation = useCallback(async (paras: Para[]) => {
+  const startTranslation = useCallback(async (allChunks: Chunk[]) => {
     setStatus("loading");
     setError("");
     setProgressDone(0);
-    setStreamingParaIdx(-1);
-    // 参考文献条目预填英文原文，其余初始化为空
-    setTranslations(paras.map(p => p.type === "reference" ? p.text : ""));
+    setStreamingIdx(-1);
+    // 参考文献预填原文，其余初始化为空
+    setTranslations(allChunks.map(c => c.type === "reference" ? c.text : ""));
 
-    // 只翻译非参考文献段落
-    const translatableIdxs: number[] = paras
-      .map((p, i) => ({ p, i }))
-      .filter(({ p }) => p.type !== "reference")
+    const translatableIdxs = allChunks
+      .map((c, i) => ({ c, i }))
+      .filter(({ c }) => c.type !== "reference")
       .map(({ i }) => i);
 
     setProgressTotal(translatableIdxs.length);
@@ -186,14 +202,14 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
       return;
     }
 
-    // ── 翻译单批（BATCH_SIZE 段）────────────────────────────────────────
+    // ── 翻译单批 ──────────────────────────────────────────────────────────
     async function translateBatch(batchIdxs: number[]): Promise<void> {
-      const texts = batchIdxs.map(i => paras[i].text);
+      const texts = batchIdxs.map(i => allChunks[i].text);
       const res = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paragraphs: texts }),
-        signal: AbortSignal.timeout(30000), // 30 秒超时
+        signal: AbortSignal.timeout(60000),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -201,45 +217,39 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
       }
 
       let accumulated = "";
-
       for await (const chunk of streamAnthropicSSE(res)) {
         accumulated += chunk;
         const parts = accumulated.split("[|||]");
-
-        // 最后一个 part 对应当前正在流入的段落
         const lastApiIdx = Math.min(parts.length - 1, batchIdxs.length - 1);
-        setStreamingParaIdx(batchIdxs[lastApiIdx] ?? -1);
+        setStreamingIdx(batchIdxs[lastApiIdx] ?? -1);
 
         setTranslations(prev => {
           const next = [...prev];
           parts.forEach((part, apiIdx) => {
-            const paraIdx = batchIdxs[apiIdx];
-            if (paraIdx === undefined) return;
-            // 已有后续分隔符 = 该段完成，trim；最后一段还在流入，不 trim
-            next[paraIdx] = apiIdx < parts.length - 1 ? part.trim() : part;
+            const idx = batchIdxs[apiIdx];
+            if (idx === undefined) return;
+            next[idx] = apiIdx < parts.length - 1 ? part.trim() : part;
           });
           return next;
         });
       }
 
-      // 本批结束，trim 所有段落，清除流式指示器
       setTranslations(prev => {
         const next = [...prev];
         batchIdxs.forEach(i => { next[i] = (next[i] ?? "").trim(); });
         return next;
       });
-      setStreamingParaIdx(-1);
+      setStreamingIdx(-1);
     }
 
-    // ── 循环翻译所有批次 ─────────────────────────────────────────────────
+    // ── 循环翻译所有批次，失败则标记继续 ──────────────────────────────────
     setStatus("streaming");
     for (let b = 0; b < translatableIdxs.length; b += BATCH_SIZE) {
       const batchIdxs = translatableIdxs.slice(b, b + BATCH_SIZE);
       try {
         await translateBatch(batchIdxs);
       } catch (e) {
-        // 这批失败 → 标记失败文字，继续下一批，不停止整体流程
-        console.error("第", b / BATCH_SIZE + 1, "批翻译失败:", e);
+        console.error("第", Math.floor(b / BATCH_SIZE) + 1, "批翻译失败:", e);
         setTranslations(prev => {
           const next = [...prev];
           batchIdxs.forEach(idx => { next[idx] = "【翻译失败，请刷新页面重试】"; });
@@ -252,29 +262,18 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
   }, []);
 
   useEffect(() => {
-    const paras = splitIntoParagraphs(extractedText);
-    setParagraphs(paras);
-    startTranslation(paras);
+    const allChunks = smartChunk(extractedText);
+    setChunks(allChunks);
+    startTranslation(allChunks);
   }, [extractedText, startTranslation]);
 
-  // 拼接所有非参考文献译文，供「复制全文翻译」使用
-  const allTranslation = paragraphs
-    .map((p, i) => (p.type !== "reference" && translations[i]?.trim()) ? translations[i].trim() : null)
-    .filter(Boolean)
-    .join("\n\n");
-
-  // 计算摘要正文段落（Abstract 标题之后、下一个标题之前的普通段落）
-  const abstractBodyIdxs = useMemo(() => {
-    const idxs = new Set<number>();
-    let inAbstract = false;
-    for (let i = 0; i < paragraphs.length; i++) {
-      const p = paragraphs[i];
-      if (p.type === "abstract") { inAbstract = true; continue; }
-      if (inAbstract && (p.type === "heading" || p.type === "reference")) { inAbstract = false; }
-      if (inAbstract && p.type === "paragraph") idxs.add(i);
-    }
-    return idxs;
-  }, [paragraphs]);
+  const allTranslation = useMemo(() =>
+    chunks
+      .map((c, i) => (c.type !== "reference" && translations[i]?.trim()) ? translations[i].trim() : null)
+      .filter(Boolean)
+      .join("\n\n"),
+    [chunks, translations]
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
@@ -285,7 +284,7 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
           <span className="text-sm font-medium text-gray-700">📖 全文对照翻译</span>
           {status === "streaming" && (
             <span className="text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full">
-              正在翻译 第{Math.min(progressDone + 1, progressTotal)}段 / 共{progressTotal}段…
+              正在翻译 第{Math.min(progressDone + 1, progressTotal)}块 / 共{progressTotal}块…
             </span>
           )}
           {status === "done" && (
@@ -294,7 +293,7 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
           <div className="ml-auto flex items-center gap-2">
             {allTranslation && <CopyBtn text={allTranslation} label="复制全文翻译" />}
             {status === "error" && (
-              <Button size="sm" onClick={() => startTranslation(paragraphs)}>重试</Button>
+              <Button size="sm" onClick={() => startTranslation(chunks)}>重试</Button>
             )}
           </div>
         </div>
@@ -313,81 +312,71 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
           </div>
         )}
 
-        {paragraphs.length === 0 && status === "loading" && (
+        {chunks.length === 0 && status === "loading" && (
           <div className="p-12 text-center text-gray-400">
             <div className="text-3xl mb-3 animate-spin">⏳</div>
             <p>正在准备翻译…</p>
           </div>
         )}
 
-        {paragraphs.length > 0 && (
+        {chunks.length > 0 && (
           <div className="divide-y divide-gray-200 bg-white sm:rounded-xl overflow-hidden sm:shadow-sm">
-            {paragraphs.map((para, i) => {
+            {chunks.map((chunk, i) => {
               const zh = translations[i] ?? "";
-              const isHeadingType = para.type === "heading" || para.type === "abstract";
-              const isRef = para.type === "reference";
-              const isAbstractBody = abstractBodyIdxs.has(i);
+              const isHeading = chunk.type === "heading";
+              const isRef = chunk.type === "reference";
+              const isDone = isRef || (!!zh.trim() && i !== streamingIdx);
+              const isActive = !isRef && i === streamingIdx && status === "streaming";
 
-              // 有内容且不是当前流式段落 → 已完成
-              const isDone = !isRef && !!zh.trim() && i !== streamingParaIdx;
-              // 当前正在流式输出
-              const isActive = !isRef && i === streamingParaIdx && status === "streaming";
-
-              return (
-                <div
-                  key={i}
-                  className={`grid grid-cols-1 md:grid-cols-2 ${
-                    isHeadingType
-                      ? "border-l-4 border-l-blue-500 mt-2"
-                      : isAbstractBody
-                      ? "border-l-4 border-l-blue-200"
-                      : isRef
-                      ? "opacity-60"
-                      : ""
-                  }`}
-                >
-                  {/* 左：英文原文 */}
-                  <div className={`px-4 py-3 md:border-r border-gray-100 leading-relaxed ${
-                    isHeadingType
-                      ? "font-bold text-gray-900 text-base bg-gray-50"
-                      : isAbstractBody
-                      ? "text-sm text-gray-700 bg-blue-50/30 pl-6"
-                      : isRef
-                      ? "text-xs text-gray-500 bg-gray-50"
-                      : "text-sm text-gray-700 bg-blue-50/30"
-                  }`}>
-                    {!isHeadingType && !isRef && (
-                      <span className="text-blue-300 text-xs mr-2 select-none">{i + 1}</span>
-                    )}
-                    {para.text}
+              // ── 标题行 ──
+              if (isHeading) {
+                return (
+                  <div key={i} className="grid grid-cols-1 md:grid-cols-2 bg-gray-50 border-l-4 border-l-blue-500 mt-1">
+                    <div className="px-4 py-3 md:border-r border-gray-200 font-bold text-gray-900 text-base leading-snug">
+                      {chunk.text}
+                    </div>
+                    <div className="px-4 py-3 font-bold text-gray-900 text-base leading-snug">
+                      {isDone
+                        ? zh
+                        : isActive
+                        ? <>{zh}<span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" /></>
+                        : <Skeleton />}
+                    </div>
                   </div>
+                );
+              }
 
-                  {/* 右：中文译文 */}
-                  <div className={`px-4 py-3 leading-relaxed relative group ${
-                    isHeadingType
-                      ? "font-bold text-gray-900 text-base bg-gray-50"
-                      : isAbstractBody
-                      ? "text-sm text-gray-800 bg-white pl-6"
-                      : isRef
-                      ? "text-xs text-gray-500 bg-white"
-                      : "text-sm text-gray-800 bg-white"
-                  }`}>
-                    {isRef ? (
-                      zh // 参考文献右侧显示英文原文
-                    ) : isDone ? (
+              // ── 参考文献行 ──
+              if (isRef) {
+                return (
+                  <div key={i} className="grid grid-cols-1 md:grid-cols-2 opacity-60">
+                    <div className="px-4 py-2 md:border-r border-gray-100 text-xs text-gray-500 bg-gray-50 leading-relaxed">
+                      {chunk.text}
+                    </div>
+                    <div className="px-4 py-2 text-xs text-gray-500 bg-white leading-relaxed">
+                      {zh}
+                    </div>
+                  </div>
+                );
+              }
+
+              // ── 正文段落 ──
+              return (
+                <div key={i} className="grid grid-cols-1 md:grid-cols-2">
+                  <div className="px-4 py-3 md:border-r border-gray-100 text-sm text-gray-700 bg-blue-50/30 leading-relaxed">
+                    <span className="text-blue-300 text-xs mr-2 select-none">{i + 1}</span>
+                    {chunk.text}
+                  </div>
+                  <div className="px-4 py-3 text-sm text-gray-800 bg-white leading-relaxed relative group">
+                    {isDone ? (
                       <>
-                        {!isHeadingType && (
-                          <span className="hidden group-hover:block absolute top-2 right-2">
-                            <CopyBtn text={zh} />
-                          </span>
-                        )}
+                        <span className="hidden group-hover:block absolute top-2 right-2">
+                          <CopyBtn text={zh} />
+                        </span>
                         {zh}
                       </>
                     ) : isActive ? (
-                      <>
-                        {zh}
-                        <span className="inline-block w-0.5 h-3.5 bg-amber-400 ml-0.5 align-middle animate-pulse" />
-                      </>
+                      <>{zh}<span className="inline-block w-0.5 h-3.5 bg-amber-400 ml-0.5 align-middle animate-pulse" /></>
                     ) : (
                       <Skeleton />
                     )}
@@ -398,7 +387,6 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
           </div>
         )}
       </main>
-
     </div>
   );
 }
