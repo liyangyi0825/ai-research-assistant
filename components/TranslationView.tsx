@@ -81,9 +81,10 @@ function CopyBtn({ text, label = "复制" }: { text: string; label?: string }) {
 interface Props {
   extractedText: string;
   onBack: () => void;
+  backLabel?: string;
 }
 
-export function TranslationView({ extractedText, onBack }: Props) {
+export function TranslationView({ extractedText, onBack, backLabel = "← 返回总结" }: Props) {
   const [paragraphs, setParagraphs]     = useState<string[]>([]);
   const [translations, setTranslations] = useState<string[]>([]);
   const [status, setStatus]             = useState<"loading" | "streaming" | "done" | "error">("loading");
@@ -148,7 +149,7 @@ export function TranslationView({ extractedText, onBack }: Props) {
       <div className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-gray-200 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
           <Button variant="outline" size="sm" onClick={onBack}>
-            ← 返回总结
+            {backLabel}
           </Button>
           <span className="text-sm font-medium text-gray-700">📖 全文对照翻译</span>
           {status === "streaming" && (

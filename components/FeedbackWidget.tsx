@@ -66,16 +66,6 @@ export function FeedbackWidget() {
 
   return (
     <>
-      {/* ===== 浮动按钮（右下角）===== */}
-      <button
-        onClick={() => setIsOpen(true)}
-        className="fixed bottom-8 right-4 sm:bottom-6 sm:right-6 z-40 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-full shadow-lg shadow-blue-200 px-4 py-3 sm:py-2.5 text-sm font-medium transition-colors"
-        aria-label="提交反馈"
-      >
-        <span className="text-base">💬</span>
-        <span>反馈</span>
-      </button>
-
       {/* ===== 蒙层 + 弹窗 ===== */}
       {isOpen && (
         <div

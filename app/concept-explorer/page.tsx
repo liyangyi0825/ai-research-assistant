@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { toast } from "sonner";
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
 
@@ -383,7 +384,17 @@ export default function ConceptExplorerPage() {
             <div className="space-y-5">
               {/* AI 解释 */}
               <div>
-                <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide mb-2">AI 分析</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-blue-500 uppercase tracking-wide">AI 分析</p>
+                  {originAIStatus === "done" && originAI && (
+                    <button
+                      onClick={() => toast.info("「保存单条到笔记」功能即将上线 ✨")}
+                      className="text-xs text-gray-400 hover:text-blue-500 transition-colors flex items-center gap-1"
+                    >
+                      💾 保存到笔记
+                    </button>
+                  )}
+                </div>
                 {originAIStatus === "loading" && !originAI && <Skeleton lines={5} />}
                 {originAI && <MarkdownContent content={originAI} className="text-sm" />}
                 {originAIStatus === "error" && <p className="text-sm text-red-500">AI 分析失败</p>}
@@ -441,7 +452,17 @@ export default function ConceptExplorerPage() {
             status={conceptsStatus}
           >
             {conceptsStatus === "loading" && !conceptsAI && <Skeleton lines={8} />}
-            {conceptsAI && <MarkdownContent content={conceptsAI} className="text-sm" />}
+            {conceptsAI && (
+              <>
+                <MarkdownContent content={conceptsAI} className="text-sm" />
+                <button
+                  onClick={() => toast.info("「保存单条到笔记」功能即将上线 ✨")}
+                  className="mt-3 text-xs text-gray-400 hover:text-blue-500 transition-colors flex items-center gap-1"
+                >
+                  💾 保存到笔记
+                </button>
+              </>
+            )}
             {conceptsStatus === "error" && <p className="text-sm text-red-500">关联概念提取失败</p>}
           </BlockWrapper>
 
@@ -451,7 +472,17 @@ export default function ConceptExplorerPage() {
             status={ideasStatus}
           >
             {ideasStatus === "loading" && !ideasAI && <Skeleton lines={6} />}
-            {ideasAI && <MarkdownContent content={ideasAI} className="text-sm" />}
+            {ideasAI && (
+              <>
+                <MarkdownContent content={ideasAI} className="text-sm" />
+                <button
+                  onClick={() => toast.info("「保存单条到笔记」功能即将上线 ✨")}
+                  className="mt-3 text-xs text-gray-400 hover:text-blue-500 transition-colors flex items-center gap-1"
+                >
+                  💾 保存到笔记
+                </button>
+              </>
+            )}
             {ideasStatus === "error" && <p className="text-sm text-red-500">研究思路生成失败</p>}
           </BlockWrapper>
 

@@ -10,10 +10,10 @@ const NAV_GROUPS = [
     items: [
       { icon: "📄", label: "上传论文", href: "/upload" },
       { icon: "💬", label: "与论文对话", href: "/upload" },
-      { icon: "🌐", label: "全文翻译", href: "/upload" },
+      { icon: "🌐", label: "全文翻译", href: "/translate" },
       { icon: "🔍", label: "生成检索词", href: "/literature-search" },
       { icon: "🧭", label: "概念探索器", href: "/concept-explorer" },
-      { icon: "🎯", label: "论文转 PPT", href: "/upload" },
+      { icon: "🎯", label: "论文转 PPT", href: "/ppt" },
     ],
   },
   {
@@ -190,11 +190,12 @@ export function Sidebar({ onClose }: SidebarProps) {
           </p>
           <button
             onClick={handleLogout}
-            title="退出登录"
-            className="shrink-0 text-slate-500 hover:text-red-400 transition-colors p-1 rounded"
-            aria-label="退出登录"
+            className="shrink-0 text-xs transition-colors"
+            style={{ color: "#64748B" }}
+            onMouseEnter={e => (e.currentTarget.style.color = "#F87171")}
+            onMouseLeave={e => (e.currentTarget.style.color = "#64748B")}
           >
-            🚪
+            退出登录
           </button>
         </div>
 

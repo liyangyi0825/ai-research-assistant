@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
+import { toast } from "sonner";
 import type { AnalyzedPaper } from "@/app/api/papers/search/route";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -213,7 +214,7 @@ function SearchResults({
       {/* ─ AI 综合推荐面板 ─ */}
       {recommendStatus !== "idle" && (
         <div className="bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4">
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
             <span className="text-sm font-semibold text-amber-800">🤖 AI 综合推荐</span>
             {recommendStatus === "streaming" && <DotLoader />}
             {recommendStatus === "done" && (
@@ -221,6 +222,14 @@ function SearchResults({
             )}
             {recommendStatus === "error" && (
               <span className="text-xs text-red-500">分析失败，请重新搜索</span>
+            )}
+            {recommendStatus === "done" && recommendText && (
+              <button
+                onClick={() => toast.info("「保存单条到笔记」功能即将上线 ✨")}
+                className="ml-auto text-xs text-amber-600 hover:text-blue-500 transition-colors flex items-center gap-1"
+              >
+                💾 保存到笔记
+              </button>
             )}
           </div>
 
