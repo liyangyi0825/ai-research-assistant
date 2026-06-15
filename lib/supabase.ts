@@ -50,6 +50,11 @@ export async function checkUsageLimit(
 
     if (!user) return { allowed: false, used: 0, limit, userId: null };
 
+    // 管理员测试账号不受用量限制
+    if (user.email === "liyangyi0825@gmail.com") {
+      return { allowed: true, used: 0, limit: 999, userId: user.id };
+    }
+
     // 本月第一天 00:00:00
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
