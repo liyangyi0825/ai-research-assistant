@@ -680,23 +680,13 @@ function UploadPageInner() {
               {/* 生成完毕，拆分展示 */}
               {summaryStatus === "done" && (
                 <div className="space-y-3 sm:space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h2 className="text-lg sm:text-xl font-bold text-gray-800">📋 AI 论文总结</h2>
-                      {summaryFromDB && summaryUpdatedAt && (
-                        <p className="text-xs text-gray-400 mt-0.5">
-                          上次生成于 {new Date(summaryUpdatedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                        </p>
-                      )}
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="text-amber-700 border-amber-300 hover:bg-amber-50 shrink-0"
-                      onClick={() => setCurrentView("translate")}
-                    >
-                      🌐 全文翻译
-                    </Button>
+                  <div>
+                    <h2 className="text-lg sm:text-xl font-bold text-gray-800">📋 AI 论文总结</h2>
+                    {summaryFromDB && summaryUpdatedAt && (
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        上次生成于 {new Date(summaryUpdatedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                    )}
                   </div>
                   {parseSummary(summaryText).map(({ key, icon, content }) => {
                     const saveStatus = sectionSaveStatus[key] ?? "idle";
