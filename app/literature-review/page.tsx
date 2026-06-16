@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import { MarkdownContent } from "@/components/MarkdownContent";
@@ -62,6 +62,69 @@ export default function LiteratureReviewPage() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>(DEFAULT_EXPANDED);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [copyDone, setCopyDone] = useState(false);
+
+  // 刷新恢复
+  const [showRestoreBanner, setShowRestoreBanner] = useState(false);
+  const [restoredPaperNames, setRestoredPaperNames] = useState<string[]>([]);
+  const STORAGE_KEY = "iyanhub_review";
+  const SEVEN_DAYS  = 7 * 24 * 60 * 60 * 1000;
+
+  // 用 ref 持有最新保存函数，避免 setInterval 闭包陈旧
+  const saveLatestRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    saveLatestRef.current = () => {
+      const paperNames = files.length > 0 ? files.map(f => f.file.name) : restoredPaperNames;
+      if (!paperNames.length || !analysisText) return;
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          paperNames, extractedTexts, analysisText, timestamp: Date.now(),
+        }));
+      } catch { /* 静默 */ }
+    };
+  }, [files, restoredPaperNames, extractedTexts, analysisText]);
+
+  // 分析中每 2 秒保存一次
+  useEffect(() => {
+    if (stage !== "analyzing") return;
+    const timer = setInterval(() => saveLatestRef.current(), 2000);
+    return () => clearInterval(timer);
+  }, [stage]);
+
+  // 分析完成后立即保存完整结果
+  useEffect(() => {
+    if (stage === "done") saveLatestRef.current();
+  }, [stage]);
+
+  // 页面加载时恢复
+  useEffect(() => {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw) as {
+        paperNames: string[];
+        extractedTexts: string[];
+        analysisText: string;
+        timestamp: number;
+      };
+      if (Date.now() - data.timestamp > SEVEN_DAYS) {
+        localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      if (!data.analysisText || !data.paperNames?.length) return;
+      const texts = data.extractedTexts ?? [];
+      const initStatus: Record<number, ExtractStatus> = {};
+      data.paperNames.forEach((_, i) => { initStatus[i] = "done"; });
+      setRestoredPaperNames(data.paperNames);
+      setExtractedTexts(texts);
+      setTotalChars(texts.reduce((s, t) => s + t.length, 0));
+      setExtractStatus(initStatus);
+      setAnalysisText(data.analysisText);
+      setStage("done");
+      setExpanded(DEFAULT_EXPANDED);
+      setShowRestoreBanner(true);
+    } catch { /* 静默 */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // File management
   function addFiles(newFiles: File[]) {
@@ -206,6 +269,7 @@ export default function LiteratureReviewPage() {
   }
 
   function handleReset() {
+    localStorage.removeItem(STORAGE_KEY);
     setFiles([]);
     setStage("upload");
     setExtractStatus({});
@@ -216,11 +280,17 @@ export default function LiteratureReviewPage() {
     setSaveStatus("idle");
     setCopyDone(false);
     setExpanded(DEFAULT_EXPANDED);
+    setRestoredPaperNames([]);
+    setShowRestoreBanner(false);
   }
 
   const sections = useMemo(() => parseSections(analysisText), [analysisText]);
   const canAnalyze = files.length >= 2;
   const atMax = files.length >= 10;
+  const displayPaperNames = useMemo(
+    () => files.length > 0 ? files.map(f => f.file.name) : restoredPaperNames,
+    [files, restoredPaperNames]
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
@@ -236,6 +306,19 @@ export default function LiteratureReviewPage() {
               上传 2–10 篇相关论文，AI 帮你找出研究异同、脉络和空白
             </p>
           </div>
+
+          {/* 恢复 Banner */}
+          {showRestoreBanner && (
+            <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+              <span className="text-sm text-blue-700">✨ 已恢复上次的综述内容</span>
+              <button
+                onClick={handleReset}
+                className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap transition-colors"
+              >
+                清空重新开始
+              </button>
+            </div>
+          )}
 
           {/* ── 上传阶段 ── */}
           {stage === "upload" && (
@@ -336,16 +419,16 @@ export default function LiteratureReviewPage() {
                   </h2>
                 </div>
                 <ul className="divide-y divide-gray-50">
-                  {files.map((uf, idx) => {
+                  {displayPaperNames.map((name, idx) => {
                     const st = extractStatus[idx] ?? "pending";
                     return (
-                      <li key={uf.id} className="flex items-center gap-3 px-4 sm:px-5 py-2.5">
+                      <li key={`${name}-${idx}`} className="flex items-center gap-3 px-4 sm:px-5 py-2.5">
                         <span className="shrink-0 w-5 text-center text-sm">
                           {st === "loading" ? (
                             <span className="inline-block w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
                           ) : st === "done" ? "✅" : st === "error" ? "❌" : "⏳"}
                         </span>
-                        <span className="text-sm text-gray-600 truncate flex-1">{uf.file.name}</span>
+                        <span className="text-sm text-gray-600 truncate flex-1">{name}</span>
                         {st === "done" && extractedTexts[idx] !== undefined && (
                           <span className="text-xs text-gray-400 shrink-0">
                             {extractedTexts[idx].length.toLocaleString()} 字
