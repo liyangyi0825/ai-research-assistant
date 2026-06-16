@@ -31,7 +31,15 @@ export interface SectionSlide {
 export interface ContentSlide {
   type: "content";
   title: string;
-  points: string[]; // 每条最多 40 字，最多 6 条
+  paragraphs: string[]; // 1-2 段，每段 50-80 字
+  notes: string;
+}
+
+export interface FigureSlide {
+  type: "figure";
+  title: string;
+  figure_desc: string;  // 图表展示内容（30-50字）
+  analysis: string;     // 从图表得出的结论（50-80字）
   notes: string;
 }
 
@@ -83,7 +91,8 @@ export type Slide =
   | EndingSlide
   | StatsSlide
   | TableSlide
-  | ComparisonSlide;
+  | ComparisonSlide
+  | FigureSlide;
 
 export interface PptContent {
   title: string;
@@ -145,25 +154,27 @@ export async function POST(req: NextRequest) {
 【场景】${isDefense ? "毕业/学位答辩（正式学术风格，共 14-18 页）" : "组会/进展汇报（简洁风格，共 8-12 页）"}
 
 【⚠️ 字数红线（必须严格遵守，否则输出会被截断报错）】
-- 每条 point：最多 28 个字（含标点），只写关键词+数据，不写完整长句
+- content 页每个 paragraph：50-80 字，写完整陈述句（含数据）
+- figure 页 figure_desc：30-50 字；analysis：50-80 字
 - 每页 notes：最多 40 个字
-- 每张 content 页：3-5 条 point
 - 严格控制总页数在上述范围内
 
 【内容质量要求】
 1. 必须从论文中提取真实数据：参数、数值、对比结果，数字要精确
-2. 每条 point 格式：「核心词：关键数据或结论」（28字以内）
-   - 错误：「效率有所提升」
-   - 正确：「效率提升：12.3%→18.7%，增幅52%」
-3. 数据密集页面用 stats 或 table，对比分析用 comparison
-4. 检测论文图表（Figure/Table/图/表），每个重要图表生成 1 页说明
+2. content 页用 1-2 段完整段落，不要用列表或要点：
+   - 第一段：描述实验/研究内容和关键参数（50-80字）
+   - 第二段：分析结果和意义，含具体数值（50-80字）
+3. 每个重要图表（Figure/Table/图/表）生成 1 页 figure 类型：
+   - figure_desc：描述图表展示的数据（30-50字）
+   - analysis：从图表得出的结论，含数值（50-80字）
+4. 数据密集页面用 stats 或 table，对比分析用 comparison
 5. notes 用口语，告诉汇报人这页重点讲什么（40字以内）
 ${isDefense
   ? "6. 结构：封面→目录→章节过渡页→内容页→结尾页"
   : "6. 结构：封面→目录→内容页→结尾页"
 }
 
-【可用的幻灯片类型（8种）】
+【可用的幻灯片类型（9种）】
 
 1. cover
 { "type": "cover", "title": "论文完整标题", "subtitle": "专业/课题组名称", "author": "汇报人：xxx\\n指导教师：xxx 职称", "date": "${today}" }
@@ -174,29 +185,32 @@ ${isDefense
 3. section（章节过渡页）
 { "type": "section", "number": "01", "title": "章节标题" }
 
-4. content（普通内容页，3-5条要点，每条≤28字）
-{ "type": "content", "title": "页面标题", "points": ["要点1：数据/结论（≤28字）", "要点2：数据/结论（≤28字）", "要点3：..."], "notes": "口语备注，≤40字" }
+4. content（普通内容页，1-2段完整段落，不要用列表）
+{ "type": "content", "title": "实验结果分析", "paragraphs": ["第一段：描述实验过程和关键参数，含具体数值（50-80字）", "第二段：分析结果和科学意义，含具体数字（50-80字）"], "notes": "口语备注，≤40字" }
 
-5. stats（关键数据卡片，有多个重要数值时用）
+5. figure（图表分析页，每个重要图表一页）
+{ "type": "figure", "title": "图1：循环性能曲线", "figure_desc": "图表展示了不同电流密度下500次循环的容量保持率变化趋势", "analysis": "1C下经500次循环容量保持率达89%，远高于对照组76%，表明材料具有优异的循环稳定性，充分证明包覆层有效抑制了体积膨胀", "notes": "口语备注，≤40字" }
+
+6. stats（关键数据卡片，有多个重要数值时用）
 { "type": "stats", "title": "页面标题", "stats": [
   { "value": "4200", "unit": "mAh/g", "label": "硅理论比容量", "color": "1B3A8C" },
   { "value": "372", "unit": "mAh/g", "label": "石墨理论比容量", "color": "8B1A1A" },
   { "value": "300%", "unit": "体积膨胀", "label": "充放电过程", "color": "B8600A" }
 ], "notes": "口语备注，≤40字" }
 
-6. table（数据表格）
+7. table（数据表格）
 { "type": "table", "title": "页面标题", "headers": ["样品", "固含量", "粒径D90", "面负载量"], "rows": [
   ["样品A", "30 mg/mL", "2 μm", "0.8 mg/cm²"],
   ["样品B", "100 mg/mL", ">5 μm", "2.0 mg/cm²"]
 ], "notes": "口语备注，≤40字" }
 
-7. comparison（并排对比）
+8. comparison（并排对比）
 { "type": "comparison", "title": "页面标题", "columns": [
   { "heading": "方案A", "color": "1B6B3A", "points": ["要点1（≤20字）", "要点2", "要点3"] },
   { "heading": "方案B", "color": "8B1A1A", "points": ["要点1（≤20字）", "要点2", "要点3"] }
 ], "notes": "口语备注，≤40字" }
 
-8. ending
+9. ending
 { "type": "ending" }
 
 【论文内容说明】

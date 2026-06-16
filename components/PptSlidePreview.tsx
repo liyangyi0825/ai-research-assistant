@@ -3,7 +3,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import type {
   PptContent, Slide,
   CoverSlide, ContentsSlide, SectionSlide, ContentSlide,
-  StatsSlide, TableSlide, ComparisonSlide,
+  StatsSlide, TableSlide, ComparisonSlide, FigureSlide,
 } from "@/app/api/ppt/generate-content/route";
 
 // ── 颜色常量（与 generate-file 路由保持一致）────────────────────────────────
@@ -118,11 +118,9 @@ function Section({ s }: { s: SectionSlide }) {
 }
 
 function Content({ s }: { s: ContentSlide }) {
-  const pts = (s.points || []).slice(0, 6);
-  const n = pts.length;
-  const startY = 115;
-  const endY   = 515;
-  const spacing = n > 1 ? (endY - startY) / (n - 1) : 0;
+  const paras = (s.paragraphs || []).slice(0, 2);
+  const totalH = 562.5 - 125 - 20;
+  const paraH  = paras.length === 1 ? totalH : (totalH - 15) / 2;
   return (
     <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
@@ -131,21 +129,48 @@ function Content({ s }: { s: ContentSlide }) {
         color: C.WHITE, fontSize: f(20), fontWeight: 700 }}>
         {s.title}
       </div>
-      {pts.map((pt, i) => {
-        const py = n === 1 ? (startY + endY) / 2 - 25 : startY + i * spacing - 15;
-        return (
-          <div key={i} style={{ position: "absolute", left: 30, top: py, right: 20, display: "flex", alignItems: "flex-start", gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 4, background: C.NAVY, color: C.WHITE,
-              fontSize: f(10), fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center",
-              flexShrink: 0, marginTop: 1 }}>
-              {i + 1}
-            </div>
-            <div style={{ color: C.TEXT, fontSize: f(14), lineHeight: 1.5, flex: 1 }}>
-              {pt}
-            </div>
+      {paras.map((para, i) => (
+        <div key={i}>
+          <div style={{ position: "absolute", left: 35, top: 125 + i * (paraH + 15), right: 20, height: paraH,
+            color: C.TEXT, fontSize: f(16), lineHeight: 1.6, overflow: "hidden" }}>
+            {para}
           </div>
-        );
-      })}
+          {i < paras.length - 1 && (
+            <div style={{ position: "absolute", left: 35, top: 125 + paraH + 5, right: 20, height: 2, background: C.GRAY }} />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Figure({ s }: { s: FigureSlide }) {
+  return (
+    <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+      <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
+      <div style={{ position: "absolute", left: 0, top: 0, width: 12, bottom: 0, background: C.GOLD }} />
+      <div style={{ position: "absolute", left: 35, top: 0, right: 20, height: 100, display: "flex", alignItems: "center",
+        color: C.WHITE, fontSize: f(20), fontWeight: 700 }}>
+        {s.title}
+      </div>
+      {/* 图表描述区 */}
+      <div style={{ position: "absolute", left: 30, top: 115, right: 20, height: 140,
+        background: "#F5F7FF", borderRadius: 6, display: "flex", alignItems: "center", padding: "0 20px" }}>
+        <div style={{ color: "#6B7280", fontSize: f(14), fontStyle: "italic", lineHeight: 1.6 }}>
+          {s.figure_desc}
+        </div>
+      </div>
+      {/* 分隔线 */}
+      <div style={{ position: "absolute", left: 35, top: 265, right: 20, height: 2, background: C.GRAY }} />
+      {/* 分析标签 */}
+      <div style={{ position: "absolute", left: 35, top: 278, color: C.NAVY, fontSize: f(13), fontWeight: 700 }}>
+        分析：
+      </div>
+      {/* 分析内容 */}
+      <div style={{ position: "absolute", left: 35, top: 318, right: 20, bottom: 20,
+        color: C.TEXT, fontSize: f(16), lineHeight: 1.6, overflow: "hidden" }}>
+        {s.analysis}
+      </div>
     </div>
   );
 }
@@ -308,6 +333,7 @@ function renderSlide(slide: Slide) {
     case "contents":   return <Contents s={slide} />;
     case "section":    return <Section s={slide} />;
     case "content":    return <Content s={slide} />;
+    case "figure":     return <Figure s={slide} />;
     case "stats":      return <Stats s={slide} />;
     case "table":      return <Table s={slide} />;
     case "comparison": return <Comparison s={slide} />;
@@ -322,6 +348,7 @@ const TYPE_BADGE: Record<string, { bg: string; label: string }> = {
   contents:   { bg: "#7C3AED", label: "目录" },
   section:    { bg: "#1D4ED8", label: "章节" },
   content:    { bg: "#374151", label: "内容" },
+  figure:     { bg: "#0D7090", label: "图表" },
   stats:      { bg: "#B45309", label: "数据" },
   table:      { bg: "#0D9488", label: "表格" },
   comparison: { bg: "#C2410C", label: "对比" },

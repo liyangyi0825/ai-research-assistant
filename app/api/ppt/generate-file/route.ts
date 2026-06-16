@@ -15,6 +15,7 @@ import type {
   StatsSlide,
   TableSlide,
   ComparisonSlide,
+  FigureSlide,
 } from "@/app/api/ppt/generate-content/route";
 
 // ── 颜色常量 ─────────────────────────────────────────────────────────────────
@@ -146,28 +147,54 @@ function renderContent(prs: PptxGenJS, s: ContentSlide) {
     fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 
-  const pts = (s.points || []).slice(0, 6);
-  const n = pts.length;
-  const startY = 1.15;
-  const endY   = 5.15;
-  const spacing = n > 1 ? (endY - startY) / (n - 1) : 0;
+  const paras = (s.paragraphs || []).slice(0, 2);
+  const contentH = H - 1.25 - 0.2;
+  const paraH    = paras.length === 1 ? contentH : (contentH - 0.15) / 2;
 
-  pts.forEach((pt, i) => {
-    const py = n === 1 ? (startY + endY) / 2 - 0.25 : startY + i * spacing - 0.15;
-    slide.addShape("rect", opt({ x: 0.3, y: py, w: 0.32, h: 0.32, fill: { color: C.NAVY }, rectRadius: 0.04 }));
-    slide.addText(`${i + 1}`, opt({
-      x: 0.3, y: py, w: 0.32, h: 0.32,
-      fontSize: 10, bold: true, color: C.WHITE, fontFace: "微软雅黑",
-      align: "center", valign: "middle",
+  paras.forEach((para, i) => {
+    const py = 1.25 + i * (paraH + 0.15);
+    slide.addText(para, opt({
+      x: 0.35, y: py, w: 9.3, h: paraH,
+      fontSize: 16, color: C.TEXT, fontFace: "微软雅黑",
+      align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.4,
     }));
-    slide.addText(pt, opt({
-      x: 0.72, y: py - 0.03, w: 9.0, h: 0.5,
-      fontSize: 14, color: C.TEXT, fontFace: "微软雅黑", valign: "middle", wrap: true,
-    }));
-    if (i < n - 1) {
-      slide.addShape("rect", opt({ x: 0.3, y: py + 0.38, w: 9.3, h: 0.01, fill: { color: C.GRAY } }));
+    if (i < paras.length - 1) {
+      slide.addShape("rect", opt({ x: 0.35, y: py + paraH + 0.05, w: 9.3, h: 0.02, fill: { color: C.GRAY } }));
     }
   });
+}
+
+function renderFigure(prs: PptxGenJS, s: FigureSlide) {
+  const slide = prs.addSlide();
+  addBg(slide, C.WHITE);
+  slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
+  slide.addShape("rect", opt({ x: 0, y: 0, w: 0.12, h: H, fill: { color: C.GOLD } }));
+  slide.addText(s.title || "", opt({
+    x: 0.35, y: 0, w: 9.3, h: 1.0,
+    fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
+  }));
+
+  // 图表描述区（灰色背景 + 斜体）
+  slide.addShape("rect", opt({ x: 0.3, y: 1.15, w: 9.4, h: 1.4, fill: { color: "F5F7FF" }, rectRadius: 0.06 }));
+  slide.addText(s.figure_desc || "", opt({
+    x: 0.5, y: 1.2, w: 9.0, h: 1.3,
+    fontSize: 14, color: "6B7280", fontFace: "微软雅黑", italic: true,
+    align: "left", valign: "middle", wrap: true, lineSpacingMultiple: 1.5,
+  }));
+
+  // 分隔线
+  slide.addShape("rect", opt({ x: 0.35, y: 2.65, w: 9.3, h: 0.03, fill: { color: C.GRAY } }));
+
+  // 分析区
+  slide.addText("分析：", opt({
+    x: 0.35, y: 2.78, w: 1.0, h: 0.35,
+    fontSize: 13, bold: true, color: C.NAVY, fontFace: "微软雅黑",
+  }));
+  slide.addText(s.analysis || "", opt({
+    x: 0.35, y: 3.18, w: 9.3, h: 2.2,
+    fontSize: 16, color: C.TEXT, fontFace: "微软雅黑",
+    align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.5,
+  }));
 }
 
 function renderStats(prs: PptxGenJS, s: StatsSlide) {
@@ -357,6 +384,7 @@ export async function POST(req: NextRequest) {
         case "contents":   renderContents(prs, slide);   break;
         case "section":    renderSection(prs, slide);    break;
         case "content":    renderContent(prs, slide);    break;
+        case "figure":     renderFigure(prs, slide);     break;
         case "stats":      renderStats(prs, slide);      break;
         case "table":      renderTable(prs, slide);      break;
         case "comparison": renderComparison(prs, slide); break;
