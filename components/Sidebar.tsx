@@ -131,14 +131,13 @@ export function Sidebar({ onClose }: SidebarProps) {
 
       {/* ── 新建按钮 ─────────────────────────────────────── */}
       <div className="px-3 mb-2">
-        <Link
-          href="/upload"
-          onClick={onClose}
+        <button
+          onClick={() => { onClose?.(); window.location.href = "/upload"; }}
           className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium text-white border border-slate-600 hover:border-slate-400 hover:bg-slate-700 transition-all"
         >
           <span className="text-base leading-none">+</span>
           <span>新建分析</span>
-        </Link>
+        </button>
       </div>
 
       {/* ── 导航菜单（含近期论文）────────────────────────── */}
