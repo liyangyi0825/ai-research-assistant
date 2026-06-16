@@ -48,11 +48,27 @@ function formatRelativeTime(iso: string): string {
   return `${Math.floor(days / 30)}个月前`;
 }
 
+// href → SPA tab key 的映射
+const HREF_TO_TAB: Record<string, string> = {
+  "/upload":            "upload",
+  "/translate":         "translate",
+  "/literature-search": "literature-search",
+  "/concept-explorer":  "concept-explorer",
+  "/ppt":               "ppt",
+  "/literature-review": "literature-review",
+  "/my-papers":         "my-papers",
+  "/my-profile":        "my-profile",
+  "/my-notes":          "my-notes",
+  "/help":              "help",
+};
+
 interface SidebarProps {
   onClose?: () => void;
+  activeTab?: string;
+  onTabChange?: (tab: string) => void;
 }
 
-export function Sidebar({ onClose }: SidebarProps) {
+export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
   const pathname = usePathname();
   const router   = useRouter();
   const [email, setEmail]               = useState<string | null>(null);
@@ -66,13 +82,13 @@ export function Sidebar({ onClose }: SidebarProps) {
     });
   }, []);
 
-  // 路由切换时重新拉取近期论文（pathname 变化 = 用户导航了）
+  // pathname 或 activeTab 切换时刷新近期论文
   useEffect(() => {
     fetch("/api/my-papers?limit=5")
       .then(r => r.json())
       .then(d => setRecentPapers(d.papers ?? []))
       .catch(() => { /* 静默失败 */ });
-  }, [pathname]);
+  }, [pathname, activeTab]);
 
   async function handleDeletePaper(id: string, title: string) {
     if (!confirm(`确定删除这篇论文的记录吗？\n「${title.slice(0, 60)}」\n\n删除后无法恢复。`)) return;
@@ -102,6 +118,12 @@ export function Sidebar({ onClose }: SidebarProps) {
   }
 
   function isActive(href: string) {
+    if (activeTab) {
+      // SPA 模式：对比 activeTab
+      const tab = HREF_TO_TAB[href];
+      return tab === activeTab;
+    }
+    // 路由模式：对比 pathname（兼容直接 URL 访问）
     if (href === "/upload") {
       return pathname === "/" || pathname === "/upload" || pathname.startsWith("/upload?");
     }
@@ -117,12 +139,17 @@ export function Sidebar({ onClose }: SidebarProps) {
     >
       {/* ── 顶部 Logo ───────────────────────────────────── */}
       <div className="flex items-center justify-between px-4 py-4">
-        <Link href="/" onClick={onClose} className="flex items-center gap-2 group">
-          <span className="text-2xl">🔬</span>
-          <span className="font-bold text-white text-lg tracking-tight group-hover:text-blue-300 transition-colors">
-            易研
-          </span>
-        </Link>
+        {onTabChange ? (
+          <button onClick={() => { onTabChange("upload"); onClose?.(); }} className="flex items-center gap-2 group">
+            <span className="text-2xl">🔬</span>
+            <span className="font-bold text-white text-lg tracking-tight group-hover:text-blue-300 transition-colors">易研</span>
+          </button>
+        ) : (
+          <Link href="/" onClick={onClose} className="flex items-center gap-2 group">
+            <span className="text-2xl">🔬</span>
+            <span className="font-bold text-white text-lg tracking-tight group-hover:text-blue-300 transition-colors">易研</span>
+          </Link>
+        )}
         {onClose && (
           <button onClick={onClose} className="text-slate-400 hover:text-white p-1 rounded md:hidden">
             ✕
@@ -133,7 +160,14 @@ export function Sidebar({ onClose }: SidebarProps) {
       {/* ── 新建按钮 ─────────────────────────────────────── */}
       <div className="px-3 mb-2">
         <button
-          onClick={() => { onClose?.(); window.location.href = "/upload"; }}
+          onClick={() => {
+            if (onTabChange) {
+              onTabChange("upload");
+            } else {
+              window.location.href = "/upload";
+            }
+            onClose?.();
+          }}
           className="flex items-center justify-center gap-2 w-full py-2 rounded-lg text-sm font-medium text-white border border-slate-600 hover:border-slate-400 hover:bg-slate-700 transition-all"
         >
           <span className="text-base leading-none">+</span>
@@ -187,26 +221,28 @@ export function Sidebar({ onClose }: SidebarProps) {
             <ul className="space-y-0.5">
               {group.items.map((item) => {
                 const active = isActive(item.href);
+                const tab    = HREF_TO_TAB[item.href];
+                const cls    = `relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all w-full text-left ${
+                  active ? "bg-slate-700 text-white font-medium" : "text-slate-300 hover:bg-slate-700/60 hover:text-white"
+                }`;
+                const indicator = active && (
+                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r" style={{ background: "#3B82F6" }} />
+                );
                 return (
                   <li key={item.label}>
-                    <Link
-                      href={item.href}
-                      onClick={onClose}
-                      className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
-                        active
-                          ? "bg-slate-700 text-white font-medium"
-                          : "text-slate-300 hover:bg-slate-700/60 hover:text-white"
-                      }`}
-                    >
-                      {active && (
-                        <span
-                          className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r"
-                          style={{ background: "#3B82F6" }}
-                        />
-                      )}
-                      <span className="text-base leading-none">{item.icon}</span>
-                      <span>{item.label}</span>
-                    </Link>
+                    {onTabChange && tab ? (
+                      <button onClick={() => { onTabChange(tab); onClose?.(); }} className={cls}>
+                        {indicator}
+                        <span className="text-base leading-none">{item.icon}</span>
+                        <span>{item.label}</span>
+                      </button>
+                    ) : (
+                      <Link href={item.href} onClick={onClose} className={cls}>
+                        {indicator}
+                        <span className="text-base leading-none">{item.icon}</span>
+                        <span>{item.label}</span>
+                      </Link>
+                    )}
                   </li>
                 );
               })}
@@ -230,24 +266,30 @@ export function Sidebar({ onClose }: SidebarProps) {
               </button>
             </li>
             <li>
-              <Link
-                href="/help"
-                onClick={onClose}
-                className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
-                  pathname === "/help"
-                    ? "bg-slate-700 text-white font-medium"
-                    : "text-slate-300 hover:bg-slate-700/60 hover:text-white"
-                }`}
-              >
-                {pathname === "/help" && (
-                  <span
-                    className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r"
-                    style={{ background: "#3B82F6" }}
-                  />
-                )}
-                <span className="text-base leading-none">❓</span>
-                <span>帮助中心</span>
-              </Link>
+              {onTabChange ? (
+                <button
+                  onClick={() => { onTabChange("help"); onClose?.(); }}
+                  className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all w-full text-left ${
+                    activeTab === "help" ? "bg-slate-700 text-white font-medium" : "text-slate-300 hover:bg-slate-700/60 hover:text-white"
+                  }`}
+                >
+                  {activeTab === "help" && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r" style={{ background: "#3B82F6" }} />}
+                  <span className="text-base leading-none">❓</span>
+                  <span>帮助中心</span>
+                </button>
+              ) : (
+                <Link
+                  href="/help"
+                  onClick={onClose}
+                  className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
+                    pathname === "/help" ? "bg-slate-700 text-white font-medium" : "text-slate-300 hover:bg-slate-700/60 hover:text-white"
+                  }`}
+                >
+                  {pathname === "/help" && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r" style={{ background: "#3B82F6" }} />}
+                  <span className="text-base leading-none">❓</span>
+                  <span>帮助中心</span>
+                </Link>
+              )}
             </li>
           </ul>
         </div>

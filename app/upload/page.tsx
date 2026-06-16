@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, Suspense } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { Header } from "@/components/Header";
@@ -87,7 +87,6 @@ interface Message {
 
 function UploadPageInner() {
   const searchParams = useSearchParams();
-  const router = useRouter();
 
   // ── PDF 提取状态 ──
   const [extractStatus, setExtractStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -168,6 +167,14 @@ function UploadPageInner() {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // 总结文字更新时存 localStorage（包含流式中间状态，切换回来可恢复）
+  useEffect(() => {
+    if (!paperId || !summaryText) return;
+    try {
+      localStorage.setItem(`iyanhub_summary_${paperId}`, summaryText);
+    } catch { /* 静默失败 */ }
+  }, [summaryText, paperId]);
+
   // 对话结束后把消息存到 localStorage（流式中不存，避免频繁写入）
   useEffect(() => {
     if (!paperId || chatLoading || messages.length === 0) return;
@@ -208,6 +215,15 @@ function UploadPageInner() {
           setSummaryUpdatedAt(summaryData.summary.updated_at ?? summaryData.summary.created_at);
           setSummaryText(summaryData.summary.summary_content);
           setSummaryStatus("done");
+        } else {
+          // DB 无总结（可能切换时还在生成中）→ 从 localStorage 恢复
+          try {
+            const localSummary = localStorage.getItem(`iyanhub_summary_${id}`);
+            if (localSummary) {
+              setSummaryText(localSummary);
+              setSummaryStatus("done");
+            }
+          } catch { /* 静默失败 */ }
         }
 
         // 恢复对话记录
@@ -236,7 +252,6 @@ function UploadPageInner() {
       const data = await res.json();
       if (data.id) {
         setPaperId(data.id);
-        router.replace(`/upload?paper=${data.id}`, { scroll: false });
       }
     } catch { /* 静默失败 */ }
   }
@@ -295,7 +310,10 @@ function UploadPageInner() {
 
   function handleReset() {
     if (paperId) {
-      try { localStorage.removeItem(`iyanhub_chat_${paperId}`); } catch { /* 静默失败 */ }
+      try {
+        localStorage.removeItem(`iyanhub_chat_${paperId}`);
+        localStorage.removeItem(`iyanhub_summary_${paperId}`);
+      } catch { /* 静默失败 */ }
     }
     setExtractStatus("idle");
     setExtractedText("");
@@ -322,7 +340,6 @@ function UploadPageInner() {
     setSummaryUpdatedAt(null);
     setIsRestored(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
-    router.replace("/upload", { scroll: false });
   }
 
   // ─── 保存总结模块到笔记 ──────────────────────────────────────────────────────
