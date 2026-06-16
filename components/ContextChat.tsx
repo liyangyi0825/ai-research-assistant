@@ -178,7 +178,7 @@ export function ContextChat({
               <div className="flex justify-start">
                 <div className="max-w-[90%] bg-gray-50 border border-gray-100 rounded-2xl rounded-tl-sm px-4 py-3">
                   {streamingText ? (
-                    <MarkdownContent content={streamingText} className="text-sm" />
+                    <pre className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap" style={{ fontFamily: "inherit" }}>{streamingText}</pre>
                   ) : (
                     <span className="inline-flex gap-1 items-center">
                       <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce [animation-delay:-0.3s]" />

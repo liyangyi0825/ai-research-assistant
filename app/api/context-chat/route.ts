@@ -54,6 +54,7 @@ export async function POST(req: NextRequest) {
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
+    const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
@@ -74,10 +75,15 @@ export async function POST(req: NextRequest) {
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
+      let lastHeartbeat = Date.now();
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
+          if (Date.now() - lastHeartbeat > 5000) {
+            await writer.write(encoder.encode(": k\n\n"));
+            lastHeartbeat = Date.now();
+          }
           await writer.write(value);
           sseBuffer += decoder.decode(value, { stream: true });
           const lines = sseBuffer.split("\n");
