@@ -322,6 +322,12 @@ export default function PptPage() {
                       >
                         {pptDownloading ? "正在生成 PPTX…" : "⬇ 下载 PPTX 文件"}
                       </Button>
+
+                      {pptContent.slides?.some((s: { type: string }) => s.type === "figure") && (
+                        <p className="text-xs text-gray-400 text-center leading-relaxed">
+                          💡 图表页已预留占位框，下载后在对应页面插入你的实验图即可
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>

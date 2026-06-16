@@ -174,26 +174,27 @@ function renderFigure(prs: PptxGenJS, s: FigureSlide) {
     fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 
-  // 图表描述区（灰色背景 + 斜体）
-  slide.addShape("rect", opt({ x: 0.3, y: 1.15, w: 9.4, h: 1.4, fill: { color: "F5F7FF" }, rectRadius: 0.06 }));
-  slide.addText(s.figure_desc || "", opt({
-    x: 0.5, y: 1.2, w: 9.0, h: 1.3,
-    fontSize: 14, color: "6B7280", fontFace: "微软雅黑", italic: true,
-    align: "left", valign: "middle", wrap: true, lineSpacingMultiple: 1.5,
+  // 图表占位框（虚线边框 + 灰色背景）
+  slide.addShape("rect", opt({
+    x: 0.5, y: 1.15, w: 9.0, h: 2.8,
+    fill: { color: "F5F5F5" },
+    line: { color: "CCCCCC", dashType: "dash", pt: 1 },
   }));
-
-  // 分隔线
-  slide.addShape("rect", opt({ x: 0.35, y: 2.65, w: 9.3, h: 0.03, fill: { color: C.GRAY } }));
+  slide.addText("请在此插入图表", opt({
+    x: 0.5, y: 1.9, w: 9.0, h: 0.5,
+    fontSize: 16, color: "AAAAAA", fontFace: "微软雅黑", align: "center",
+  }));
+  slide.addText(`[${s.title || "图表标题"}]`, opt({
+    x: 0.5, y: 2.45, w: 9.0, h: 0.35,
+    fontSize: 11, color: "CCCCCC", fontFace: "微软雅黑", align: "center",
+  }));
 
   // 分析区
-  slide.addText("分析：", opt({
-    x: 0.35, y: 2.78, w: 1.0, h: 0.35,
-    fontSize: 13, bold: true, color: C.NAVY, fontFace: "微软雅黑",
-  }));
+  slide.addShape("rect", opt({ x: 0.35, y: 4.05, w: 9.3, h: 0.02, fill: { color: C.GRAY } }));
   slide.addText(s.analysis || "", opt({
-    x: 0.35, y: 3.18, w: 9.3, h: 2.2,
-    fontSize: 16, color: C.TEXT, fontFace: "微软雅黑",
-    align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.5,
+    x: 0.35, y: 4.15, w: 9.3, h: 1.3,
+    fontSize: 13, color: C.TEXT, fontFace: "微软雅黑",
+    align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.4,
   }));
 }
 

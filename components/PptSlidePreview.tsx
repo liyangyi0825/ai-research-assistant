@@ -153,22 +153,21 @@ function Figure({ s }: { s: FigureSlide }) {
         color: C.WHITE, fontSize: f(20), fontWeight: 700 }}>
         {s.title}
       </div>
-      {/* 图表描述区 */}
-      <div style={{ position: "absolute", left: 30, top: 115, right: 20, height: 140,
-        background: "#F5F7FF", borderRadius: 6, display: "flex", alignItems: "center", padding: "0 20px" }}>
-        <div style={{ color: "#6B7280", fontSize: f(14), fontStyle: "italic", lineHeight: 1.6 }}>
-          {s.figure_desc}
-        </div>
+      {/* 图表占位框 */}
+      <div style={{
+        position: "absolute", left: 50, top: 115, right: 50, height: 280,
+        background: "#F5F5F5",
+        border: "2px dashed #CCCCCC",
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+      }}>
+        <div style={{ color: "#AAAAAA", fontSize: f(16) }}>请在此插入图表</div>
+        <div style={{ color: "#CCCCCC", fontSize: f(11) }}>{s.title}</div>
       </div>
       {/* 分隔线 */}
-      <div style={{ position: "absolute", left: 35, top: 265, right: 20, height: 2, background: C.GRAY }} />
-      {/* 分析标签 */}
-      <div style={{ position: "absolute", left: 35, top: 278, color: C.NAVY, fontSize: f(13), fontWeight: 700 }}>
-        分析：
-      </div>
+      <div style={{ position: "absolute", left: 35, top: 405, right: 20, height: 2, background: C.GRAY }} />
       {/* 分析内容 */}
-      <div style={{ position: "absolute", left: 35, top: 318, right: 20, bottom: 20,
-        color: C.TEXT, fontSize: f(16), lineHeight: 1.6, overflow: "hidden" }}>
+      <div style={{ position: "absolute", left: 35, top: 415, right: 20, bottom: 15,
+        color: C.TEXT, fontSize: f(13), lineHeight: 1.6, overflow: "hidden" }}>
         {s.analysis}
       </div>
     </div>
