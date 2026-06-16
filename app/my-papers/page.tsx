@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { Header } from "@/components/Header";
 
 interface Paper {
@@ -26,8 +24,11 @@ function formatFileSize(bytes: number | null): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function dispatchLoadPaper(id: string | null) {
+  window.dispatchEvent(new CustomEvent("spa-load-paper", { detail: { id } }));
+}
+
 export default function MyPapersPage() {
-  const router = useRouter();
   const [papers, setPapers]   = useState<Paper[]>([]);
   const [total, setTotal]     = useState(0);
   const [page, setPage]       = useState(1);
@@ -87,13 +88,13 @@ export default function MyPapersPage() {
             <h1 className="text-xl font-bold text-gray-800 mb-0.5">📚 我的论文</h1>
             <p className="text-sm text-gray-500">所有上传过的论文，点击继续分析</p>
           </div>
-          <Link
-            href="/upload"
+          <button
+            onClick={() => dispatchLoadPaper(null)}
             className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-all"
             style={{ background: "#3B82F6" }}
           >
             + 上传新论文
-          </Link>
+          </button>
         </div>
 
         {/* 搜索栏 */}
@@ -132,9 +133,9 @@ export default function MyPapersPage() {
               {query ? `没有找到「${query}」相关的论文` : "还没有上传过论文，去上传第一篇吧"}
             </p>
             {!query && (
-              <Link href="/upload" className="mt-3 inline-block text-sm text-blue-500 hover:underline">
+              <button onClick={() => dispatchLoadPaper(null)} className="mt-3 inline-block text-sm text-blue-500 hover:underline">
                 上传第一篇论文 →
-              </Link>
+              </button>
             )}
             {query && (
               <button onClick={() => setSearch("")} className="mt-3 text-sm text-blue-500 hover:underline">
@@ -155,7 +156,7 @@ export default function MyPapersPage() {
               {papers.map((paper) => (
                 <div
                   key={paper.id}
-                  onClick={() => router.push(`/paper/${paper.id}`)}
+                  onClick={() => dispatchLoadPaper(paper.id)}
                   className="bg-white rounded-xl border border-gray-100 px-4 py-3.5 hover:border-blue-200 hover:shadow-sm transition-all cursor-pointer group"
                 >
                   <div className="flex items-center justify-between gap-3">

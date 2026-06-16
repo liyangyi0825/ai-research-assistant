@@ -1,52 +1,31 @@
 "use client";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 const NAV_GROUPS = [
   {
     label: "功能",
     items: [
-      { icon: "📄", label: "上传论文", href: "/upload" },
-      { icon: "💬", label: "与论文对话", href: "/upload" },
-      { icon: "🌐", label: "全文翻译", href: "/translate" },
-      { icon: "🔍", label: "生成检索词", href: "/literature-search" },
-      { icon: "🧭", label: "概念探索器", href: "/concept-explorer" },
-      { icon: "🎯", label: "论文转 PPT", href: "/ppt" },
+      { icon: "📄", label: "上传论文",     href: "/upload" },
+      { icon: "💬", label: "与论文对话",   href: "/upload" },
+      { icon: "🌐", label: "全文翻译",     href: "/translate" },
+      { icon: "🔍", label: "生成检索词",   href: "/literature-search" },
+      { icon: "🧭", label: "概念探索器",   href: "/concept-explorer" },
+      { icon: "🎯", label: "论文转 PPT",   href: "/ppt" },
       { icon: "📚", label: "多篇综述对比", href: "/literature-review" },
     ],
   },
   {
     label: "我的",
     items: [
-      { icon: "📁", label: "我的论文", href: "/my-papers" },
+      { icon: "📁", label: "我的论文",     href: "/my-papers" },
       { icon: "👤", label: "我的科研档案", href: "/my-profile" },
       { icon: "📝", label: "我的研究笔记", href: "/my-notes" },
     ],
   },
 ];
-
-interface RecentPaper {
-  id: string;
-  title: string;
-  created_at: string;
-}
-
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins  = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days  = Math.floor(diff / 86400000);
-  if (mins  < 1)  return "刚刚";
-  if (hours < 1)  return `${mins}分钟前`;
-  if (hours < 24) return `${hours}小时前`;
-  if (days  === 1) return "昨天";
-  if (days  < 7)  return `${days}天前`;
-  if (days  < 30) return `${Math.floor(days / 7)}周前`;
-  return `${Math.floor(days / 30)}个月前`;
-}
 
 // href → SPA tab key 的映射
 const HREF_TO_TAB: Record<string, string> = {
@@ -70,41 +49,14 @@ interface SidebarProps {
 
 export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
   const pathname = usePathname();
-  const router   = useRouter();
-  const [email, setEmail]               = useState<string | null>(null);
-  const [recentPapers, setRecentPapers] = useState<RecentPaper[]>([]);
+  const [email, setEmail] = useState<string | null>(null);
 
-  // 获取登录用户
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     supabase.auth.getUser().then(({ data }) => {
       setEmail(data.user?.email ?? null);
     });
   }, []);
-
-  // pathname 或 activeTab 切换时刷新近期论文
-  useEffect(() => {
-    fetch("/api/my-papers?limit=5")
-      .then(r => r.json())
-      .then(d => setRecentPapers(d.papers ?? []))
-      .catch(() => { /* 静默失败 */ });
-  }, [pathname, activeTab]);
-
-  async function handleDeletePaper(id: string, title: string) {
-    if (!confirm(`确定删除这篇论文的记录吗？\n「${title.slice(0, 60)}」\n\n删除后无法恢复。`)) return;
-    try {
-      const res = await fetch(`/api/my-papers/${id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error();
-      setRecentPapers(prev => prev.filter(p => p.id !== id));
-      // 如果正在查看这篇论文，跳转回论文库
-      if (pathname === `/paper/${id}` || pathname.startsWith(`/paper/${id}?`)) {
-        toast.success("论文已删除");
-        router.push("/my-papers");
-      }
-    } catch {
-      toast.error("删除失败，请重试");
-    }
-  }
 
   async function handleLogout() {
     const supabase = getSupabaseBrowserClient();
@@ -119,11 +71,8 @@ export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
 
   function isActive(href: string) {
     if (activeTab) {
-      // SPA 模式：对比 activeTab
-      const tab = HREF_TO_TAB[href];
-      return tab === activeTab;
+      return HREF_TO_TAB[href] === activeTab;
     }
-    // 路由模式：对比 pathname（兼容直接 URL 访问）
     if (href === "/upload") {
       return pathname === "/" || pathname === "/upload" || pathname.startsWith("/upload?");
     }
@@ -175,44 +124,8 @@ export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
         </button>
       </div>
 
-      {/* ── 导航菜单（含近期论文）────────────────────────── */}
+      {/* ── 导航菜单 ─────────────────────────────────────── */}
       <nav className="flex-1 overflow-y-auto px-2 space-y-4 pb-2">
-
-        {/* 近期论文 */}
-        {recentPapers.length > 0 && (
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider px-3 mb-1" style={{ color: "#64748B" }}>
-              近期论文
-            </p>
-            <ul className="space-y-0.5">
-              {recentPapers.map((paper) => (
-                <li key={paper.id} className="group relative rounded-lg hover:bg-slate-700/60 transition-all">
-                  <Link
-                    href={`/paper/${paper.id}`}
-                    onClick={onClose}
-                    className="flex flex-col px-3 py-2 pr-7"
-                  >
-                    <span className="text-xs text-slate-300 truncate leading-snug group-hover:text-white transition-colors">
-                      {paper.title}
-                    </span>
-                    <span className="text-[10px] mt-0.5" style={{ color: "#475569" }}>
-                      {formatRelativeTime(paper.created_at)}
-                    </span>
-                  </Link>
-                  <button
-                    onClick={() => handleDeletePaper(paper.id, paper.title)}
-                    title="删除"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded text-slate-500 hover:text-red-400"
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {/* 功能导航组 */}
         {NAV_GROUPS.map((group) => (
           <div key={group.label}>
             <p className="text-xs font-semibold uppercase tracking-wider px-3 mb-1.5" style={{ color: "#64748B" }}>

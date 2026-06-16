@@ -86,6 +86,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
+  // 监听「我的论文」点击事件 → 切到 upload tab（upload 页自行加载论文）
+  useEffect(() => {
+    function onLoadPaper() {
+      setActiveTab("upload");
+      setMountedTabs(prev => new Set([...prev, "upload"]));
+      window.location.hash = "upload";
+    }
+    window.addEventListener("spa-load-paper", onLoadPaper);
+    return () => window.removeEventListener("spa-load-paper", onLoadPaper);
+  }, []);
+
   function handleTabChange(tab: string) {
     setActiveTab(tab);
     setSidebarOpen(false);

@@ -237,6 +237,79 @@ function UploadPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── 从「我的论文」跳转过来时，按 paper_id 加载论文 + 总结 ──────────
+  async function loadPaperById(id: string) {
+    // 先清空当前状态
+    setExtractStatus("idle");
+    setExtractedText("");
+    setFileName("");
+    setSummaryStatus("idle");
+    setSummaryText("");
+    setSummaryError("");
+    setMessages([]);
+    setCiteStatus("idle");
+    setBibtex("");
+    setGbt7714("");
+    setCurrentView("summary");
+    setPptStatus("idle");
+    setPptScene(null);
+    setPptContent(null);
+    setPaperId(null);
+    setSectionSaveStatus({});
+    setChatSaveStatus({});
+    setSummaryFromDB(false);
+    setSummaryUpdatedAt(null);
+    setIsRestored(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    try {
+      const res = await fetch(`/api/my-papers/${id}`);
+      if (!res.ok) return;
+      const { paper } = await res.json();
+      if (!paper) return;
+
+      setPaperId(id);
+      setFileName(paper.title);
+      setExtractedText(paper.content || "");
+      setExtractStatus("done");
+      setIsRestored(true);
+
+      // 加载已有总结
+      const summaryRes  = await fetch(`/api/paper-summaries?paperId=${id}`);
+      const summaryData = await summaryRes.json();
+      if (summaryData.summary?.summary_content) {
+        setSummaryFromDB(true);
+        setSummaryUpdatedAt(summaryData.summary.updated_at ?? summaryData.summary.created_at);
+        setSummaryText(summaryData.summary.summary_content);
+        setSummaryStatus("done");
+      } else {
+        // 尝试从 localStorage 恢复生成中的总结
+        try {
+          const local = localStorage.getItem(`iyanhub_summary_${id}`);
+          if (local) { setSummaryText(local); setSummaryStatus("done"); }
+        } catch { /* 静默 */ }
+      }
+
+      // 恢复对话记录
+      try {
+        const saved = localStorage.getItem(`iyanhub_chat_${id}`);
+        if (saved) setMessages(JSON.parse(saved));
+      } catch { /* 静默 */ }
+    } catch { /* 静默 */ }
+  }
+
+  // 监听来自「我的论文」的跳转事件
+  useEffect(() => {
+    function onLoadPaper(e: Event) {
+      const id = (e as CustomEvent<{ id: string | null }>).detail?.id;
+      if (id) loadPaperById(id);
+      // id 为 null 时：只是切 tab，不加载（相当于新建分析）
+    }
+    window.addEventListener("spa-load-paper", onLoadPaper);
+    return () => window.removeEventListener("spa-load-paper", onLoadPaper);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── 提取完成后保存到数据库，并记录 paperId 供笔记来源追踪 ──
   async function savePaperToDB(text: string, file: File) {
     try {
