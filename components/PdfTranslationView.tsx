@@ -62,10 +62,13 @@ function Skeleton() {
 interface Props {
   file: File;
   onBack: () => void;
-  onTranslationComplete?: (pages: { text: string; translation: string }[]) => void;
+  // 每页翻译完成后调用（含当前所有页面状态），用于增量写 DB；可返回 Promise
+  onPageTranslated?: (pages: { text: string; translation: string }[]) => Promise<void> | void;
+  // 所有页面翻译完成后调用，用于标记 is_complete=true
+  onTranslationEnd?: () => Promise<void> | void;
 }
 
-export function PdfTranslationView({ file, onBack, onTranslationComplete }: Props) {
+export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslationEnd }: Props) {
   const [numPages, setNumPages]           = useState(0);
   const [renderedPages, setRenderedPages] = useState(0);
   const [pages, setPages]                 = useState<PageState[]>([]);
@@ -75,9 +78,6 @@ export function PdfTranslationView({ file, onBack, onTranslationComplete }: Prop
   const leftRef    = useRef<HTMLDivElement>(null);
   const rightRef   = useRef<HTMLDivElement>(null);
   const syncingRef = useRef(false);
-  // 始终同步最新 pages 到 ref，保证回调拿到完整数据
-  const pagesRef   = useRef<PageState[]>([]);
-  pagesRef.current = pages;
 
   // ── 加载、渲染 PDF，然后逐页翻译 ─────────────────────────────────────────
   useEffect(() => {
@@ -163,6 +163,9 @@ export function PdfTranslationView({ file, onBack, onTranslationComplete }: Prop
         setTransProgress({ done: 0, total: translatableCount });
         setPhase("translating");
 
+        // 用本地数组追踪每页最终译文，避免依赖 React state 的时序问题
+        const pageTranslations: string[] = new Array(initialPages.length).fill("");
+
         let translatedCount = 0;
         let isFirst = true;
 
@@ -170,7 +173,6 @@ export function PdfTranslationView({ file, onBack, onTranslationComplete }: Prop
           if (cancelled) break;
           if (initialPages[i].status !== "pending") continue;
 
-          // 标记翻译中
           setPages(prev => {
             const next = [...prev];
             next[i] = { ...next[i], status: "translating" };
@@ -194,10 +196,13 @@ export function PdfTranslationView({ file, onBack, onTranslationComplete }: Prop
               throw new Error((data as { error?: string }).error || "翻译失败");
             }
 
-            isFirst = false; // 之后的页不再检查用量
+            isFirst = false;
 
+            // 本地变量追踪流式内容（同时更新 React state 用于显示）
+            let localText = "";
             for await (const chunk of streamAnthropicSSE(res)) {
               if (cancelled) break;
+              localText += chunk;
               setPages(prev => {
                 const next = [...prev];
                 next[i] = { ...next[i], translation: next[i].translation + chunk };
@@ -205,15 +210,22 @@ export function PdfTranslationView({ file, onBack, onTranslationComplete }: Prop
               });
             }
 
+            localText = localText.trim();
+            pageTranslations[i] = localText;
+
             setPages(prev => {
               const next = [...prev];
-              next[i] = {
-                ...next[i],
-                status: "done",
-                translation: next[i].translation.trim(),
-              };
+              next[i] = { ...next[i], status: "done", translation: localText };
               return next;
             });
+
+            // 每页完成后通知父组件保存（await 保证顺序，避免 DB 写入竞争）
+            if (!cancelled && onPageTranslated) {
+              await onPageTranslated(initialPages.map((p, idx) => ({
+                text:        p.text,
+                translation: pageTranslations[idx],
+              })));
+            }
           } catch (e) {
             console.error(`第 ${i + 1} 页翻译失败:`, e);
             setPages(prev => {
@@ -221,7 +233,6 @@ export function PdfTranslationView({ file, onBack, onTranslationComplete }: Prop
               next[i] = { ...next[i], status: "error" };
               return next;
             });
-            // 如果是第一页用量超限，直接停止
             if (isFirst && e instanceof Error && e.message.includes("次数已用完")) {
               setGlobalError(e.message);
               break;
@@ -232,7 +243,11 @@ export function PdfTranslationView({ file, onBack, onTranslationComplete }: Prop
           setTransProgress({ done: translatedCount, total: translatableCount });
         }
 
-        if (!cancelled) setPhase("done");
+        if (!cancelled) {
+          setPhase("done");
+          // 通知父组件翻译全部完成（用于标记 is_complete=true）
+          if (onTranslationEnd) await onTranslationEnd();
+        }
       } catch (err) {
         if (!cancelled) {
           setGlobalError(err instanceof Error ? err.message : "PDF 加载失败，请重试");
@@ -246,15 +261,6 @@ export function PdfTranslationView({ file, onBack, onTranslationComplete }: Prop
     run();
     return () => { cancelled = true; };
   }, [file]);
-
-  // 翻译完成后，把所有页面数据传给父组件（用于保存到 DB）
-  useEffect(() => {
-    if (phase === "done" && onTranslationComplete && pagesRef.current.length > 0) {
-      onTranslationComplete(pagesRef.current.map(p => ({ text: p.text, translation: p.translation })));
-    }
-  // 只在 phase 变化时触发，pagesRef 是 ref 不影响依赖
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
 
   // ── 同步滚动 ──────────────────────────────────────────────────────────────
   useEffect(() => {

@@ -4,7 +4,9 @@
 
 import { NextRequest, NextResponse, after } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
+import { checkUsageLimit, insertUsageRecord, getSupabaseAuthClient } from "@/lib/supabase";
+
+const DB_SAVE_INTERVAL = 400; // 每累积 400 个字符写一次数据库
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,7 +18,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 用量限额检查（每月 5 次总结），同时取得 userId 供后续写入
+    // 用量限额检查
     const { allowed, used, limit, userId } = await checkUsageLimit("summarize");
     if (!allowed) {
       return NextResponse.json(
@@ -25,13 +27,39 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { content } = await req.json();
+    // 获取 Supabase 客户端（用于增量保存）
+    const supabase = await getSupabaseAuthClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { content, paperId } = await req.json() as { content: string; paperId?: string };
 
     if (!content || content.trim().length === 0) {
       return NextResponse.json({ error: "论文内容为空" }, { status: 400 });
     }
 
     const truncatedContent = content.slice(0, 80000);
+
+    // 如果有 paperId，先在 DB 创建/重置总结记录（is_complete=false），
+    // 这样刷新页面时就能看到"总结未完成"状态
+    if (paperId && user) {
+      const { data: existing } = await supabase
+        .from("paper_summaries")
+        .select("id")
+        .eq("paper_id", paperId)
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (existing) {
+        await supabase
+          .from("paper_summaries")
+          .update({ summary_content: "", is_complete: false, updated_at: new Date().toISOString() })
+          .eq("id", existing.id);
+      } else {
+        await supabase
+          .from("paper_summaries")
+          .insert({ paper_id: paperId, user_id: user.id, summary_content: "", is_complete: false });
+      }
+    }
 
     // 调用 Anthropic API，开启 stream: true
     const anthropicRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
@@ -55,7 +83,7 @@ export async function POST(req: NextRequest) {
 - 不要写空洞的描述（如"作者提出了一种新方法"），要写出方法的具体名字和做法
 - 如果论文有实验数据，必须在【主要结论】中列出关键数字
 - 数学公式用简单 LaTeX 格式：行内公式用 $...$，独立公式用 $$...$$
-- 禁止使用 \begin{align}、\begin{cases}、\begin{equation} 等复杂环境，改用文字描述或简单的单行公式
+- 禁止使用 \\begin{align}、\\begin{cases}、\\begin{equation} 等复杂环境，改用文字描述或简单的单行公式
 
 格式要求：
 - 严格按照【研究问题】【研究方法】【主要结论】【创新点】四个标题输出
@@ -80,10 +108,7 @@ ${truncatedContent}
       );
     }
 
-    // ── 流式透传 + 提取 token 用量 ──────────────────────────────────
-    // TransformStream 把 Anthropic SSE 流原封不动转发给前端，
-    // 同时解析 message_start / message_delta 事件拿到真实 token 数，
-    // 流结束后写入 usage 表。
+    // ── 流式透传 + 提取 token 用量 + 增量保存到 DB ──────────────────────
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
@@ -91,8 +116,9 @@ ${truncatedContent}
 
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
     let sseBuffer = "";
+    let accumulatedText = "";   // 累积已生成的总结文字
+    let lastDbSaveLen = 0;      // 上次写 DB 时的文字长度
 
-    // after() 在响应流发完后执行，Vercel 保证它能跑完再关闭函数
     if (userId) {
       after(async () => {
         await insertUsageRecord({
@@ -114,7 +140,7 @@ ${truncatedContent}
           const { done, value } = await reader.read();
           if (done) break;
 
-          // 每5秒发一次心跳，防止 Nginx proxy_read_timeout 断开
+          // 每 5 秒发一次心跳，防止 Nginx proxy_read_timeout 断开
           if (Date.now() - lastHeartbeat > 5000) {
             await writer.write(encoder.encode(": k\n\n"));
             lastHeartbeat = Date.now();
@@ -123,7 +149,7 @@ ${truncatedContent}
           // 原样转发给前端
           await writer.write(value);
 
-          // 解析 token 信息
+          // 解析 SSE：拿 token 数 + 提取生成文字
           sseBuffer += decoder.decode(value, { stream: true });
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop() ?? "";
@@ -140,9 +166,35 @@ ${truncatedContent}
                 cacheRead   = evt.message.usage.cache_read_input_tokens ?? 0;
               } else if (evt.type === "message_delta" && evt.usage) {
                 outputTokens = evt.usage.output_tokens ?? 0;
+              } else if (
+                evt.type === "content_block_delta" &&
+                evt.delta?.type === "text_delta" &&
+                typeof evt.delta.text === "string"
+              ) {
+                accumulatedText += evt.delta.text;
+                // 每累积 DB_SAVE_INTERVAL 个字符写一次数据库（非阻塞）
+                if (paperId && user && accumulatedText.length - lastDbSaveLen >= DB_SAVE_INTERVAL) {
+                  lastDbSaveLen = accumulatedText.length;
+                  void supabase.from("paper_summaries")
+                    .update({ summary_content: accumulatedText })
+                    .eq("paper_id", paperId)
+                    .eq("user_id", user.id);
+                }
               }
             } catch { /* 跳过无法解析的行 */ }
           }
+        }
+
+        // 流结束：保存完整总结并标记 is_complete=true
+        if (paperId && user && accumulatedText) {
+          await supabase.from("paper_summaries")
+            .update({
+              summary_content: accumulatedText,
+              is_complete:     true,
+              updated_at:      new Date().toISOString(),
+            })
+            .eq("paper_id", paperId)
+            .eq("user_id", user.id);
         }
       } finally {
         writer.close().catch(() => {});

@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
 
     const { data } = await supabase
       .from("paper_summaries")
-      .select("summary_content, created_at, updated_at")
+      .select("summary_content, is_complete, created_at, updated_at")
       .eq("paper_id", paperId)
       .eq("user_id", user.id)
       .order("updated_at", { ascending: false })

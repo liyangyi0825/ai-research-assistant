@@ -116,6 +116,7 @@ function UploadPageInner() {
   // ── 总结历史加载状态 ──
   const [summaryFromDB, setSummaryFromDB]       = useState(false);
   const [summaryUpdatedAt, setSummaryUpdatedAt] = useState<string | null>(null);
+  const [summaryIsComplete, setSummaryIsComplete] = useState(true); // false = 上次总结中途中断
 
   // ── 是否从 URL 恢复的论文 ──
   const [isRestored, setIsRestored] = useState(false);
@@ -250,12 +251,15 @@ function UploadPageInner() {
         setSummaryUpdatedAt(summaryData.summary.updated_at ?? summaryData.summary.created_at);
         setSummaryText(summaryData.summary.summary_content);
         setSummaryStatus("done");
+        // is_complete 缺省为 true（兼容旧数据）
+        setSummaryIsComplete(summaryData.summary.is_complete ?? true);
       } else {
         // 降级：从 localStorage 恢复生成中的总结
         try {
           const local = localStorage.getItem(`iyanhub_summary_${id}`);
           if (local) { setSummaryText(local); setSummaryStatus("done"); }
         } catch { /* 静默 */ }
+        setSummaryIsComplete(true);
       }
 
       // 从 paper_chats 恢复对话记录
@@ -387,6 +391,7 @@ function UploadPageInner() {
     setChatSaveStatus({});
     setSummaryFromDB(false);
     setSummaryUpdatedAt(null);
+    setSummaryIsComplete(true);
     setIsRestored(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
     window.history.replaceState(null, "", "#upload");
@@ -460,7 +465,8 @@ function UploadPageInner() {
       const res = await fetch("/api/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: extractedText }),
+        // 传 paperId，由服务端负责增量写 DB（is_complete=false 开始，完成后=true）
+        body: JSON.stringify({ content: extractedText, paperId }),
       });
 
       if (!res.ok) {
@@ -468,24 +474,16 @@ function UploadPageInner() {
         throw new Error(data.error || "总结失败");
       }
 
-      // 逐块读取并累积文字
       let fullText = "";
       for await (const chunk of streamAnthropicSSE(res)) {
-        if (summaryStreamId.current !== myId) return; // 用户已重新生成，丢弃旧流
+        if (summaryStreamId.current !== myId) return;
         fullText += chunk;
         setSummaryText(fullText);
       }
 
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("done");
-      // 自动保存总结到数据库（静默，不影响用户体验）
-      if (paperId && fullText) {
-        fetch("/api/paper-summaries", {
-          method:  "POST",
-          headers: { "Content-Type": "application/json" },
-          body:    JSON.stringify({ paperId, summaryContent: fullText }),
-        }).catch(() => { /* 静默失败 */ });
-      }
+      setSummaryIsComplete(true); // 流式完成，标记前端状态
     } catch (err) {
       if (summaryStreamId.current !== myId) return;
       setSummaryStatus("error");
@@ -787,6 +785,21 @@ function UploadPageInner() {
               {/* 生成完毕，拆分展示 */}
               {summaryStatus === "done" && (
                 <div className="space-y-3 sm:space-y-4">
+                  {/* 总结未完成提示（上次刷新导致中断）*/}
+                  {!summaryIsComplete && (
+                    <div className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                      <div>
+                        <p className="text-sm font-medium text-amber-800">⚠️ 上次总结未完成</p>
+                        <p className="text-xs text-amber-600 mt-0.5">显示的是中断前已生成的内容，可重新生成完整总结</p>
+                      </div>
+                      <button
+                        onClick={handleSummarize}
+                        className="shrink-0 ml-4 px-3 py-1.5 text-sm rounded-lg bg-amber-500 text-white hover:bg-amber-600 transition-colors"
+                      >
+                        重新生成
+                      </button>
+                    </div>
+                  )}
                   <div>
                     <h2 className="text-lg sm:text-xl font-bold text-gray-800">📋 AI 论文总结</h2>
                     {summaryFromDB && summaryUpdatedAt && (
