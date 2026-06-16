@@ -15,6 +15,7 @@ const NAV_GROUPS = [
       { icon: "🔍", label: "生成检索词", href: "/literature-search" },
       { icon: "🧭", label: "概念探索器", href: "/concept-explorer" },
       { icon: "🎯", label: "论文转 PPT", href: "/ppt" },
+      { icon: "📚", label: "多篇综述对比", href: "/literature-review" },
     ],
   },
   {
