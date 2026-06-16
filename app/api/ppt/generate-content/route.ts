@@ -278,13 +278,19 @@ ${paperContent.slice(0, 24000)}`;
           }
         }
 
-        // 解析 Claude 输出的 JSON
-        const cleaned = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        // 解析 Claude 输出的 JSON（容错：去掉代码块标记，截取最外层 {} 范围）
+        const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        const jsonStart = stripped.indexOf("{");
+        const jsonEnd   = stripped.lastIndexOf("}");
+        const cleaned   = (jsonStart !== -1 && jsonEnd > jsonStart)
+          ? stripped.slice(jsonStart, jsonEnd + 1)
+          : stripped;
+
         let pptContent: PptContent;
         try {
           pptContent = JSON.parse(cleaned);
         } catch {
-          console.error("PPT JSON 解析失败，原始输出：", rawText.slice(0, 500));
+          console.error("PPT JSON 解析失败，输出前 800 字：", rawText.slice(0, 800));
           await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
           return;
         }
