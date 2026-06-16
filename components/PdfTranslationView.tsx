@@ -354,38 +354,69 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
           className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-4"
         />
 
-        {/* 右：逐页翻译 */}
+        {/* 右：逐页翻译（模拟论文PDF样式） */}
         <div
           ref={rightRef}
-          className="w-1/2 overflow-y-auto bg-white border-l border-gray-200"
+          className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-4"
         >
           {pages.map((page, i) => (
             <div
               key={i}
-              // min-height 与左侧 canvas 高度对齐（+8 是左侧 margin-bottom）
-              style={{ minHeight: page.canvasHeight + 8 }}
-              className="px-5 py-4 border-b border-gray-100 text-sm leading-7 text-gray-800"
+              style={{
+                height: page.canvasHeight,
+                marginBottom: 8,
+                background: "#fff",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                overflow: "auto",
+                padding: "20px 28px",
+                fontFamily: '"Source Han Serif SC","Noto Serif SC","Songti SC",宋体,SimSun,serif',
+                fontSize: "13px",
+                lineHeight: "1.65",
+                color: "#1a1a1a",
+                boxSizing: "border-box",
+                display: "flex",
+                flexDirection: "column",
+              }}
             >
-              {page.status === "pending" && <Skeleton />}
+              {/* 页码 */}
+              <div style={{
+                fontSize: "11px",
+                color: "#9ca3af",
+                fontFamily: "system-ui,sans-serif",
+                borderBottom: "1px solid #f0f0f0",
+                paddingBottom: "6px",
+                marginBottom: "10px",
+                flexShrink: 0,
+              }}>
+                第 {i + 1} 页
+              </div>
 
-              {page.status === "translating" && (
-                <div className="whitespace-pre-wrap">
-                  {page.translation}
-                  <span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" />
-                </div>
-              )}
+              <div style={{ flex: 1, overflow: "auto" }}>
+                {page.status === "pending" && <Skeleton />}
 
-              {page.status === "done" && (
-                <div className="whitespace-pre-wrap">{page.translation}</div>
-              )}
+                {page.status === "translating" && (
+                  <div style={{ whiteSpace: "pre-wrap" }}>
+                    {page.translation}
+                    <span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" />
+                  </div>
+                )}
 
-              {page.status === "error" && (
-                <span className="text-red-400 text-xs">第 {i + 1} 页翻译失败</span>
-              )}
+                {page.status === "done" && (
+                  <div style={{ whiteSpace: "pre-wrap" }}>{page.translation}</div>
+                )}
 
-              {page.status === "empty" && (
-                <span className="text-gray-300 text-xs">（此页无文字内容）</span>
-              )}
+                {page.status === "error" && (
+                  <span style={{ color: "#ef4444", fontSize: "12px", fontFamily: "system-ui" }}>
+                    第 {i + 1} 页翻译失败
+                  </span>
+                )}
+
+                {page.status === "empty" && (
+                  <span style={{ color: "#d1d5db", fontSize: "12px", fontFamily: "system-ui" }}>
+                    （此页无文字内容）
+                  </span>
+                )}
+              </div>
             </div>
           ))}
         </div>
