@@ -67,16 +67,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isAuthPage   = AUTH_PATHS.some(p => pathname.startsWith(p));
   const isBypassPage = BYPASS_PATHS.some(p => pathname.startsWith(p));
 
-  // 首次加载：从 URL hash 恢复 tab
+  // 首次加载：从 URL hash 恢复 tab（支持 #upload?paper=xxx 格式）
   useEffect(() => {
-    const hash = window.location.hash.slice(1);
-    if (hash && TAB_KEYS.includes(hash)) {
-      setActiveTab(hash);
-      setMountedTabs(prev => new Set([...prev, hash]));
+    const raw = window.location.hash.slice(1);       // "upload?paper=xxx"
+    const tabKey = raw.split("?")[0];                // "upload"
+    if (tabKey && TAB_KEYS.includes(tabKey)) {
+      setActiveTab(tabKey);
+      setMountedTabs(prev => new Set([...prev, tabKey]));
     }
     // 监听浏览器前进/后退
     function onHashChange() {
-      const h = window.location.hash.slice(1);
+      const h = window.location.hash.slice(1).split("?")[0];
       if (TAB_KEYS.includes(h)) {
         setActiveTab(h);
         setMountedTabs(prev => new Set([...prev, h]));
@@ -101,7 +102,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setActiveTab(tab);
     setSidebarOpen(false);
     setMountedTabs(prev => new Set([...prev, tab]));
-    window.location.hash = tab;
+    // 只在切换到不同 tab 时更新 hash；各功能页面自行在 hash 里追加 ?paper= 等参数
+    const currentTab = window.location.hash.slice(1).split("?")[0];
+    if (currentTab !== tab) {
+      window.location.hash = tab;
+    }
   }
 
   // 登录/注册、论文详情等：原样渲染，不走 SPA

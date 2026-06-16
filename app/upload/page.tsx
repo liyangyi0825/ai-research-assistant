@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { Header } from "@/components/Header";
@@ -86,7 +85,6 @@ interface Message {
 }
 
 function UploadPageInner() {
-  const searchParams = useSearchParams();
 
   // ── PDF 提取状态 ──
   const [extractStatus, setExtractStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -175,12 +173,19 @@ function UploadPageInner() {
     } catch { /* 静默失败 */ }
   }, [summaryText, paperId]);
 
-  // 对话结束后把消息存到 localStorage（流式中不存，避免频繁写入）
+  // 对话结束后同步保存到数据库 + localStorage（流式中不存，避免频繁写入）
   useEffect(() => {
     if (!paperId || chatLoading || messages.length === 0) return;
+    // localStorage 兜底
     try {
       localStorage.setItem(`iyanhub_chat_${paperId}`, JSON.stringify(messages));
     } catch { /* 静默失败 */ }
+    // 写入数据库（fire-and-forget）
+    fetch("/api/paper-chats", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ paperId, messages }),
+    }).catch(() => {});
   }, [messages, paperId, chatLoading]);
 
   // 总结完成后自动触发引用生成（从 DB 加载的已有总结不重复生成）
@@ -191,49 +196,11 @@ function UploadPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summaryStatus]);
 
-  // URL 参数 ?paper=<id> 时自动从数据库加载已有论文
+  // 页面加载时：从 URL hash 读取 paper ID（格式 #upload?paper=xxx），恢复状态
   useEffect(() => {
-    const id = searchParams.get("paper");
-    if (!id) return;
-    setPaperId(id);
-    setIsRestored(true);
-    async function load() {
-      try {
-        const res = await fetch(`/api/my-papers/${id}`);
-        if (!res.ok) return;
-        const { paper } = await res.json();
-        if (!paper) return;
-        setFileName(paper.title);
-        setExtractedText(paper.content || "");
-        setExtractStatus("done");
-
-        // 加载已保存的总结（有则直接显示，不需要重新生成）
-        const summaryRes  = await fetch(`/api/paper-summaries?paperId=${id}`);
-        const summaryData = await summaryRes.json();
-        if (summaryData.summary?.summary_content) {
-          setSummaryFromDB(true);
-          setSummaryUpdatedAt(summaryData.summary.updated_at ?? summaryData.summary.created_at);
-          setSummaryText(summaryData.summary.summary_content);
-          setSummaryStatus("done");
-        } else {
-          // DB 无总结（可能切换时还在生成中）→ 从 localStorage 恢复
-          try {
-            const localSummary = localStorage.getItem(`iyanhub_summary_${id}`);
-            if (localSummary) {
-              setSummaryText(localSummary);
-              setSummaryStatus("done");
-            }
-          } catch { /* 静默失败 */ }
-        }
-
-        // 恢复对话记录
-        try {
-          const saved = localStorage.getItem(`iyanhub_chat_${id}`);
-          if (saved) setMessages(JSON.parse(saved));
-        } catch { /* 静默失败 */ }
-      } catch { /* 静默失败 */ }
-    }
-    load();
+    const hash = window.location.hash.slice(1);        // "upload?paper=xxx"
+    const m = hash.match(/[?&]paper=([^&]+)/);
+    if (m?.[1]) loadPaperById(m[1]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -273,6 +240,7 @@ function UploadPageInner() {
       setExtractedText(paper.content || "");
       setExtractStatus("done");
       setIsRestored(true);
+      window.history.replaceState(null, "", `#upload?paper=${id}`);
 
       // 加载已有总结
       const summaryRes  = await fetch(`/api/paper-summaries?paperId=${id}`);
@@ -283,18 +251,25 @@ function UploadPageInner() {
         setSummaryText(summaryData.summary.summary_content);
         setSummaryStatus("done");
       } else {
-        // 尝试从 localStorage 恢复生成中的总结
+        // 降级：从 localStorage 恢复生成中的总结
         try {
           const local = localStorage.getItem(`iyanhub_summary_${id}`);
           if (local) { setSummaryText(local); setSummaryStatus("done"); }
         } catch { /* 静默 */ }
       }
 
-      // 恢复对话记录
-      try {
-        const saved = localStorage.getItem(`iyanhub_chat_${id}`);
-        if (saved) setMessages(JSON.parse(saved));
-      } catch { /* 静默 */ }
+      // 从 paper_chats 恢复对话记录
+      const chatRes  = await fetch(`/api/paper-chats?paperId=${id}`);
+      const chatData = await chatRes.json();
+      if (chatData.messages?.length) {
+        setMessages(chatData.messages);
+      } else {
+        // 降级：从 localStorage 恢复
+        try {
+          const saved = localStorage.getItem(`iyanhub_chat_${id}`);
+          if (saved) setMessages(JSON.parse(saved));
+        } catch { /* 静默 */ }
+      }
     } catch { /* 静默 */ }
   }
 
@@ -325,6 +300,7 @@ function UploadPageInner() {
       const data = await res.json();
       if (data.id) {
         setPaperId(data.id);
+        window.history.replaceState(null, "", `#upload?paper=${data.id}`);
       }
     } catch { /* 静默失败 */ }
   }
@@ -413,6 +389,7 @@ function UploadPageInner() {
     setSummaryUpdatedAt(null);
     setIsRestored(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    window.history.replaceState(null, "", "#upload");
   }
 
   // ─── 保存总结模块到笔记 ──────────────────────────────────────────────────────
