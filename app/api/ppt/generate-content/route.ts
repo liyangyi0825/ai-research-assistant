@@ -230,6 +230,7 @@ ${keyContent}`;
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 8000,
+        temperature: 0.3,
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),

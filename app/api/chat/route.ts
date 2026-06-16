@@ -50,6 +50,7 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
           max_tokens: 8000,
+          temperature: 0.5,
           stream: true,
           system: [
             {
