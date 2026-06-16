@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
+import { ContextChat } from "@/components/ContextChat";
 import { toast } from "sonner";
 import type { AnalyzedPaper } from "@/app/api/papers/search/route";
 
@@ -528,6 +529,15 @@ export default function LiteratureSearchPage() {
     setTimeout(() => setCopiedKey(null), 2000);
   }
 
+  // 传给 ContextChat 的系统提示词，随 combinations 更新
+  const chatContext = useMemo(() => {
+    if (!topic || combinations.length === 0) return "";
+    const keywordList = combinations
+      .map((c, i) => `${i + 1}. 中文：${c.keywordsCn}\n   英文：${c.keywordsEn}\n   说明：${c.description}`)
+      .join("\n\n");
+    return `你是一位专业的学术研究助手。用户正在研究以下课题：\n${topic}\n\n已生成的检索词组合：\n${keywordList}\n\n请基于以上课题和检索词背景，专业、有针对性地回答用户的问题，给出具体建议。`;
+  }, [topic, combinations]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       <Header title="文献检索" />
@@ -705,6 +715,15 @@ export default function LiteratureSearchPage() {
               <Button variant="outline" className="w-full" onClick={handleGenerate}>
                 重新生成检索词
               </Button>
+
+              {/* 继续探讨对话框 */}
+              <ContextChat
+                context={chatContext}
+                sectionTitle="继续探讨你的研究课题"
+                placeholder={"基于以上检索词，你还想了解什么？\n比如：这个方向的研究现状如何？有哪些值得关注的研究团队？"}
+                sourceType="keyword"
+                sourceTitle={topic}
+              />
             </div>
           )}
         </div>

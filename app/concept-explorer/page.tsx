@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import { MarkdownContent } from "@/components/MarkdownContent";
+import { ContextChat } from "@/components/ContextChat";
 import { toast } from "sonner";
 
 // ─── 类型定义 ────────────────────────────────────────────────────────────────
@@ -370,6 +371,19 @@ export default function ConceptExplorerPage() {
 
   const anyResult = originAIStatus !== "idle" || oldestStatus !== "idle" || recentStatus !== "idle";
 
+  // 传给 ContextChat 的系统提示词，随探索结果动态更新
+  const chatContext = useMemo(() => {
+    if (!currentConcept) return "";
+    const parts: string[] = [
+      `你是一位专业的学术研究助手。用户正在探索以下概念：\n${currentConcept}`,
+    ];
+    if (originAI) parts.push(`\n概念溯源与AI分析：\n${originAI}`);
+    if (conceptsAI) parts.push(`\n关联概念：\n${conceptsAI}`);
+    if (ideasAI) parts.push(`\n研究思路建议：\n${ideasAI}`);
+    parts.push("\n请基于以上概念探索结果，专业地回答用户的问题。");
+    return parts.join("");
+  }, [currentConcept, originAI, conceptsAI, ideasAI]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       <Header title="概念探索" />
@@ -577,6 +591,17 @@ export default function ConceptExplorerPage() {
                 查看我的研究笔记 →
               </a>
             </div>
+          )}
+
+          {/* 深入探讨对话框 */}
+          {anyResult && (
+            <ContextChat
+              context={chatContext}
+              sectionTitle="深入探讨这个概念"
+              placeholder={"你对这个概念还有什么疑问？\n比如：这个方法在我的研究中能怎么用？它和XX方法有什么区别？"}
+              sourceType="concept"
+              sourceTitle={currentConcept}
+            />
           )}
 
         </div>
