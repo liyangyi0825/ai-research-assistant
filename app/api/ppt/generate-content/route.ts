@@ -262,6 +262,10 @@ ${paperContent.slice(0, 24000)}`;
           return;
         }
 
+        console.log("=== PPT生成内容 ===");
+        console.log(JSON.stringify(pptContent, null, 2));
+        console.log("=== 结束 ===");
+
         // 记录用量（fire-and-forget）
         if (userId) {
           insertUsageRecord({
