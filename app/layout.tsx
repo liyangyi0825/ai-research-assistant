@@ -5,6 +5,7 @@ import { LoginSuccessNotice } from "@/components/LoginSuccessNotice";
 import { AppShell } from "@/components/AppShell";
 import { Toaster } from "sonner";
 import "./globals.css";
+import "katex/dist/katex.min.css";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",

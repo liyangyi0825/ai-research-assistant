@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
               type: "text",
               text: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
 请用中文回答，回答要准确、简洁，并直接基于论文内容。如果论文中没有相关信息，请如实说明。
-回答中如涉及数学公式，请用 LaTeX 格式输出：行内公式用 $...$，独立公式用 $$...$$。${notesSection}
+回答中如涉及数学公式，用简单 LaTeX 格式：行内公式用 $...$，独立公式用 $$...$$。禁止使用 \begin{align}、\begin{cases}、\begin{equation} 等复杂环境，改用文字描述或简单单行公式代替。${notesSection}
 
 以下是论文的完整内容：
 ---

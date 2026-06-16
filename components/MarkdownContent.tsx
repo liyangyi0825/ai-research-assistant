@@ -4,7 +4,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import "katex/dist/katex.min.css";
 
 interface MarkdownContentProps {
   content: string;
@@ -20,7 +19,7 @@ export function MarkdownContent({ content, className = "" }: MarkdownContentProp
     <div className={className}>
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeKatex]}
+      rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
       components={{
         // 标题
         h1: ({ children }) => (
