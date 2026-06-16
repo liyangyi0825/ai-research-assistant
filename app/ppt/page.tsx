@@ -155,9 +155,13 @@ export default function PptPage() {
       });
 
       if (!res.ok) {
-        const text = await res.text();
-        console.error("PPT API 错误:", res.status, text.slice(0, 200));
-        throw new Error(`服务器错误（${res.status}），请重试`);
+        let errorMsg = `服务器错误（${res.status}），请重试`;
+        try {
+          const errData = await res.json() as { error?: string };
+          if (errData.error) errorMsg = errData.error;
+        } catch { /* 保留通用错误信息 */ }
+        console.error("PPT API 错误:", res.status, errorMsg);
+        throw new Error(errorMsg);
       }
       if (!res.body) throw new Error("服务器响应为空，请重试");
 

@@ -228,7 +228,7 @@ ${keyContent}`;
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-4-5",
         max_tokens: 8000,
         temperature: 0.3,
         stream: true,
@@ -238,8 +238,8 @@ ${keyContent}`;
 
     if (!claudeRes.ok) {
       const err = await claudeRes.text();
-      console.error("Claude PPT 内容生成错误:", err);
-      return NextResponse.json({ error: "AI 生成失败，请重试" }, { status: 500 });
+      console.error("Claude PPT API 错误，状态码:", claudeRes.status, "响应:", err.slice(0, 500));
+      return NextResponse.json({ error: `AI 生成失败（HTTP ${claudeRes.status}）：${err.slice(0, 120)}` }, { status: 500 });
     }
 
     // 建立 SSE 响应流，把心跳和最终 JSON 都通过同一条连接推送
@@ -336,7 +336,8 @@ ${keyContent}`;
     });
 
   } catch (error) {
-    console.error("PPT 内容生成异常:", error);
-    return NextResponse.json({ error: "请求失败，请重试" }, { status: 500 });
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("PPT 内容生成异常:", msg);
+    return NextResponse.json({ error: `请求失败：${msg.slice(0, 120)}` }, { status: 500 });
   }
 }
