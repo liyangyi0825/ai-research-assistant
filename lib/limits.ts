@@ -11,6 +11,7 @@ export const FREE_MONTHLY_LIMITS = {
   bibtex_export: 30,      // BibTeX导出每月30次
   extract_refs: 10,       // PDF文件提取每月10次
   profile_summarize: 5,   // 科研档案AI整理每月5次
+  literature_review: 3,   // 多篇综述对比每月3次
 } as const;
 
 export type UsageActionType = keyof typeof FREE_MONTHLY_LIMITS;
