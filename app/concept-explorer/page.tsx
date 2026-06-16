@@ -570,7 +570,7 @@ export default function ConceptExplorerPage() {
             )}
             {recentStatus === "done" && recentPapers.length === 0 && (
               <p className="text-sm text-gray-400 italic">
-                暂未在数据库中找到近 3 年相关论文，可参考下方关联概念和研究思路
+                暂未找到相关论文，可以尝试输入英文名称搜索，或参考下方研究思路
               </p>
             )}
             {recentPapers.length > 0 && (
