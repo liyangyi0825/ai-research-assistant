@@ -163,6 +163,25 @@ export default function ConceptExplorerPage() {
   const STORAGE_KEY = "iyanhub_concept";
   const SEVEN_DAYS  = 7 * 24 * 60 * 60 * 1000;
 
+  // 区块 1：概念溯源
+  const [originAI, setOriginAI]           = useState("");
+  const [originAIStatus, setOriginAIStatus] = useState<Status>("idle");
+  const [oldestPapers, setOldestPapers]   = useState<Paper[]>([]);
+  const [oldestStatus, setOldestStatus]   = useState<Status>("idle");
+
+  // 区块 2：最新进展
+  const [recentPapers, setRecentPapers]   = useState<Paper[]>([]);
+  const [recentStatus, setRecentStatus]   = useState<Status>("idle");
+  const [recentSearchTerm, setRecentSearchTerm] = useState(""); // 实际用于搜索的英文词
+
+  // 区块 3：关联概念
+  const [conceptsAI, setConceptsAI]         = useState("");
+  const [conceptsStatus, setConceptsStatus] = useState<Status>("idle");
+
+  // 区块 4：研究思路
+  const [ideasAI, setIdeasAI]           = useState("");
+  const [ideasStatus, setIdeasStatus]   = useState<Status>("idle");
+
   // 用 ref 持有最新保存函数，避免 setInterval 闭包陈旧
   const saveLatestRef = useRef<() => void>(() => {});
   useEffect(() => {
@@ -248,25 +267,6 @@ export default function ConceptExplorerPage() {
       setSaveStatus("error");
     }
   }
-
-  // 区块 1：概念溯源
-  const [originAI, setOriginAI]           = useState("");
-  const [originAIStatus, setOriginAIStatus] = useState<Status>("idle");
-  const [oldestPapers, setOldestPapers]   = useState<Paper[]>([]);
-  const [oldestStatus, setOldestStatus]   = useState<Status>("idle");
-
-  // 区块 2：最新进展
-  const [recentPapers, setRecentPapers]   = useState<Paper[]>([]);
-  const [recentStatus, setRecentStatus]   = useState<Status>("idle");
-  const [recentSearchTerm, setRecentSearchTerm] = useState(""); // 实际用于搜索的英文词
-
-  // 区块 3：关联概念
-  const [conceptsAI, setConceptsAI]         = useState("");
-  const [conceptsStatus, setConceptsStatus] = useState<Status>("idle");
-
-  // 区块 4：研究思路
-  const [ideasAI, setIdeasAI]           = useState("");
-  const [ideasStatus, setIdeasStatus]   = useState<Status>("idle");
 
   // 使用 ref 收集最终文本（供后续区块使用）
   const originTextRef   = useRef("");
