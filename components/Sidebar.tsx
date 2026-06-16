@@ -20,6 +20,7 @@ const NAV_GROUPS = [
   {
     label: "我的",
     items: [
+      { icon: "📁", label: "我的论文", href: "/my-papers" },
       { icon: "👤", label: "我的科研档案", href: "/my-profile" },
       { icon: "📝", label: "我的研究笔记", href: "/my-notes" },
     ],
@@ -173,16 +174,6 @@ export function Sidebar({ onClose }: SidebarProps) {
                   </button>
                 </li>
               ))}
-              <li>
-                <Link
-                  href="/my-papers"
-                  onClick={onClose}
-                  className="flex items-center px-3 py-1.5 rounded-lg text-xs transition-all hover:bg-slate-700/60 hover:text-slate-300"
-                  style={{ color: "#475569" }}
-                >
-                  查看全部 →
-                </Link>
-              </li>
             </ul>
           </div>
         )}
