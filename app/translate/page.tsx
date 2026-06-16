@@ -39,7 +39,7 @@ function RestoredTranslationView({ session, onReset }: { session: RestoredSessio
             </span>
           ) : (
             <span className="text-xs text-amber-600 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">
-              ⚠️ 上次翻译未完成（已完成 {translatedCount}/{session.page_count || "?"} 页）
+              ⚠️ 上次翻译未完成（已完成 {translatedCount}{session.page_count > 0 ? `/${session.page_count}` : ""} 页）
             </span>
           )}
           <span className="text-xs text-gray-400 hidden sm:block truncate">
@@ -115,14 +115,24 @@ export default function TranslatePage() {
     try {
       const res  = await fetch(`/api/translation-sessions?sessionId=${encodeURIComponent(id)}`);
       const data = await res.json() as { session: RestoredSession | null };
-      if (data.session) {
-        setRestoredData(data.session);
-        sessionIdRef.current = id;
-        window.history.replaceState(null, "", `#translate?session=${id}`);
-      } else {
+      const session = data.session;
+
+      if (!session) {
         setSessionNotFound(true);
         window.history.replaceState(null, "", "#translate");
+        return;
       }
+
+      // 没有任何已翻译的内容（翻译未开始就刷新）→ 直接回到上传页，不显示空恢复视图
+      const hasTranslated = session.pages.some(p => p.translation?.trim());
+      if (!hasTranslated) {
+        window.history.replaceState(null, "", "#translate");
+        return;
+      }
+
+      setRestoredData(session);
+      sessionIdRef.current = id;
+      window.history.replaceState(null, "", `#translate?session=${id}`);
     } catch {
       window.history.replaceState(null, "", "#translate");
     }
