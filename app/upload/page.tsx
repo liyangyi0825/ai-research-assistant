@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { Header } from "@/components/Header";
@@ -87,6 +87,7 @@ interface Message {
 
 function UploadPageInner() {
   const searchParams = useSearchParams();
+  const router = useRouter();
 
   // ── PDF 提取状态 ──
   const [extractStatus, setExtractStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
@@ -118,6 +119,9 @@ function UploadPageInner() {
   // ── 总结历史加载状态 ──
   const [summaryFromDB, setSummaryFromDB]       = useState(false);
   const [summaryUpdatedAt, setSummaryUpdatedAt] = useState<string | null>(null);
+
+  // ── 是否从 URL 恢复的论文 ──
+  const [isRestored, setIsRestored] = useState(false);
 
   // ── 保存笔记状态（按模块 key / 消息 index）──
   const [sectionSaveStatus, setSectionSaveStatus] = useState<Record<string, "idle" | "saving" | "saved" | "error">>({});
@@ -164,6 +168,14 @@ function UploadPageInner() {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // 对话结束后把消息存到 localStorage（流式中不存，避免频繁写入）
+  useEffect(() => {
+    if (!paperId || chatLoading || messages.length === 0) return;
+    try {
+      localStorage.setItem(`iyanhub_chat_${paperId}`, JSON.stringify(messages));
+    } catch { /* 静默失败 */ }
+  }, [messages, paperId, chatLoading]);
+
   // 总结完成后自动触发引用生成（从 DB 加载的已有总结不重复生成）
   useEffect(() => {
     if (summaryStatus === "done" && citeStatus === "idle" && !summaryFromDB) {
@@ -177,6 +189,7 @@ function UploadPageInner() {
     const id = searchParams.get("paper");
     if (!id) return;
     setPaperId(id);
+    setIsRestored(true);
     async function load() {
       try {
         const res = await fetch(`/api/my-papers/${id}`);
@@ -196,6 +209,12 @@ function UploadPageInner() {
           setSummaryText(summaryData.summary.summary_content);
           setSummaryStatus("done");
         }
+
+        // 恢复对话记录
+        try {
+          const saved = localStorage.getItem(`iyanhub_chat_${id}`);
+          if (saved) setMessages(JSON.parse(saved));
+        } catch { /* 静默失败 */ }
       } catch { /* 静默失败 */ }
     }
     load();
@@ -215,7 +234,10 @@ function UploadPageInner() {
         }),
       });
       const data = await res.json();
-      if (data.id) setPaperId(data.id);
+      if (data.id) {
+        setPaperId(data.id);
+        router.replace(`/upload?paper=${data.id}`, { scroll: false });
+      }
     } catch { /* 静默失败 */ }
   }
 
@@ -272,6 +294,9 @@ function UploadPageInner() {
   }
 
   function handleReset() {
+    if (paperId) {
+      try { localStorage.removeItem(`iyanhub_chat_${paperId}`); } catch { /* 静默失败 */ }
+    }
     setExtractStatus("idle");
     setExtractedText("");
     setExtractError("");
@@ -295,7 +320,9 @@ function UploadPageInner() {
     setChatSaveStatus({});
     setSummaryFromDB(false);
     setSummaryUpdatedAt(null);
+    setIsRestored(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    router.replace("/upload", { scroll: false });
   }
 
   // ─── 保存总结模块到笔记 ──────────────────────────────────────────────────────
@@ -630,6 +657,19 @@ function UploadPageInner() {
                 </div>
                 <Button variant="outline" size="sm" onClick={handleReset} className="shrink-0">重新上传</Button>
               </div>
+
+              {/* 已恢复提示 */}
+              {isRestored && (
+                <div className="flex items-center justify-between bg-blue-50 border border-blue-100 rounded-xl px-4 py-2.5">
+                  <span className="text-sm text-blue-700">✨ 已恢复上次的内容</span>
+                  <button
+                    onClick={handleReset}
+                    className="text-xs text-blue-400 hover:text-blue-600 transition-colors ml-4 shrink-0"
+                  >
+                    清空重新开始
+                  </button>
+                </div>
+              )}
 
               {/* ===== AI 总结区域 ===== */}
 
