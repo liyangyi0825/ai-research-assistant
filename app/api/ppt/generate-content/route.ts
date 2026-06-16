@@ -179,6 +179,7 @@ ${isDefense
 【论文内容】
 ${paperContent.slice(0, 24000)}`;
 
+    // 使用流式请求，边生成边向客户端发心跳，防止 Nginx proxy_read_timeout 断开
     const claudeRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -189,6 +190,7 @@ ${paperContent.slice(0, 24000)}`;
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 8000,
+        stream: true,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -199,29 +201,89 @@ ${paperContent.slice(0, 24000)}`;
       return NextResponse.json({ error: "AI 生成失败，请重试" }, { status: 500 });
     }
 
-    const claudeData = await claudeRes.json();
-    const rawText: string = claudeData.content?.[0]?.text ?? "";
+    // 建立 SSE 响应流，把心跳和最终 JSON 都通过同一条连接推送
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
 
-    const cleaned = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+    void (async () => {
+      let rawText = "";
+      let sseBuffer = "";
+      let inputTokens = 0, outputTokens = 0;
 
-    let pptContent: PptContent;
-    try {
-      pptContent = JSON.parse(cleaned);
-    } catch {
-      console.error("PPT JSON 解析失败，原始输出：", rawText.slice(0, 500));
-      return NextResponse.json({ error: "AI 输出格式异常，请重试" }, { status: 500 });
-    }
+      try {
+        const reader = claudeRes.body!.getReader();
 
-    if (userId) {
-      insertUsageRecord({
-        userId,
-        actionType: "ppt_generate",
-        tokensInput:  claudeData.usage?.input_tokens  ?? 0,
-        tokensOutput: claudeData.usage?.output_tokens ?? 0,
-      }).catch(() => {});
-    }
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-    return NextResponse.json({ pptContent });
+          // 每收到一个 chunk 就发一条 SSE 注释，重置 Nginx 超时计时器
+          await writer.write(encoder.encode(": k\n\n"));
+
+          // 从 Claude SSE 中提取纯文本内容
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw || raw === "[DONE]") continue;
+            try {
+              const evt = JSON.parse(raw);
+              if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+                rawText += evt.delta.text ?? "";
+              } else if (evt.type === "message_start" && evt.message?.usage) {
+                inputTokens = evt.message.usage.input_tokens ?? 0;
+              } else if (evt.type === "message_delta" && evt.usage) {
+                outputTokens = evt.usage.output_tokens ?? 0;
+              }
+            } catch { /* 跳过无法解析的行 */ }
+          }
+        }
+
+        // 解析 Claude 输出的 JSON
+        const cleaned = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+        let pptContent: PptContent;
+        try {
+          pptContent = JSON.parse(cleaned);
+        } catch {
+          console.error("PPT JSON 解析失败，原始输出：", rawText.slice(0, 500));
+          await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
+          return;
+        }
+
+        // 记录用量（fire-and-forget）
+        if (userId) {
+          insertUsageRecord({
+            userId,
+            actionType: "ppt_generate",
+            tokensInput:  inputTokens,
+            tokensOutput: outputTokens,
+          }).catch(() => {});
+        }
+
+        // 发送最终结果
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ pptContent })}\n\n`));
+
+      } catch (err) {
+        console.error("PPT 流式生成异常:", err);
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "请求失败，请重试" })}\n\n`));
+      } finally {
+        writer.close().catch(() => {});
+      }
+    })();
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+      },
+    });
+
   } catch (error) {
     console.error("PPT 内容生成异常:", error);
     return NextResponse.json({ error: "请求失败，请重试" }, { status: 500 });

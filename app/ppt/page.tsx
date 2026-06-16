@@ -106,9 +106,37 @@ export default function PptPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paperContent: extractedText, scene }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "生成失败");
-      setPptContent(data.pptContent);
+
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("PPT API 错误:", res.status, text.slice(0, 200));
+        throw new Error(`服务器错误（${res.status}），请重试`);
+      }
+      if (!res.body) throw new Error("服务器响应为空，请重试");
+
+      // 读取 SSE 流，等待最终 data 事件
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
+      let result: { pptContent?: unknown; error?: string } | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+          try { result = JSON.parse(raw); } catch { /* 跳过心跳注释等非 JSON 行 */ }
+        }
+      }
+
+      if (!result) throw new Error("生成失败，请重试");
+      if (result.error) throw new Error(result.error);
+      setPptContent(result.pptContent);
       setPptStatus("done");
     } catch (err) {
       setPptError(err instanceof Error ? err.message : "生成失败，请重试");
