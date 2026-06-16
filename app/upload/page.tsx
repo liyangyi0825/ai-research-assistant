@@ -282,7 +282,7 @@ function UploadPageInner() {
     function onLoadPaper(e: Event) {
       const id = (e as CustomEvent<{ id: string | null }>).detail?.id;
       if (id) loadPaperById(id);
-      // id 为 null 时：只是切 tab，不加载（相当于新建分析）
+      else handleReset();
     }
     window.addEventListener("spa-load-paper", onLoadPaper);
     return () => window.removeEventListener("spa-load-paper", onLoadPaper);

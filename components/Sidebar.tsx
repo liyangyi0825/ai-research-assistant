@@ -110,6 +110,7 @@ export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
       <div className="px-3 mb-2">
         <button
           onClick={() => {
+            window.dispatchEvent(new CustomEvent("spa-load-paper", { detail: { id: null } }));
             if (onTabChange) {
               onTabChange("upload");
             } else {
