@@ -62,18 +62,22 @@ function Skeleton() {
 interface Props {
   file: File;
   onBack: () => void;
+  onTranslationComplete?: (pages: { text: string; translation: string }[]) => void;
 }
 
-export function PdfTranslationView({ file, onBack }: Props) {
+export function PdfTranslationView({ file, onBack, onTranslationComplete }: Props) {
   const [numPages, setNumPages]           = useState(0);
   const [renderedPages, setRenderedPages] = useState(0);
   const [pages, setPages]                 = useState<PageState[]>([]);
   const [transProgress, setTransProgress] = useState({ done: 0, total: 0 });
   const [phase, setPhase]                 = useState<"idle" | "rendering" | "translating" | "done">("idle");
   const [globalError, setGlobalError]     = useState("");
-  const leftRef  = useRef<HTMLDivElement>(null);
-  const rightRef = useRef<HTMLDivElement>(null);
+  const leftRef    = useRef<HTMLDivElement>(null);
+  const rightRef   = useRef<HTMLDivElement>(null);
   const syncingRef = useRef(false);
+  // 始终同步最新 pages 到 ref，保证回调拿到完整数据
+  const pagesRef   = useRef<PageState[]>([]);
+  pagesRef.current = pages;
 
   // ── 加载、渲染 PDF，然后逐页翻译 ─────────────────────────────────────────
   useEffect(() => {
@@ -242,6 +246,15 @@ export function PdfTranslationView({ file, onBack }: Props) {
     run();
     return () => { cancelled = true; };
   }, [file]);
+
+  // 翻译完成后，把所有页面数据传给父组件（用于保存到 DB）
+  useEffect(() => {
+    if (phase === "done" && onTranslationComplete && pagesRef.current.length > 0) {
+      onTranslationComplete(pagesRef.current.map(p => ({ text: p.text, translation: p.translation })));
+    }
+  // 只在 phase 变化时触发，pagesRef 是 ref 不影响依赖
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
 
   // ── 同步滚动 ──────────────────────────────────────────────────────────────
   useEffect(() => {
