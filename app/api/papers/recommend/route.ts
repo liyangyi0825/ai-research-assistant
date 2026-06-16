@@ -71,6 +71,7 @@ LABELS:{"top":[强推论文的编号],"recommend":[次推荐编号],"reference":
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
         max_tokens: 1200,
+        temperature: 0.3,
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),

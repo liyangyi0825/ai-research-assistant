@@ -47,6 +47,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
         max_tokens: 600,
+        temperature: 0.3,
         messages: [{
           role: "user",
           content: `根据以下学生的回答，整理出他的研究档案。只输出纯 JSON，不要代码块，不要任何解释。

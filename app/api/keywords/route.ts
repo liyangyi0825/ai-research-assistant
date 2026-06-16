@@ -52,6 +52,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
         max_tokens: 1800,
+        temperature: 0.3,
         messages: [
           {
             role: "user",
