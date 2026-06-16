@@ -113,6 +113,28 @@ export async function POST(req: NextRequest) {
     if (!paperContent?.trim()) return NextResponse.json({ error: "论文内容不能为空" }, { status: 400 });
     if (!["defense", "meeting"].includes(scene)) return NextResponse.json({ error: "场景参数错误" }, { status: 400 });
 
+    const extractKeyContent = (content: string): string => {
+      const abstractMatch   = content.match(/abstract[\s\S]{0,3000}/i);
+      const methodsMatch    = content.match(/methods?[\s\S]{0,3000}/i);
+      const resultsMatch    = content.match(/results?[\s\S]{0,4000}/i);
+      const conclusionMatch = content.match(/conclusion[\s\S]{0,3000}/i);
+      const figureMatches   = content.match(/(?:figure|table|图|表)\s*\d+[\s\S]{0,300}/gi)
+        ?.slice(0, 10).join("\n") ?? "";
+
+      const combined = [
+        abstractMatch?.[0]   ?? "",
+        methodsMatch?.[0]    ?? "",
+        resultsMatch?.[0]    ?? "",
+        conclusionMatch?.[0] ?? "",
+        figureMatches,
+      ].filter(Boolean).join("\n\n---\n\n");
+
+      if (combined.length < 2000) return content.slice(0, 30000);
+      return combined.slice(0, 30000);
+    };
+
+    const keyContent = extractKeyContent(paperContent);
+
     const isDefense = scene === "defense";
     const today = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
 
@@ -177,8 +199,11 @@ ${isDefense
 8. ending
 { "type": "ending" }
 
+【论文内容说明】
+以下内容是从论文中提取的摘要、方法、结果、结论等关键部分，请重点从结果和结论部分提取数据。
+
 【论文内容】
-${paperContent.slice(0, 24000)}`;
+${keyContent}`;
 
     // 使用流式请求，边生成边向客户端发心跳，防止 Nginx proxy_read_timeout 断开
     const claudeRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
