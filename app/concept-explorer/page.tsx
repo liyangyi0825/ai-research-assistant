@@ -158,6 +158,36 @@ export default function ConceptExplorerPage() {
   const [isExploring, setIsExploring] = useState(false);
   const [currentConcept, setCurrentConcept] = useState("");
   const autoTriggered = useRef(false);
+  const [showRestoreBanner, setShowRestoreBanner] = useState(false);
+
+  const STORAGE_KEY = "iyanhub_concept";
+  const SEVEN_DAYS  = 7 * 24 * 60 * 60 * 1000;
+
+  // 用 ref 持有最新保存函数，避免 setInterval 闭包陈旧
+  const saveLatestRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    saveLatestRef.current = () => {
+      if (!currentConcept) return;
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          concept, currentConcept, originAI, oldestPapers, recentPapers, recentSearchTerm, conceptsAI, ideasAI,
+          timestamp: Date.now(),
+        }));
+      } catch { /* 静默 */ }
+    };
+  }, [concept, currentConcept, originAI, oldestPapers, recentPapers, recentSearchTerm, conceptsAI, ideasAI]);
+
+  // 探索中每 2 秒保存一次当前内容
+  useEffect(() => {
+    if (!isExploring) return;
+    const timer = setInterval(() => saveLatestRef.current(), 2000);
+    return () => clearInterval(timer);
+  }, [isExploring]);
+
+  // 探索完成后立即保存完整结果
+  useEffect(() => {
+    if (!isExploring) saveLatestRef.current();
+  }, [isExploring]);
 
   // ── 保存到 Supabase 状态 ──
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
@@ -309,7 +339,7 @@ export default function ConceptExplorerPage() {
     }
   }
 
-  // 支持 /concept-explorer?q=xxx 从历史记录直接跳转并自动搜索
+  // 支持 /concept-explorer?q=xxx 直接跳转；否则从 localStorage 恢复
   useEffect(() => {
     if (autoTriggered.current) return;
     const q = new URLSearchParams(window.location.search).get("q");
@@ -319,12 +349,48 @@ export default function ConceptExplorerPage() {
       setTimeout(() => {
         document.getElementById("explore-btn")?.click();
       }, 50);
+      return;
     }
+    // 从 localStorage 恢复
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return;
+      const data = JSON.parse(saved) as {
+        concept?: string; currentConcept?: string;
+        originAI?: string; oldestPapers?: Paper[]; recentPapers?: Paper[];
+        recentSearchTerm?: string; conceptsAI?: string; ideasAI?: string;
+        timestamp?: number;
+      };
+      if (!data.timestamp || Date.now() - data.timestamp > SEVEN_DAYS) {
+        localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      if (data.concept)        setConcept(data.concept);
+      if (data.currentConcept) setCurrentConcept(data.currentConcept);
+      if (data.originAI)       { setOriginAI(data.originAI); setOriginAIStatus("done"); originTextRef.current = data.originAI; }
+      if (data.oldestPapers?.length) { setOldestPapers(data.oldestPapers); setOldestStatus("done"); }
+      if (data.recentPapers?.length) { setRecentPapers(data.recentPapers); setRecentStatus("done"); }
+      if (data.recentSearchTerm)     setRecentSearchTerm(data.recentSearchTerm);
+      if (data.conceptsAI)     { setConceptsAI(data.conceptsAI); setConceptsStatus("done"); conceptsTextRef.current = data.conceptsAI; }
+      if (data.ideasAI)        { setIdeasAI(data.ideasAI); setIdeasStatus("done"); }
+      if (data.originAI || data.conceptsAI || data.ideasAI || data.recentPapers?.length) {
+        setShowRestoreBanner(true);
+      }
+    } catch { /* 静默 */ }
   }, []);
+
+  function handleClear() {
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* 静默 */ }
+    setShowRestoreBanner(false);
+    setConcept("");
+    setCurrentConcept("");
+    resetAll();
+  }
 
   async function handleExplore() {
     const term = concept.trim();
     if (!term) return;
+    setShowRestoreBanner(false);
     resetAll();
     setIsExploring(true);
     setCurrentConcept(term);
@@ -398,6 +464,19 @@ export default function ConceptExplorerPage() {
               输入一个专业名词，AI 帮你溯源、找最新文献、提取关联概念、给出研究思路
             </p>
           </div>
+
+          {/* 恢复提示条 */}
+          {showRestoreBanner && (
+            <div className="flex items-center justify-between bg-blue-50 border border-blue-100 rounded-xl px-4 py-2.5">
+              <span className="text-sm text-blue-700">✨ 已恢复上次的概念探索内容</span>
+              <button
+                onClick={handleClear}
+                className="text-xs text-blue-400 hover:text-blue-600 transition-colors ml-4 shrink-0"
+              >
+                清空重新开始
+              </button>
+            </div>
+          )}
 
           {/* 搜索框 */}
           <div className="bg-white rounded-2xl p-5 sm:p-6 shadow-sm border border-gray-100">
@@ -576,7 +655,7 @@ export default function ConceptExplorerPage() {
               <Button
                 variant="outline"
                 className="flex-1"
-                onClick={() => { resetAll(); setConcept(""); setCurrentConcept(""); }}
+                onClick={handleClear}
               >
                 重新探索另一个概念
               </Button>
