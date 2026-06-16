@@ -47,8 +47,10 @@ const PATH_TO_TAB: Record<string, TabKey> = {
   "/help":              "help",
 };
 
-// 这些路径不走 SPA，直接渲染 children
-const AUTH_PATHS   = ["/login", "/auth", "/reset-password", "/admin"];
+// 这些路径完全不走 Shell（无侧边栏）
+const AUTH_PATHS   = ["/login", "/auth", "/reset-password"];
+// admin 独立：直接渲染 children，无任何 Shell
+const ADMIN_PATHS  = ["/admin"];
 const BYPASS_PATHS = ["/paper/", "/search-history"];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -65,6 +67,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   const isAuthPage   = AUTH_PATHS.some(p => pathname.startsWith(p));
+  const isAdminPage  = ADMIN_PATHS.some(p => pathname.startsWith(p));
   const isBypassPage = BYPASS_PATHS.some(p => pathname.startsWith(p));
 
   // 首次加载：从 URL hash 恢复 tab（支持 #upload?paper=xxx 格式）
@@ -109,8 +112,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }
 
-  // 登录/注册、论文详情等：原样渲染，不走 SPA
-  if (isAuthPage || isBypassPage) {
+  // Admin 页面：无任何 Shell，直接渲染
+  if (isAdminPage || isAuthPage) return <>{children}</>;
+
+  // 论文详情等 bypass 页面：有侧边栏但不走 SPA tab 系统
+  if (isBypassPage) {
     return (
       <div className="flex h-screen overflow-hidden" style={{ background: "#F8FAFC" }}>
         <div className="hidden md:flex h-full">
@@ -132,8 +138,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-
-  if (isAuthPage) return <>{children}</>;
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: "#F8FAFC" }}>
