@@ -338,8 +338,12 @@ export default function LiteratureSearchPage() {
   const [recommendSaveStatus, setRecommendSaveStatus] = useState<Record<number, "idle" | "saving" | "saved" | "error">>({});
 
   const autoTriggered = useRef(false);
+  const [showRestoreBanner, setShowRestoreBanner] = useState(false);
 
-  // 支持 /literature-search?q=xxx 从历史记录直接跳转
+  const STORAGE_KEY = "iyanhub_keywords";
+  const SEVEN_DAYS  = 7 * 24 * 60 * 60 * 1000;
+
+  // 支持 /literature-search?q=xxx 从历史记录直接跳转；否则从 localStorage 恢复
   useEffect(() => {
     if (autoTriggered.current) return;
     const q = new URLSearchParams(window.location.search).get("q");
@@ -349,12 +353,65 @@ export default function LiteratureSearchPage() {
       setTimeout(() => {
         document.getElementById("generate-btn")?.click();
       }, 50);
+      return;
     }
+    // 尝试从 localStorage 恢复上次结果
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return;
+      const data = JSON.parse(saved) as { topic?: string; combinations?: KeywordCombination[]; timestamp?: number };
+      if (!data.timestamp || Date.now() - data.timestamp > SEVEN_DAYS) {
+        localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      if (data.topic) setTopic(data.topic);
+      if (data.combinations?.length) {
+        setCombinations(data.combinations);
+        setStatus("done");
+        setShowRestoreBanner(true);
+      }
+    } catch { /* 静默失败 */ }
   }, []);
+
+  // 生成完成后保存到 localStorage
+  useEffect(() => {
+    if (combinations.length === 0) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ topic, combinations, timestamp: Date.now() }));
+    } catch { /* 静默失败 */ }
+  }, [combinations, topic]);
+
+  // 生成中每 2 秒保存一次（至少保留课题，刷新后可恢复输入）
+  useEffect(() => {
+    if (status !== "loading") return;
+    const timer = setInterval(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ topic, combinations: [], timestamp: Date.now() }));
+      } catch { /* 静默失败 */ }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [status, topic]);
+
+  function handleClear() {
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* 静默 */ }
+    setShowRestoreBanner(false);
+    setTopic("");
+    setStatus("idle");
+    setErrorMsg("");
+    setCombinations([]);
+    setSearchStatus({});
+    setSearchResults({});
+    setSearchError({});
+    setRecommendStatus({});
+    setRecommendText({});
+    setPaperLabels({});
+    setRecommendSaveStatus({});
+  }
 
   async function handleGenerate() {
     if (!topic.trim()) return;
     setStatus("loading");
+    setShowRestoreBanner(false);
     setErrorMsg("");
     setCombinations([]);
     setSearchStatus({});
@@ -552,6 +609,19 @@ export default function LiteratureSearchPage() {
               输入研究课题，AI 生成中英双语检索词——可直接跳转，也可让 AI 精准搜索相关论文
             </p>
           </div>
+
+          {/* 恢复提示条 */}
+          {showRestoreBanner && (
+            <div className="flex items-center justify-between bg-blue-50 border border-blue-100 rounded-xl px-4 py-2.5">
+              <span className="text-sm text-blue-700">✨ 已恢复上次的检索词内容</span>
+              <button
+                onClick={handleClear}
+                className="text-xs text-blue-400 hover:text-blue-600 transition-colors ml-4 shrink-0"
+              >
+                清空重新开始
+              </button>
+            </div>
+          )}
 
           {/* 输入区域 */}
           <div className="bg-white rounded-2xl p-5 sm:p-6 shadow-sm border border-gray-100">
