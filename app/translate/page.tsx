@@ -104,11 +104,26 @@ export default function TranslatePage() {
   // 用 ref 存 sessionId，避免异步回调中的闭包陈旧问题
   const sessionIdRef  = useRef<string | null>(null);
 
-  // 首次挂载：从 URL hash 恢复
+  const TRANSLATE_KEY = "iyanhub_last_translate";
+  const SEVEN_DAYS    = 7 * 24 * 60 * 60 * 1000;
+
+  // 首次挂载：先查 URL hash，没有再查 localStorage（切换标签后刷新的常见场景）
   useEffect(() => {
     const hash = window.location.hash.slice(1);
     const m = hash.match(/[?&]session=([^&]+)/);
-    if (m?.[1]) loadSession(m[1]);
+    if (m?.[1]) {
+      loadSession(m[1]);
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(TRANSLATE_KEY);
+      if (!saved) return;
+      const data = JSON.parse(saved) as { sessionId: string; timestamp: number };
+      if (data.sessionId && Date.now() - data.timestamp < SEVEN_DAYS) {
+        loadSession(data.sessionId);
+      }
+    } catch { /* 静默 */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadSession(id: string) {
@@ -157,6 +172,14 @@ export default function TranslatePage() {
       if (data.id) {
         sessionIdRef.current = data.id;
         window.history.replaceState(null, "", `#translate?session=${data.id}`);
+        // 同时存 localStorage，防止切换标签后刷新丢失 sessionId
+        try {
+          localStorage.setItem(TRANSLATE_KEY, JSON.stringify({
+            sessionId: data.id,
+            fileName: file.name,
+            timestamp: Date.now(),
+          }));
+        } catch { /* 静默 */ }
       }
     } catch {
       // 建会话失败不阻止翻译，只是无法恢复
@@ -174,6 +197,8 @@ export default function TranslatePage() {
     sessionIdRef.current = null;
     window.history.replaceState(null, "", "#translate");
     if (fileInputRef.current) fileInputRef.current.value = "";
+    // 用户主动清空，才清除 localStorage（切换标签不清除）
+    try { localStorage.removeItem(TRANSLATE_KEY); } catch { /* 静默 */ }
   }
 
   // 每页翻译完成后更新 DB（顺序执行，避免写入竞争）
