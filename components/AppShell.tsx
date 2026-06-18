@@ -140,7 +140,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: "#F8FAFC" }}>
+    <div className="flex h-screen overflow-hidden bg-gradient-to-br from-blue-50 to-indigo-100">
       {/* 桌面端侧边栏 */}
       <div className="hidden md:flex h-full">
         <Sidebar activeTab={activeTab} onTabChange={handleTabChange} />

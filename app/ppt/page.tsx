@@ -252,7 +252,7 @@ export default function PptPage() {
   }
 
   return (
-    <div className="h-full bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       <Header title="论文转 PPT" />
 
       <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-6 sm:py-12 pb-24 sm:pb-12">
