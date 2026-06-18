@@ -181,7 +181,7 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
           wrapper.appendChild(canvas);
           container.appendChild(wrapper);
 
-          await page.render({ canvas, viewport }).promise;
+          await page.render({ canvasContext: canvas.getContext("2d")!, viewport }).promise;
           if (cancelled) break;
 
           // 提取文字
