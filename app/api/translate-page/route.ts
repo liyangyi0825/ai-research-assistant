@@ -58,14 +58,28 @@ export async function POST(req: NextRequest) {
 - 图表内部的坐标轴标签、图例文字（如 Capacity (mAh/g)）：保留英文，括号内附中文，如 Capacity (mAh/g，容量)
 
 数学公式处理规则（重要）：
-- 简单行内公式（如 $E=mc^2$、$\alpha$）：保留 $...$ 格式原样输出
-- 简单行间公式（单行，如 $$F = ma$$）：保留 $$...$$ 格式，公式独占一行，前后各空一行
-- 复杂多行公式环境（\begin{cases}、\begin{align}、\begin{matrix}、\begin{pmatrix}、\begin{bmatrix}、\begin{aligned}、\begin{gather} 等）：
-  不要输出原始 LaTeX，改用方括号文字描述，例如：
-  原文：$$M_t = \begin{cases} 1 & x>0 \\ 0 & \text{otherwise} \end{cases}$$
-  译文：[分段函数：当 x > 0 时 $M_t = 1$，否则 $M_t = 0$]
-- PDF 提取导致公式符号乱码：用 [公式：描述公式含义] 代替
-- 孤立数学符号（α β γ Σ ∫ 等）直接原样保留，不要翻译
+
+【PDF 提取的无分隔符公式——最常见情况】
+PDF 文字提取时会丢失 $ 符号，原文中公式以裸 LaTeX 形式出现，
+如：J^{PPO}(\phi) = \mathbb{E}_{...} \frac{...}{...} \cdot \hat{A}_t \tag{1}
+处理方法（必须执行）：
+- 识别这类含有 \frac、\mathbb、\hat、\tag、^ 等 LaTeX 命令的文本
+- 在翻译时用 $$ ... $$ 包裹，公式独占一行，前后各空一行
+- \tag{N} 统一改为 \quad (N)（避免渲染问题）
+- 示例输出：
+  $$J^{PPO}(\phi) = \mathbb{E}_{(o_t, a_t) \sim \pi_{\phi_{\text{old}}}} \frac{\pi_\phi(a_t|o_t)}{\pi_{\phi_{\text{old}}}(a_t|o_t)} \cdot \hat{A}_t \quad (1)$$
+
+【已有 $ 符号的公式】
+- 行内公式 $...$：保留原格式不变
+- 行间公式 $$...$$：保留原格式，独占一行，前后各空一行
+
+【复杂多行环境（\begin{cases}、\begin{align}、\begin{matrix} 等）】
+不要输出原始 LaTeX，改用方括号文字描述：
+[分段函数：当 x > 0 时 $M_t = 1$，否则 $M_t = 0$]
+
+【其他】
+- PDF 提取出乱码符号：用 [公式：描述含义] 代替
+- 孤立数学符号（α β γ Σ ∫ 等）直接原样保留
 
 以下是第 ${pageNum} 页的原文：
 

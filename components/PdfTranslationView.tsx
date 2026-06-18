@@ -53,10 +53,12 @@ interface PageState {
 
 // ── 翻译文本渲染（支持 KaTeX 数学公式 + 图表说明特殊样式）──────────────────
 export function TranslationText({ text }: { text: string }) {
+  // \tag{N} → \quad (N)，防止 KaTeX 在部分环境下渲染失败
+  const processed = text.replace(/\\tag\{([^}]*)\}/g, "\\quad ($1)");
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+      rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false, output: "htmlAndMathml" }]]}
       components={{
         p: ({ children }) => (
           <p style={{ marginBottom: "0.55em", lineHeight: "1.65" }}>{children}</p>
@@ -85,7 +87,7 @@ export function TranslationText({ text }: { text: string }) {
         ),
       }}
     >
-      {text}
+      {processed}
     </ReactMarkdown>
   );
 }
