@@ -40,12 +40,22 @@ export async function POST(req: NextRequest) {
 
     const prompt = `请将以下论文第 ${pageNum} 页的内容翻译成中文。
 
-要求：
+基本要求：
 - 保留段落结构，每个自然段对应输出一段
 - 专业术语格式：中文（English原文），例如"界面钝化（interface passivation）"
 - 参考文献条目不翻译，直接输出英文原文
 - 人名、机构名、期刊名保留英文
 - 直接输出译文，不要加任何解释或注释
+
+图表说明文字处理规则：
+- "Figure X: ..." → 译为"图X："，并以 Markdown 引用块格式单独输出（行首加 > ）
+- "Table X: ..." → 译为"表X："，并以 Markdown 引用块格式单独输出（行首加 > ）
+- "Fig. X ..." → 译为"图X "，并以 Markdown 引用块格式单独输出（行首加 > ）
+- 图表说明的其余文字正常翻译成中文
+- 示例：
+    原文：Figure 1: Comparison of battery performance across different cycles
+    译文：> 图1：不同循环次数下的电池性能对比
+- 图表内部的坐标轴标签、图例文字（如 Capacity (mAh/g)）：保留英文，括号内附中文，如 Capacity (mAh/g，容量)
 
 数学公式处理规则（重要）：
 - 遇到 LaTeX 公式（如 $E=mc^2$ 或 $$\\int_0^\\infty$$）：保留原始 LaTeX 不翻译，原样输出

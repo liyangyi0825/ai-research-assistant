@@ -51,7 +51,7 @@ interface PageState {
   status: PageStatus;
 }
 
-// ── 翻译文本渲染（支持 KaTeX 数学公式）────────────────────────────────────
+// ── 翻译文本渲染（支持 KaTeX 数学公式 + 图表说明特殊样式）──────────────────
 function TranslationText({ text }: { text: string }) {
   return (
     <ReactMarkdown
@@ -60,6 +60,22 @@ function TranslationText({ text }: { text: string }) {
       components={{
         p: ({ children }) => (
           <p style={{ marginBottom: "0.55em", lineHeight: "1.65" }}>{children}</p>
+        ),
+        // 图表说明：AI 输出为 blockquote（> 图1：...），渲染为斜体灰色
+        blockquote: ({ children }) => (
+          <blockquote style={{
+            margin: "0.9em 0",
+            padding: "3px 10px",
+            borderLeft: "2px solid #d1d5db",
+            fontStyle: "italic",
+            color: "#666666",
+            fontSize: "12px",
+            lineHeight: "1.55",
+            background: "rgba(0,0,0,0.015)",
+            borderRadius: "0 3px 3px 0",
+          }}>
+            {children}
+          </blockquote>
         ),
         // 行内代码用继承字体，避免等宽字体破坏排版
         code: ({ children }) => (
