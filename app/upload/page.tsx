@@ -113,6 +113,10 @@ function UploadPageInner() {
   // ── 论文 ID（用于保存笔记时记录来源）──
   const [paperId, setPaperId] = useState<string | null>(null);
 
+  // localStorage key：跨标签切换/刷新后恢复上次论文
+  const PAPER_STORAGE_KEY = "iyanhub_last_paper";
+  const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+
   // ── 总结历史加载状态 ──
   const [summaryFromDB, setSummaryFromDB]       = useState(false);
   const [summaryUpdatedAt, setSummaryUpdatedAt] = useState<string | null>(null);
@@ -197,11 +201,23 @@ function UploadPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summaryStatus]);
 
-  // 页面加载时：从 URL hash 读取 paper ID（格式 #upload?paper=xxx），恢复状态
+  // 页面加载时：先从 URL hash 读取 paper ID，没有再查 localStorage
   useEffect(() => {
     const hash = window.location.hash.slice(1);        // "upload?paper=xxx"
     const m = hash.match(/[?&]paper=([^&]+)/);
-    if (m?.[1]) loadPaperById(m[1]);
+    if (m?.[1]) {
+      loadPaperById(m[1]);
+      return;
+    }
+    // URL 没有 paper 参数（切换标签后刷新的常见情况），从 localStorage 恢复
+    try {
+      const saved = localStorage.getItem(PAPER_STORAGE_KEY);
+      if (!saved) return;
+      const data = JSON.parse(saved) as { paperId: string; timestamp: number };
+      if (data.paperId && Date.now() - data.timestamp < SEVEN_DAYS) {
+        loadPaperById(data.paperId);
+      }
+    } catch { /* 静默 */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -242,6 +258,10 @@ function UploadPageInner() {
       setExtractStatus("done");
       setIsRestored(true);
       window.history.replaceState(null, "", `#upload?paper=${id}`);
+      // 同时存 localStorage，防止切换标签后刷新丢失
+      try {
+        localStorage.setItem(PAPER_STORAGE_KEY, JSON.stringify({ paperId: id, timestamp: Date.now() }));
+      } catch { /* 静默 */ }
 
       // 加载已有总结
       const summaryRes  = await fetch(`/api/paper-summaries?paperId=${id}`);
@@ -305,6 +325,10 @@ function UploadPageInner() {
       if (data.id) {
         setPaperId(data.id);
         window.history.replaceState(null, "", `#upload?paper=${data.id}`);
+        // 同时存 localStorage，防止切换标签后刷新丢失
+        try {
+          localStorage.setItem(PAPER_STORAGE_KEY, JSON.stringify({ paperId: data.id, timestamp: Date.now() }));
+        } catch { /* 静默 */ }
       }
     } catch { /* 静默失败 */ }
   }
@@ -368,6 +392,8 @@ function UploadPageInner() {
         localStorage.removeItem(`iyanhub_summary_${paperId}`);
       } catch { /* 静默失败 */ }
     }
+    // 用户主动新建，清除"上次论文"记录
+    try { localStorage.removeItem(PAPER_STORAGE_KEY); } catch { /* 静默 */ }
     setExtractStatus("idle");
     setExtractedText("");
     setExtractError("");
