@@ -146,54 +146,96 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ papers, searchTerm });
     }
 
-    // ── recent：Semantic Scholar，按引用数降序 ───────────────────────────────
+    // ── recent：优先 Semantic Scholar，失败自动切换到 OpenAlex ───────────────
     if (type === "recent") {
       const q = encodeURIComponent(searchTerm);
       const fromYear = currentYear - 5;
 
-      // 第一次尝试：限制近 5 年
-      const urlWithYear = `${SS_BASE}?query=${q}&fields=${SS_FIELDS}&limit=20&year=${fromYear}-${currentYear}`;
-      console.log("[concept-papers] recent URL (带年份):", urlWithYear);
-      let res = await fetchWithProxy(urlWithYear, { headers: SS_HEADERS });
-      console.log("[concept-papers] recent 状态:", res.status);
+      // ---- 第一步：尝试 Semantic Scholar ----
+      let ssOk = false;
+      let papers: Paper[] = [];
 
-      // 如果带年份的请求失败，改查全部年份
-      if (!res.ok) {
-        console.log("[concept-papers] recent 带年份请求失败，改查全部年份");
-        const urlAll = `${SS_BASE}?query=${q}&fields=${SS_FIELDS}&limit=20`;
-        res = await fetchWithProxy(urlAll, { headers: SS_HEADERS });
-        console.log("[concept-papers] recent 全年份状态:", res.status);
-      }
+      try {
+        // 先查近 5 年
+        const urlWithYear = `${SS_BASE}?query=${q}&fields=${SS_FIELDS}&limit=20&year=${fromYear}-${currentYear}`;
+        console.log("[concept-papers] recent SS URL (带年份):", urlWithYear);
+        let res = await fetchWithProxy(urlWithYear, { headers: SS_HEADERS });
+        console.log("[concept-papers] recent SS 状态:", res.status);
 
-      if (!res.ok) {
-        const errText = await res.text();
-        console.error("[concept-papers] Semantic Scholar recent 错误:", res.status, errText.slice(0, 200));
-        return NextResponse.json({ papers: [], searchTerm });
-      }
+        if (!res.ok) {
+          // 带年份失败，改查全部年份
+          const urlAll = `${SS_BASE}?query=${q}&fields=${SS_FIELDS}&limit=20`;
+          res = await fetchWithProxy(urlAll, { headers: SS_HEADERS });
+          console.log("[concept-papers] recent SS 全年份状态:", res.status);
+        }
 
-      const data = await res.json();
-      let papers: Paper[] = (data.data ?? [])
-        .map(toSSPaper)
-        .filter((p: Paper) => p.year !== null)
-        .sort((a: Paper, b: Paper) => b.citationCount - a.citationCount)
-        .slice(0, 5);
-
-      // 如果近 5 年结果不足 3 篇，再查全部年份补充
-      if (papers.length < 3) {
-        console.log("[concept-papers] recent 近 5 年结果不足，改查全部年份");
-        const urlAll = `${SS_BASE}?query=${q}&fields=${SS_FIELDS}&limit=20`;
-        const res2 = await fetchWithProxy(urlAll, { headers: SS_HEADERS });
-        if (res2.ok) {
-          const data2 = await res2.json();
-          papers = (data2.data ?? [])
+        if (res.ok) {
+          const data = await res.json();
+          papers = (data.data ?? [])
             .map(toSSPaper)
             .filter((p: Paper) => p.year !== null)
             .sort((a: Paper, b: Paper) => b.citationCount - a.citationCount)
             .slice(0, 5);
+
+          // 近 5 年不足 3 篇，再查全部年份
+          if (papers.length < 3) {
+            const urlAll = `${SS_BASE}?query=${q}&fields=${SS_FIELDS}&limit=20`;
+            const res2 = await fetchWithProxy(urlAll, { headers: SS_HEADERS });
+            if (res2.ok) {
+              const data2 = await res2.json();
+              const all = (data2.data ?? [])
+                .map(toSSPaper)
+                .filter((p: Paper) => p.year !== null)
+                .sort((a: Paper, b: Paper) => b.citationCount - a.citationCount)
+                .slice(0, 5);
+              if (all.length > papers.length) papers = all;
+            }
+          }
+
+          ssOk = papers.length > 0;
+          console.log("[concept-papers] Semantic Scholar 返回论文数:", papers.length);
         }
+      } catch (e) {
+        console.warn("[concept-papers] Semantic Scholar 异常，切换到 OpenAlex:", e);
       }
 
-      console.log("[concept-papers] API 返回论文数:", papers.length);
+      // ---- 第二步：SS 无结果时，用 OpenAlex 按引用数降序兜底 ----
+      if (!ssOk) {
+        console.log("[concept-papers] SS 无结果，切换到 OpenAlex 兜底");
+
+        // 先查近 5 年高引
+        const urlOaRecent = `${OA_BASE}?search=${q}&sort=cited_by_count:desc&per-page=10&filter=publication_year:%3E${fromYear}&select=${OA_FIELDS}`;
+        console.log("[concept-papers] recent OA URL (近5年):", urlOaRecent);
+        let resOa = await fetchWithProxy(urlOaRecent, { headers: OA_HEADERS });
+        console.log("[concept-papers] recent OA 状态:", resOa.status);
+
+        if (resOa.ok) {
+          const dataOa = await resOa.json();
+          papers = (dataOa.results ?? [])
+            .map(toOAPaper)
+            .filter((p: Paper) => p.year !== null)
+            .slice(0, 5);
+        }
+
+        // 近 5 年不足 3 篇，放宽到全部年份
+        if (papers.length < 3) {
+          console.log("[concept-papers] OA 近5年不足，改查全部年份");
+          const urlOaAll = `${OA_BASE}?search=${q}&sort=cited_by_count:desc&per-page=5&select=${OA_FIELDS}`;
+          resOa = await fetchWithProxy(urlOaAll, { headers: OA_HEADERS });
+          if (resOa.ok) {
+            const dataOa2 = await resOa.json();
+            const all = (dataOa2.results ?? [])
+              .map(toOAPaper)
+              .filter((p: Paper) => p.year !== null)
+              .slice(0, 5);
+            if (all.length > papers.length) papers = all;
+          }
+        }
+
+        console.log("[concept-papers] OpenAlex 兜底返回论文数:", papers.length);
+      }
+
+      console.log("[concept-papers] 最终论文数:", papers.length);
       return NextResponse.json({ papers, searchTerm });
     }
 
