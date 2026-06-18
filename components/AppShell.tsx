@@ -162,7 +162,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* SPA 主区域：所有 tab 同时挂载，CSS 控制显示 */}
-        <main className="flex-1 overflow-auto">
+        <main className="flex-1 overflow-auto bg-gradient-to-br from-blue-50 to-indigo-100">
           {SPA_TABS.map(({ key, Component }) => {
             if (!mountedTabs.has(key)) return null;
             return (
