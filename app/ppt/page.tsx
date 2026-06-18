@@ -39,6 +39,9 @@ export default function PptPage() {
   // 刷新恢复
   const [showRestoreBanner, setShowRestoreBanner] = useState(false);
   const [restoredScene, setRestoredScene] = useState<"defense" | "meeting" | null>(null);
+  const [restoredIsComplete, setRestoredIsComplete] = useState(false);
+  const [restoredPptTitle, setRestoredPptTitle] = useState<string | null>(null);
+  const [restoredTotalSlides, setRestoredTotalSlides] = useState<number | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
@@ -59,6 +62,9 @@ export default function PptPage() {
         fileName: string;
         paperContent: string;
         pptScene: "defense" | "meeting" | null;
+        isComplete?: boolean;
+        pptTitle?: string;
+        totalSlides?: number;
         timestamp: number;
       };
       if (Date.now() - data.timestamp > SEVEN_DAYS) {
@@ -71,23 +77,31 @@ export default function PptPage() {
       setUploadStage("done");
       setPptStatus("selecting");
       setRestoredScene(data.pptScene ?? null);
+      setRestoredIsComplete(data.isComplete ?? false);
+      setRestoredPptTitle(data.pptTitle ?? null);
+      setRestoredTotalSlides(data.totalSlides ?? null);
       setShowRestoreBanner(true);
     } catch { /* 静默 */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  // 上传/场景变化时保存——paperContent 限 10000 字符，防止 localStorage 超限
+  // 上传/场景/生成完成时保存——paperContent 限 10000 字符，防止 localStorage 超限
   useEffect(() => {
     if (!fileName || !extractedText || !userId) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const content = pptContent as any;
     try {
       localStorage.setItem(`iyanhub_ppt_${userId}`, JSON.stringify({
         fileName,
         paperContent: extractedText.slice(0, 10000),
         pptScene: pptScene ?? null,
+        isComplete: pptStatus === "done",
+        pptTitle: content?.title ?? null,
+        totalSlides: content?.total_pages ?? null,
         timestamp: Date.now(),
       }));
     } catch { /* 静默 */ }
-  }, [fileName, extractedText, pptScene, userId]);
+  }, [fileName, extractedText, pptScene, pptStatus, pptContent, userId]);
 
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -149,6 +163,9 @@ export default function PptPage() {
     setPptError("");
     setShowRestoreBanner(false);
     setRestoredScene(null);
+    setRestoredIsComplete(false);
+    setRestoredPptTitle(null);
+    setRestoredTotalSlides(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -258,6 +275,15 @@ export default function PptPage() {
                   <p className="text-xs text-blue-500 mt-0.5">
                     场景：{restoredScene === "defense" ? "🎓 毕业/学位答辩" : "📊 组会/进展汇报"}
                   </p>
+                )}
+                {restoredIsComplete && restoredPptTitle && (
+                  <p className="text-xs text-green-600 mt-0.5">
+                    ✓ 上次已完成生成：{restoredPptTitle}
+                    {restoredTotalSlides ? `，共 ${restoredTotalSlides} 页` : ""}
+                  </p>
+                )}
+                {!restoredIsComplete && restoredScene && (
+                  <p className="text-xs text-amber-600 mt-0.5">上次未完成生成，点击重新生成</p>
                 )}
               </div>
               <div className="flex gap-2 flex-wrap">

@@ -105,13 +105,13 @@ function Skeleton() {
 interface Props {
   file: File;
   onBack: () => void;
-  // 每页翻译完成后调用（含当前所有页面状态），用于增量写 DB；可返回 Promise
   onPageTranslated?: (pages: { text: string; translation: string }[]) => Promise<void> | void;
-  // 所有页面翻译完成后调用，用于标记 is_complete=true
   onTranslationEnd?: () => Promise<void> | void;
+  /** 恢复时传入已翻译内容，按页索引顺序。有值的页直接显示，不再调用翻译 API */
+  initialTranslations?: { text: string; translation: string }[];
 }
 
-export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslationEnd }: Props) {
+export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslationEnd, initialTranslations }: Props) {
   const [numPages, setNumPages]           = useState(0);
   const [renderedPages, setRenderedPages] = useState(0);
   const [pages, setPages]                 = useState<PageState[]>([]);
@@ -201,13 +201,24 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
 
         if (cancelled) return;
 
-        // ── 第二阶段：逐页翻译 ────────────────────────────────────────────
+        // ── 阶段 1.5：应用预加载翻译（恢复会话时跳过已翻译页面）──────────────
+        const pageTranslations: string[] = new Array(initialPages.length).fill("");
+        if (initialTranslations && initialTranslations.length > 0) {
+          for (let i = 0; i < Math.min(initialPages.length, initialTranslations.length); i++) {
+            const pre = initialTranslations[i];
+            if (pre?.translation?.trim() && initialPages[i].status === "pending") {
+              initialPages[i].status = "done";
+              initialPages[i].translation = pre.translation;
+              pageTranslations[i] = pre.translation;
+            }
+          }
+          setPages([...initialPages]);
+        }
+
+        // ── 第二阶段：翻译剩余未翻译页面 ─────────────────────────────────────
         const translatableCount = initialPages.filter(p => p.status === "pending").length;
         setTransProgress({ done: 0, total: translatableCount });
         setPhase("translating");
-
-        // 用本地数组追踪每页最终译文，避免依赖 React state 的时序问题
-        const pageTranslations: string[] = new Array(initialPages.length).fill("");
 
         let translatedCount = 0;
         let isFirst = true;

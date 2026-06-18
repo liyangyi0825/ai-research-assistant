@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { PdfTranslationView } from "@/components/PdfTranslationView";
 import { Header } from "@/components/Header";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 // ── 类型 ───────────────────────────────────────────────────────────────────
 interface SavedPage {
@@ -100,33 +101,42 @@ export default function TranslatePage() {
   const [error, setError]                     = useState("");
   const [restoredData, setRestoredData]       = useState<RestoredSession | null>(null);
   const [sessionNotFound, setSessionNotFound] = useState(false);
+  const [userId, setUserId]                   = useState<string | null>(null);
+  const [restoredPdfFile, setRestoredPdfFile] = useState<File | null>(null);
   const fileInputRef  = useRef<HTMLInputElement>(null);
   // 用 ref 存 sessionId，避免异步回调中的闭包陈旧问题
   const sessionIdRef  = useRef<string | null>(null);
 
-  const TRANSLATE_KEY = "iyanhub_last_translate";
-  const SEVEN_DAYS    = 7 * 24 * 60 * 60 * 1000;
+  const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
-  // 首次挂载：先查 URL hash，没有再查 localStorage（切换标签后刷新的常见场景）
+  // 获取当前用户 ID
   useEffect(() => {
+    getSupabaseBrowserClient().auth.getUser().then(({ data }) => {
+      setUserId(data.user?.id ?? null);
+    });
+  }, []);
+
+  // userId 就绪后：先查 URL hash，没有再查 localStorage
+  useEffect(() => {
+    if (!userId) return;
     const hash = window.location.hash.slice(1);
     const m = hash.match(/[?&]session=([^&]+)/);
     if (m?.[1]) {
-      loadSession(m[1]);
+      loadSession(m[1], userId);
       return;
     }
     try {
-      const saved = localStorage.getItem(TRANSLATE_KEY);
+      const saved = localStorage.getItem(`iyanhub_translate_${userId}`);
       if (!saved) return;
-      const data = JSON.parse(saved) as { sessionId: string; timestamp: number };
-      if (data.sessionId && Date.now() - data.timestamp < SEVEN_DAYS) {
-        loadSession(data.sessionId);
+      const { sessionId, timestamp } = JSON.parse(saved) as { sessionId: string; timestamp: number };
+      if (sessionId && Date.now() - timestamp < SEVEN_DAYS) {
+        loadSession(sessionId, userId);
       }
     } catch { /* 静默 */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [userId]);
 
-  async function loadSession(id: string) {
+  async function loadSession(id: string, uid: string | null) {
     try {
       const res  = await fetch(`/api/translation-sessions?sessionId=${encodeURIComponent(id)}`);
       const data = await res.json() as { session: RestoredSession | null };
@@ -145,9 +155,23 @@ export default function TranslatePage() {
         return;
       }
 
+      // 先立即恢复纯文字视图
       setRestoredData(session);
       sessionIdRef.current = id;
       window.history.replaceState(null, "", `#translate?session=${id}`);
+
+      // 后台从 Storage 下载 PDF（有则切换到完整对照视图）
+      if (uid) {
+        try {
+          const { data: blob } = await getSupabaseBrowserClient().storage
+            .from("papers")
+            .download(`${uid}/${id}.pdf`);
+          if (blob) {
+            const pdfFile = new File([blob], session.file_name, { type: "application/pdf" });
+            setRestoredPdfFile(pdfFile);
+          }
+        } catch { /* bucket 未创建或文件不存在，降级为纯文字恢复 */ }
+      }
     } catch {
       window.history.replaceState(null, "", "#translate");
     }
@@ -172,14 +196,32 @@ export default function TranslatePage() {
       if (data.id) {
         sessionIdRef.current = data.id;
         window.history.replaceState(null, "", `#translate?session=${data.id}`);
-        // 同时存 localStorage，防止切换标签后刷新丢失 sessionId
-        try {
-          localStorage.setItem(TRANSLATE_KEY, JSON.stringify({
-            sessionId: data.id,
-            fileName: file.name,
-            timestamp: Date.now(),
-          }));
-        } catch { /* 静默 */ }
+
+        // 后台：上传 PDF 到 Storage + 存 localStorage（不阻塞翻译流程）
+        void (async () => {
+          try {
+            const supabase = getSupabaseBrowserClient();
+            const { data: authData } = await supabase.auth.getUser();
+            const uid = authData.user?.id;
+            if (!uid) return;
+            if (!userId) setUserId(uid);
+
+            // 上传 PDF 到 papers bucket 以支持刷新后完整恢复
+            await supabase.storage
+              .from("papers")
+              .upload(`${uid}/${data.id}.pdf`, file, {
+                contentType: "application/pdf",
+                upsert: true,
+              });
+
+            // 存 localStorage（per-user key）
+            localStorage.setItem(`iyanhub_translate_${uid}`, JSON.stringify({
+              sessionId: data.id,
+              fileName: file.name,
+              timestamp: Date.now(),
+            }));
+          } catch { /* 任何步骤失败都不影响翻译 */ }
+        })();
       }
     } catch {
       // 建会话失败不阻止翻译，只是无法恢复
@@ -190,6 +232,7 @@ export default function TranslatePage() {
 
   function handleReset() {
     setPdfFile(null);
+    setRestoredPdfFile(null);
     setStage("idle");
     setError("");
     setRestoredData(null);
@@ -197,8 +240,9 @@ export default function TranslatePage() {
     sessionIdRef.current = null;
     window.history.replaceState(null, "", "#translate");
     if (fileInputRef.current) fileInputRef.current.value = "";
-    // 用户主动清空，才清除 localStorage（切换标签不清除）
-    try { localStorage.removeItem(TRANSLATE_KEY); } catch { /* 静默 */ }
+    if (userId) {
+      try { localStorage.removeItem(`iyanhub_translate_${userId}`); } catch { /* 静默 */ }
+    }
   }
 
   // 每页翻译完成后更新 DB（顺序执行，避免写入竞争）
@@ -229,7 +273,18 @@ export default function TranslatePage() {
     }
   }
 
-  // ── 恢复视图 ──
+  // ── 恢复视图：有 PDF 文件时显示完整对照视图，否则纯文字兜底 ──
+  if (restoredPdfFile && restoredData) {
+    return (
+      <PdfTranslationView
+        file={restoredPdfFile}
+        onBack={handleReset}
+        initialTranslations={restoredData.pages}
+        onPageTranslated={handlePageTranslated}
+        onTranslationEnd={handleTranslationEnd}
+      />
+    );
+  }
   if (restoredData) {
     return <RestoredTranslationView session={restoredData} onReset={handleReset} />;
   }
