@@ -120,6 +120,7 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
   const [transProgress, setTransProgress] = useState({ done: 0, total: 0 });
   const [phase, setPhase]                 = useState<"idle" | "rendering" | "translating" | "done">("idle");
   const [globalError, setGlobalError]     = useState("");
+  const [isScannedPdf, setIsScannedPdf]   = useState(false);
   const leftRef    = useRef<HTMLDivElement>(null);
   const rightRef   = useRef<HTMLDivElement>(null);
   const syncingRef = useRef(false);
@@ -202,6 +203,14 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
         }
 
         if (cancelled) return;
+
+        // 检查是否扫描版 PDF（所有页面均无可提取文字）
+        const totalChars = initialPages.reduce((sum, p) => sum + p.text.length, 0);
+        if (totalChars < 50 && initialPages.length > 0) {
+          setIsScannedPdf(true);
+          setPhase("done");
+          return;
+        }
 
         // ── 阶段 1.5：应用预加载翻译（恢复会话时跳过已翻译页面）──────────────
         const pageTranslations: string[] = new Array(initialPages.length).fill("");
@@ -364,7 +373,7 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
         </span>
       );
     }
-    if (phase === "done") {
+    if (phase === "done" && !isScannedPdf) {
       return (
         <span className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full">
           ✓ 翻译完成，共 {numPages} 页
@@ -401,79 +410,130 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
         </div>
       )}
 
-      {/* ── 主内容（左 PDF / 右翻译） ── */}
+      {/* ── 主内容（左 PDF / 右翻译，或扫描版提示） ── */}
       <div className="flex-1 flex overflow-hidden min-h-0">
 
-        {/* 左：PDF 逐页渲染 */}
-        <div
-          ref={leftRef}
-          className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-4"
-        />
-
-        {/* 右：逐页翻译（模拟论文PDF样式） */}
-        <div
-          ref={rightRef}
-          className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-4"
-        >
-          {pages.map((page, i) => (
-            <div
-              key={i}
-              style={{
-                height: page.canvasHeight,
-                marginBottom: 8,
-                background: "#fff",
-                boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-                overflow: "auto",
-                padding: "20px 28px",
-                fontFamily: '"Source Han Serif SC","Noto Serif SC","Songti SC",宋体,SimSun,serif',
-                fontSize: "13px",
-                lineHeight: "1.65",
-                color: "#1a1a1a",
-                boxSizing: "border-box",
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              {/* 页码 */}
-              <div style={{
-                fontSize: "11px",
-                color: "#9ca3af",
-                fontFamily: "system-ui,sans-serif",
-                borderBottom: "1px solid #f0f0f0",
-                paddingBottom: "6px",
-                marginBottom: "10px",
-                flexShrink: 0,
-              }}>
-                第 {i + 1} 页
+        {isScannedPdf ? (
+          /* 扫描版 PDF 无法提取文字，给出引导 */
+          <div className="flex-1 flex items-center justify-center p-6 bg-gray-50">
+            <div className="bg-white rounded-2xl shadow-sm border border-amber-200 p-8 max-w-lg w-full">
+              <div className="text-4xl mb-3">⚠️</div>
+              <h2 className="text-lg font-semibold text-gray-800 mb-2">检测到扫描版 PDF</h2>
+              <p className="text-sm text-gray-500 mb-4 leading-6">
+                这篇论文以图片形式存储，暂时无法提取文字。
+              </p>
+              <div className="bg-blue-50 rounded-xl p-4 text-sm text-gray-700 mb-5">
+                <p className="font-medium text-blue-700 mb-2">推荐重新下载文字版：</p>
+                <ol className="space-y-2 text-gray-600">
+                  <li className="flex gap-2">
+                    <span className="shrink-0 font-medium text-blue-500">1.</span>
+                    <span>打开 <strong>arxiv.org</strong> 搜索论文标题（大多数论文都有免费 PDF）</span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="shrink-0 font-medium text-blue-500">2.</span>
+                    <span>在 <strong>Google Scholar</strong> 搜索标题，点击右边的 [PDF] 链接下载</span>
+                  </li>
+                  <li className="flex gap-2">
+                    <span className="shrink-0 font-medium text-blue-500">3.</span>
+                    <span>去期刊官网直接下载</span>
+                  </li>
+                </ol>
+                <p className="text-gray-400 text-xs mt-3 pt-2 border-t border-blue-100">
+                  文字版 PDF 可以选中文字，下载后重新上传即可。
+                </p>
               </div>
-
-              <div style={{ flex: 1, overflow: "auto" }}>
-                {page.status === "pending" && <Skeleton />}
-
-                {page.status === "translating" && (
-                  <div>
-                    <TranslationText text={page.translation} />
-                    <span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" />
-                  </div>
-                )}
-
-                {page.status === "done" && <TranslationText text={page.translation} />}
-
-                {page.status === "error" && (
-                  <span style={{ color: "#ef4444", fontSize: "12px", fontFamily: "system-ui" }}>
-                    第 {i + 1} 页翻译失败
-                  </span>
-                )}
-
-                {page.status === "empty" && (
-                  <span style={{ color: "#d1d5db", fontSize: "12px", fontFamily: "system-ui" }}>
-                    （此页无文字内容）
-                  </span>
-                )}
+              <div className="flex gap-3">
+                <a
+                  href="https://arxiv.org"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 text-center px-4 py-2.5 bg-blue-500 text-white text-sm rounded-xl hover:bg-blue-600 transition-colors"
+                >
+                  去 arXiv 搜索
+                </a>
+                <button
+                  onClick={onBack}
+                  className="flex-1 px-4 py-2.5 border border-gray-300 text-gray-600 text-sm rounded-xl hover:bg-gray-50 transition-colors"
+                >
+                  重新上传
+                </button>
               </div>
             </div>
-          ))}
-        </div>
+          </div>
+        ) : (
+          <>
+            {/* 左：PDF 逐页渲染 */}
+            <div
+              ref={leftRef}
+              className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-4"
+            />
+
+            {/* 右：逐页翻译（模拟论文PDF样式） */}
+            <div
+              ref={rightRef}
+              className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-4"
+            >
+              {pages.map((page, i) => (
+                <div
+                  key={i}
+                  style={{
+                    height: page.canvasHeight,
+                    marginBottom: 8,
+                    background: "#fff",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                    overflow: "auto",
+                    padding: "20px 28px",
+                    fontFamily: '"Source Han Serif SC","Noto Serif SC","Songti SC",宋体,SimSun,serif',
+                    fontSize: "13px",
+                    lineHeight: "1.65",
+                    color: "#1a1a1a",
+                    boxSizing: "border-box",
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  {/* 页码 */}
+                  <div style={{
+                    fontSize: "11px",
+                    color: "#9ca3af",
+                    fontFamily: "system-ui,sans-serif",
+                    borderBottom: "1px solid #f0f0f0",
+                    paddingBottom: "6px",
+                    marginBottom: "10px",
+                    flexShrink: 0,
+                  }}>
+                    第 {i + 1} 页
+                  </div>
+
+                  <div style={{ flex: 1, overflow: "auto" }}>
+                    {page.status === "pending" && <Skeleton />}
+
+                    {page.status === "translating" && (
+                      <div>
+                        <TranslationText text={page.translation} />
+                        <span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" />
+                      </div>
+                    )}
+
+                    {page.status === "done" && <TranslationText text={page.translation} />}
+
+                    {page.status === "error" && (
+                      <span style={{ color: "#ef4444", fontSize: "12px", fontFamily: "system-ui" }}>
+                        第 {i + 1} 页翻译失败
+                      </span>
+                    )}
+
+                    {page.status === "empty" && (
+                      <span style={{ color: "#d1d5db", fontSize: "12px", fontFamily: "system-ui" }}>
+                        （此页无文字内容）
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
