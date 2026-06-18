@@ -37,6 +37,8 @@ function LoginForm() {
   const [showConfirm,     setShowConfirm]     = useState(false);
   const [loading,         setLoading]         = useState(false);
   const [error,           setError]           = useState("");
+  const [cooldown,        setCooldown]        = useState(0);
+  const [unverifiedEmail, setUnverifiedEmail] = useState("");
 
   // URL 里带了 error=auth_failed 时显示提示
   useEffect(() => {
@@ -58,29 +60,53 @@ function LoginForm() {
     return () => { ch?.close(); };
   }, [view]);
 
+  // 60 秒重发冷却倒计时
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setTimeout(() => setCooldown(c => c - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
+
   function getRedirectTarget() {
     const next = searchParams.get("next");
     return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
   }
 
   function resetFields() {
-    setPassword(""); setConfirmPassword(""); setError("");
+    setPassword(""); setConfirmPassword(""); setError(""); setUnverifiedEmail("");
   }
 
   function switchTab(t: Tab) {
     setTab(t); setView("login"); resetFields();
   }
 
+  // ── 重新发送验证邮件 ─────────────────────────────────────────────────
+  async function resendVerification(emailToSend: string) {
+    if (cooldown > 0 || loading) return;
+    setLoading(true); setError("");
+    const supabase = getSupabaseBrowserClient();
+    const { error: err } = await supabase.auth.resend({ type: "signup", email: emailToSend });
+    setLoading(false);
+    if (err) setError(err.message);
+    else setCooldown(60);
+  }
+
   // ── 邮箱密码登录 ──────────────────────────────────────────────────────
   async function handlePasswordLogin(e: React.FormEvent) {
     e.preventDefault();
     if (!email.trim() || !password) return;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setUnverifiedEmail("");
     const supabase = getSupabaseBrowserClient();
     const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setLoading(false);
     if (err) {
-      setError(err.message.includes("Invalid login credentials") ? "邮箱或密码错误" : err.message);
+      if (err.message.includes("Invalid login credentials")) {
+        setError("邮箱或密码错误");
+      } else if (err.message.toLowerCase().includes("email not confirmed")) {
+        setUnverifiedEmail(email.trim());
+      } else {
+        setError(err.message);
+      }
     } else {
       window.location.href = getRedirectTarget();
     }
@@ -94,7 +120,11 @@ function LoginForm() {
     if (password !== confirmPassword) { setError("两次输入的密码不一致"); return; }
     setLoading(true); setError("");
     const supabase = getSupabaseBrowserClient();
-    const { data, error: err } = await supabase.auth.signUp({ email: email.trim(), password });
+    const { data, error: err } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
+    });
     setLoading(false);
     if (err) {
       setError(err.message);
@@ -103,6 +133,7 @@ function LoginForm() {
       window.location.href = getRedirectTarget();
     } else {
       // 需要邮件确认
+      setCooldown(60);
       setView("registered");
     }
   }
@@ -165,12 +196,30 @@ function LoginForm() {
 
   if (view === "registered") return (
     <div className="bg-white rounded-2xl p-8 shadow-sm text-center">
-      <div className="text-5xl mb-4">✅</div>
-      <h2 className="text-lg font-semibold text-gray-800 mb-2">注册成功！</h2>
-      <p className="text-sm text-gray-500">请查看邮箱 <strong className="text-gray-700">{email}</strong></p>
-      <p className="text-sm text-gray-400 mt-1">点击邮件里的确认链接后即可登录</p>
-      <button className="mt-4 text-sm text-blue-500 hover:underline"
-        onClick={() => { setView("login"); resetFields(); }}>返回登录</button>
+      <div className="text-5xl mb-4">📧</div>
+      <h2 className="text-lg font-semibold text-gray-800 mb-2">验证邮件已发送</h2>
+      <p className="text-sm text-gray-500 mb-1">
+        已向 <strong className="text-gray-700">{email}</strong> 发送了验证邮件
+      </p>
+      <p className="text-sm text-gray-400 mb-5">请查收邮件并点击验证链接</p>
+      {error && (
+        <p className="text-sm text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">❌ {error}</p>
+      )}
+      <div className="space-y-2">
+        <button
+          onClick={() => resendVerification(email)}
+          disabled={cooldown > 0 || loading}
+          className="w-full px-4 py-2.5 text-sm rounded-xl bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {cooldown > 0 ? `重新发送（${cooldown}s）` : loading ? "发送中…" : "重新发送验证邮件"}
+        </button>
+        <button
+          onClick={() => { setView("login"); resetFields(); setCooldown(0); }}
+          className="w-full px-4 py-2.5 text-sm rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+        >
+          返回登录
+        </button>
+      </div>
     </div>
   );
 
@@ -198,7 +247,8 @@ function LoginForm() {
         {tab === "password" && view === "login" && (
           <form onSubmit={handlePasswordLogin} className="space-y-3">
             <h2 className="text-base font-semibold text-gray-800 mb-4">登录账号</h2>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+            <input type="email" value={email}
+              onChange={e => { setEmail(e.target.value); setUnverifiedEmail(""); }}
               placeholder="your@email.com" required disabled={loading} className={inputCls} />
             <div className="relative">
               <input type={showPwd ? "text" : "password"} value={password}
@@ -210,6 +260,21 @@ function LoginForm() {
               </button>
             </div>
             {errEl}
+            {unverifiedEmail && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm">
+                <p className="text-amber-700 mb-2">
+                  📧 请先验证邮箱，验证邮件已发送到 <strong>{unverifiedEmail}</strong>
+                </p>
+                <button
+                  type="button"
+                  onClick={() => resendVerification(unverifiedEmail)}
+                  disabled={cooldown > 0 || loading}
+                  className="text-blue-500 hover:underline disabled:opacity-50"
+                >
+                  {cooldown > 0 ? `重新发送（${cooldown}s）` : "没收到？点击重新发送"}
+                </button>
+              </div>
+            )}
             <Button type="submit" size="lg" className="w-full"
               disabled={loading || !email.trim() || !password}>
               {loading ? "登录中…" : "登录"}
