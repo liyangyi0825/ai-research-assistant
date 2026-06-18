@@ -2,6 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 // ── SSE 流解析（复用 translate 页面的实现）────────────────────────────────
 async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
@@ -45,6 +49,29 @@ interface PageState {
   text: string;         // PDF.js 提取的原文
   translation: string;  // 流式翻译内容
   status: PageStatus;
+}
+
+// ── 翻译文本渲染（支持 KaTeX 数学公式）────────────────────────────────────
+function TranslationText({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
+      components={{
+        p: ({ children }) => (
+          <p style={{ marginBottom: "0.55em", lineHeight: "1.65" }}>{children}</p>
+        ),
+        // 行内代码用继承字体，避免等宽字体破坏排版
+        code: ({ children }) => (
+          <code style={{ fontFamily: "inherit", background: "rgba(0,0,0,0.04)", padding: "0 2px", borderRadius: 2 }}>
+            {children}
+          </code>
+        ),
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
 }
 
 // ── 骨架屏 ─────────────────────────────────────────────────────────────────
@@ -395,15 +422,13 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
                 {page.status === "pending" && <Skeleton />}
 
                 {page.status === "translating" && (
-                  <div style={{ whiteSpace: "pre-wrap" }}>
-                    {page.translation}
+                  <div>
+                    <TranslationText text={page.translation} />
                     <span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" />
                   </div>
                 )}
 
-                {page.status === "done" && (
-                  <div style={{ whiteSpace: "pre-wrap" }}>{page.translation}</div>
-                )}
+                {page.status === "done" && <TranslationText text={page.translation} />}
 
                 {page.status === "error" && (
                   <span style={{ color: "#ef4444", fontSize: "12px", fontFamily: "system-ui" }}>
