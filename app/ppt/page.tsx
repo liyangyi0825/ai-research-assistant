@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { PptSlidePreview } from "@/components/PptSlidePreview";
 import { Header } from "@/components/Header";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 function DotLoader() {
   return (
@@ -38,46 +39,55 @@ export default function PptPage() {
   // 刷新恢复
   const [showRestoreBanner, setShowRestoreBanner] = useState(false);
   const [restoredScene, setRestoredScene] = useState<"defense" | "meeting" | null>(null);
-  const STORAGE_KEY = "iyanhub_ppt";
-  const SEVEN_DAYS  = 7 * 24 * 60 * 60 * 1000;
+  const [userId, setUserId] = useState<string | null>(null);
+  const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
-  // 页面加载时恢复
+  // 获取当前用户 ID（浏览器端，不走 API）
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    getSupabaseBrowserClient().auth.getUser().then(({ data }) => {
+      setUserId(data.user?.id ?? null);
+    });
+  }, []);
+
+  // userId 就绪后恢复上次状态
+  useEffect(() => {
+    if (!userId) return;
+    const raw = localStorage.getItem(`iyanhub_ppt_${userId}`);
     if (!raw) return;
     try {
       const data = JSON.parse(raw) as {
         fileName: string;
-        extractedText: string;
+        paperContent: string;
         pptScene: "defense" | "meeting" | null;
         timestamp: number;
       };
       if (Date.now() - data.timestamp > SEVEN_DAYS) {
-        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(`iyanhub_ppt_${userId}`);
         return;
       }
-      if (!data.fileName || !data.extractedText) return;
+      if (!data.fileName || !data.paperContent) return;
       setFileName(data.fileName);
-      setExtractedText(data.extractedText);
+      setExtractedText(data.paperContent);
       setUploadStage("done");
       setPptStatus("selecting");
       setRestoredScene(data.pptScene ?? null);
       setShowRestoreBanner(true);
     } catch { /* 静默 */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [userId]);
 
-  // 上传完成或生成完成后保存状态
+  // 上传/场景变化时保存——paperContent 限 10000 字符，防止 localStorage 超限
   useEffect(() => {
-    if (!fileName || !extractedText) return;
+    if (!fileName || !extractedText || !userId) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        fileName, extractedText,
+      localStorage.setItem(`iyanhub_ppt_${userId}`, JSON.stringify({
+        fileName,
+        paperContent: extractedText.slice(0, 10000),
         pptScene: pptScene ?? null,
         timestamp: Date.now(),
       }));
     } catch { /* 静默 */ }
-  }, [fileName, extractedText, pptScene]);
+  }, [fileName, extractedText, pptScene, userId]);
 
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -128,7 +138,7 @@ export default function PptPage() {
   }
 
   function handleReset() {
-    localStorage.removeItem(STORAGE_KEY);
+    if (userId) try { localStorage.removeItem(`iyanhub_ppt_${userId}`); } catch { /* 静默 */ }
     setUploadStage("idle");
     setExtractedText("");
     setFileName("");
@@ -240,14 +250,16 @@ export default function PptPage() {
           {/* 恢复 Banner */}
           {showRestoreBanner && (
             <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 space-y-3">
-              <p className="text-sm text-blue-700">
-                ✨ 上次生成的是：<span className="font-medium">{fileName.replace(/\.pdf$/i, "")}</span>
+              <div>
+                <p className="text-sm text-blue-700">
+                  ✨ 已恢复上次的论文：<span className="font-medium">{fileName.replace(/\.pdf$/i, "")}</span>
+                </p>
                 {restoredScene && (
-                  <span className="ml-1 text-blue-500">
-                    · {restoredScene === "defense" ? "🎓 答辩版" : "📊 组会版"}
-                  </span>
+                  <p className="text-xs text-blue-500 mt-0.5">
+                    场景：{restoredScene === "defense" ? "🎓 毕业/学位答辩" : "📊 组会/进展汇报"}
+                  </p>
                 )}
-              </p>
+              </div>
               <div className="flex gap-2 flex-wrap">
                 {restoredScene && (
                   <Button
