@@ -149,8 +149,20 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
         const total = pdfDoc.numPages;
         setNumPages(total);
 
-        // ── 第一阶段：渲染所有页面，同时提取文字 ─────────────────────────
+        // ── 第一阶段：渲染所有页面（与服务端文字提取并行）──────────────────
         const initialPages: PageState[] = [];
+
+        // 服务端 unpdf 提取与 PDF.js 渲染并行进行，兼容性更好
+        const serverExtractPromise = (async (): Promise<string[] | null> => {
+          try {
+            const fd = new FormData();
+            fd.append("file", file);
+            const res = await fetch("/api/extract-pages", { method: "POST", body: fd });
+            if (!res.ok) return null;
+            const data = await res.json() as { pages?: string[] };
+            return data.pages ?? null;
+          } catch { return null; }
+        })();
 
         for (let pageNum = 1; pageNum <= total; pageNum++) {
           if (cancelled) break;
@@ -185,17 +197,12 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
           await page.render({ canvasContext: canvas.getContext("2d")!, viewport }).promise;
           if (cancelled) break;
 
-          // 提取文字
-          const textContent = await page.getTextContent();
-          const text = textContent.items
-            .map(item => ("str" in item ? (item as { str: string }).str : ""))
-            .join("");
-
+          // 文字由服务端 unpdf 提取（与渲染并行），这里先占位
           const pageState: PageState = {
             canvasHeight: cssH,
-            text: text.trim(),
+            text: "",
             translation: "",
-            status: text.trim() ? "pending" : "empty",
+            status: "pending",
           };
           initialPages.push(pageState);
           setPages([...initialPages]);
@@ -203,6 +210,20 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
         }
 
         if (cancelled) return;
+
+        // 等待服务端 unpdf 提取结果，填充每页文字
+        const serverPages = await serverExtractPromise;
+        if (serverPages === null) {
+          setGlobalError("PDF 文字提取失败，请稍后重试");
+          setPhase("idle");
+          return;
+        }
+        for (let i = 0; i < initialPages.length; i++) {
+          const pageText = (serverPages[i] ?? "").trim();
+          initialPages[i].text = pageText;
+          initialPages[i].status = pageText ? "pending" : "empty";
+        }
+        setPages([...initialPages]);
 
         // 检查是否扫描版 PDF（所有页面均无可提取文字）
         const totalChars = initialPages.reduce((sum, p) => sum + p.text.length, 0);
