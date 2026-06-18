@@ -166,7 +166,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {SPA_TABS.map(({ key, Component }) => {
             if (!mountedTabs.has(key)) return null;
             return (
-              <div key={key} style={{ display: activeTab === key ? "block" : "none", minHeight: "100%" }}>
+              <div key={key} style={{ display: activeTab === key ? "block" : "none", height: "100%" }}>
                 <Component />
               </div>
             );

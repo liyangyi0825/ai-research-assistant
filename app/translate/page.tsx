@@ -29,7 +29,7 @@ function RestoredTranslationView({ session, onReset }: { session: RestoredSessio
   const hasContent = translatedCount > 0;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
+    <div className="h-full bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       {/* 顶部工具栏 */}
       <div className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-gray-200 shadow-sm">
         <div className="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
@@ -303,7 +303,7 @@ export default function TranslatePage() {
 
   // ── 上传页 ──
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
+    <div className="h-full bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       <Header title="全文翻译" />
 
       <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-6 sm:py-12">
