@@ -303,7 +303,7 @@ export default function TranslatePage() {
 
   // ── 上传页 ──
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col" style={{ backgroundColor: '#EFF6FF' }}>
       <Header title="全文翻译" />
 
       <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-6 sm:py-12">
