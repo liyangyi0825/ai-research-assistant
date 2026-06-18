@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { PdfTranslationView } from "@/components/PdfTranslationView";
+import { PdfTranslationView, TranslationText } from "@/components/PdfTranslationView";
 import { Header } from "@/components/Header";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
@@ -63,8 +63,8 @@ function RestoredTranslationView({ session, onReset }: { session: RestoredSessio
               page.translation?.trim() ? (
                 <div key={i} className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
                   <div className="text-xs font-medium text-blue-500 mb-2">第 {i + 1} 页</div>
-                  <div className="text-sm text-gray-800 leading-7 whitespace-pre-wrap">
-                    {page.translation}
+                  <div className="text-sm text-gray-800 leading-7">
+                    <TranslationText text={page.translation} />
                   </div>
                 </div>
               ) : null

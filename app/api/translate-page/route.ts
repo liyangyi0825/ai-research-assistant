@@ -58,11 +58,14 @@ export async function POST(req: NextRequest) {
 - 图表内部的坐标轴标签、图例文字（如 Capacity (mAh/g)）：保留英文，括号内附中文，如 Capacity (mAh/g，容量)
 
 数学公式处理规则（重要）：
-- 遇到 LaTeX 公式（如 $E=mc^2$ 或 $$\\int_0^\\infty$$）：保留原始 LaTeX 不翻译，原样输出
-- 遇到行间公式用 $$ ... $$ 包裹，行内公式用 $ ... $ 包裹
-- 若 PDF 提取导致公式符号乱码（出现乱码字符），用文字描述代替，格式：[公式：描述公式含义]
-- 不要翻译或改写公式中的数学符号（α β γ Σ ∫ 等），遇到孤立数学符号直接原样保留
-- 不要把公式变成普通文字句子
+- 简单行内公式（如 $E=mc^2$、$\alpha$）：保留 $...$ 格式原样输出
+- 简单行间公式（单行，如 $$F = ma$$）：保留 $$...$$ 格式，公式独占一行，前后各空一行
+- 复杂多行公式环境（\begin{cases}、\begin{align}、\begin{matrix}、\begin{pmatrix}、\begin{bmatrix}、\begin{aligned}、\begin{gather} 等）：
+  不要输出原始 LaTeX，改用方括号文字描述，例如：
+  原文：$$M_t = \begin{cases} 1 & x>0 \\ 0 & \text{otherwise} \end{cases}$$
+  译文：[分段函数：当 x > 0 时 $M_t = 1$，否则 $M_t = 0$]
+- PDF 提取导致公式符号乱码：用 [公式：描述公式含义] 代替
+- 孤立数学符号（α β γ Σ ∫ 等）直接原样保留，不要翻译
 
 以下是第 ${pageNum} 页的原文：
 

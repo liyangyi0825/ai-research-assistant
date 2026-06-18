@@ -52,7 +52,7 @@ interface PageState {
 }
 
 // ── 翻译文本渲染（支持 KaTeX 数学公式 + 图表说明特殊样式）──────────────────
-function TranslationText({ text }: { text: string }) {
+export function TranslationText({ text }: { text: string }) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm, remarkMath]}
