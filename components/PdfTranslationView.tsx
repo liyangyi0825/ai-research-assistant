@@ -296,6 +296,8 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
         // ── 第二阶段：翻译剩余未翻译页面 ─────────────────────────────────────
         const translatableCount = initialPages.filter(p => p.status === "pending").length;
         console.log("[translate-debug] totalChars:", totalChars, "| translatableCount:", translatableCount, "| initialTranslations:", initialTranslations?.length ?? "none", "| pages statuses:", initialPages.map(p => p.status).join(","));
+        console.log("[translate-debug] 第1页原文(前400字):\n", initialPages[0]?.text?.slice(0, 400) ?? "(空)");
+        console.log("[translate-debug] 第2页原文(前400字):\n", initialPages[1]?.text?.slice(0, 400) ?? "(空)");
         setTransProgress({ done: 0, total: translatableCount });
         setPhase("translating");
 
