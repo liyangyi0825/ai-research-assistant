@@ -118,7 +118,8 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
   const [renderedPages, setRenderedPages] = useState(0);
   const [pages, setPages]                 = useState<PageState[]>([]);
   const [transProgress, setTransProgress] = useState({ done: 0, total: 0 });
-  const [phase, setPhase]                 = useState<"idle" | "rendering" | "translating" | "done">("idle");
+  const [ocrProgress, setOcrProgress]     = useState({ done: 0, total: 0 });
+  const [phase, setPhase]                 = useState<"idle" | "rendering" | "ocr" | "translating" | "done">("idle");
   const [globalError, setGlobalError]     = useState("");
   const [isScannedPdf, setIsScannedPdf]   = useState(false);
   const leftRef    = useRef<HTMLDivElement>(null);
@@ -225,7 +226,52 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
         }
         setPages([...initialPages]);
 
-        // 检查是否扫描版 PDF（所有页面均无可提取文字）
+        // ── 阶段 1.5（新）：对空页逐页跑腾讯云 OCR ──────────────────────────
+        // 只有 status === "empty"（unpdf 提取不到文字）的页面才进 OCR，
+        // 覆盖纯扫描件（全部空页）和混合 PDF（部分空页）两种情况。
+        const emptyIndexes = initialPages
+          .map((_, i) => i)
+          .filter(i => initialPages[i].status === "empty");
+
+        if (emptyIndexes.length > 0) {
+          setPhase("ocr");
+          setOcrProgress({ done: 0, total: emptyIndexes.length });
+
+          for (let ei = 0; ei < emptyIndexes.length; ei++) {
+            if (cancelled) break;
+            const i = emptyIndexes[ei];
+            const wrapper = container.querySelector<HTMLElement>(`[data-page="${i + 1}"]`);
+            const canvas  = wrapper?.querySelector<HTMLCanvasElement>("canvas");
+
+            if (canvas) {
+              try {
+                const imageBase64 = canvas.toDataURL("image/jpeg", 0.85);
+                const res = await fetch("/api/ocr-page", {
+                  method:  "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body:    JSON.stringify({ imageBase64 }),
+                  signal:  AbortSignal.timeout(30000),
+                });
+                if (res.ok) {
+                  const data = await res.json() as { text?: string };
+                  const ocrText = (data.text ?? "").trim();
+                  if (ocrText) {
+                    initialPages[i].text   = ocrText;
+                    initialPages[i].status = "pending";
+                  }
+                }
+              } catch (e) {
+                console.error(`第 ${i + 1} 页 OCR 失败:`, e);
+                // 静默失败，保持 empty，不影响其他页
+              }
+            }
+
+            setOcrProgress({ done: ei + 1, total: emptyIndexes.length });
+            setPages([...initialPages]);
+          }
+        }
+
+        // OCR 结束后再检查：若全部页面仍无文字，说明 OCR 也无法识别（真正的图片 PDF）
         const totalChars = initialPages.reduce((sum, p) => sum + p.text.length, 0);
         if (totalChars < 50 && initialPages.length > 0) {
           setIsScannedPdf(true);
@@ -384,6 +430,13 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
       return (
         <span className="text-xs text-blue-500 bg-blue-50 px-2 py-0.5 rounded-full">
           渲染第 {renderedPages} / {numPages} 页…
+        </span>
+      );
+    }
+    if (phase === "ocr") {
+      return (
+        <span className="text-xs text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">
+          OCR 识别第 {ocrProgress.done + 1} / {ocrProgress.total} 页…
         </span>
       );
     }
