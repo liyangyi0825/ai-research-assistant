@@ -32,7 +32,7 @@ function RestoredTranslationView({ session, onReset }: { session: RestoredSessio
     <div className="min-h-screen flex flex-col" style={{ background: 'linear-gradient(to bottom right, #EFF6FF, #E0E7FF)' }}>
       {/* 顶部工具栏 */}
       <div className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-gray-200 shadow-sm">
-        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3 flex-wrap">
           <span className="text-sm font-medium text-gray-700">🌐 全文对照翻译</span>
           {session.is_complete ? (
             <span className="text-xs text-green-600 bg-green-50 px-2.5 py-1 rounded-full border border-green-200">
@@ -53,18 +53,59 @@ function RestoredTranslationView({ session, onReset }: { session: RestoredSessio
             {session.is_complete ? "清空重新开始" : "重新翻译"}
           </button>
         </div>
+        {/* 列标题（桌面端）— 复用 PdfTranslationView 的样式 */}
+        {hasContent && (
+          <div className="hidden md:grid grid-cols-2 gap-px bg-gray-200">
+            <div className="bg-blue-50 px-4 py-1.5 text-xs font-semibold text-blue-700 uppercase tracking-wide">
+              English 原文
+            </div>
+            <div className="bg-amber-50 px-4 py-1.5 text-xs font-semibold text-amber-700 uppercase tracking-wide">
+              中文译文
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 翻译内容 */}
-      <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-4">
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-4">
         {hasContent ? (
           <div className="space-y-3">
             {session.pages.map((page, i) =>
               page.translation?.trim() ? (
-                <div key={i} className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-                  <div className="text-xs font-medium text-blue-500 mb-2">第 {i + 1} 页</div>
-                  <div className="text-sm text-gray-800 leading-7">
-                    <TranslationText text={page.translation} />
+                <div key={i} className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+                  {/* 页码 */}
+                  <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-100 text-xs font-medium text-gray-400">
+                    第 {i + 1} 页
+                  </div>
+                  {/* 双栏：桌面左右并排，手机上下叠放 */}
+                  <div className="flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-gray-100">
+                    {/* 左/上：原文 */}
+                    <div className="flex-1 p-5">
+                      {/* 列标签仅窄屏显示（桌面已在工具栏顶部标注） */}
+                      <div className="md:hidden text-xs font-semibold text-blue-700 uppercase tracking-wide mb-2">
+                        English 原文
+                      </div>
+                      <div
+                        className="text-sm text-gray-600 leading-relaxed whitespace-pre-wrap"
+                        style={{ fontFamily: 'Georgia,"Times New Roman",serif' }}
+                      >
+                        {page.text?.trim() || (
+                          <span className="text-gray-300 italic text-xs">（无原文内容）</span>
+                        )}
+                      </div>
+                    </div>
+                    {/* 右/下：译文 — 复用 TranslationText，字体与 PdfTranslationView 一致 */}
+                    <div className="flex-1 p-5">
+                      <div className="md:hidden text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
+                        中文译文
+                      </div>
+                      <div
+                        className="text-sm text-gray-800 leading-7"
+                        style={{ fontFamily: '"Source Han Serif SC","Noto Serif SC","Songti SC",宋体,SimSun,serif' }}
+                      >
+                        <TranslationText text={page.translation} />
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : null
