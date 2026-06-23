@@ -139,6 +139,7 @@ function renderSection(prs: PptxGenJS, s: SectionSlide) {
 
 function renderContent(prs: PptxGenJS, s: ContentSlide) {
   const layout = s.layout ?? "standard";
+  console.log(`[ppt-render-debug] content页 "${s.title?.slice(0, 20)}"  layout字段=${s.layout ?? "(未定义)"}  → 走 ${layout}`);
   if (layout === "split") return _renderContentSplit(prs, s);
   if (layout === "hero")  return _renderContentHero(prs, s);
   return _renderContentStandard(prs, s);
