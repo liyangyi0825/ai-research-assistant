@@ -337,7 +337,8 @@ ${keyContent}`;
         // 诊断日志：打印每页类型和 layout 字段，确认 AI 是否输出了 layout
         console.log("[ppt-layout-debug] 各页 layout 汇总：");
         pptContent.slides.forEach((slide, i) => {
-          const layoutVal = (slide as Record<string, unknown>).layout ?? "(无 layout 字段)";
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const layoutVal = (slide as any).layout ?? "(无 layout 字段)";
           console.log(`  [${i + 1}] type=${slide.type}  layout=${layoutVal}`);
         });
 
