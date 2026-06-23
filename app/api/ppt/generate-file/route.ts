@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import type PptxGenJS from "pptxgenjs";
+import { parseHighlights } from "@/lib/pptRuns";
 import type {
   PptContent,
   Slide,
@@ -34,6 +35,18 @@ const C = {
 };
 
 const CARD_COLORS = [C.NAVY, C.RED, C.GREEN, C.ORANGE, C.PURPLE];
+
+// 把 [[关键词]] 解析成 pptxgenjs text run 数组；普通文字透传 base 样式，高亮词红色加粗
+function buildRuns(
+  text: string,
+  base: { fontSize: number; color: string; fontFace: string }
+) {
+  return parseHighlights(text).map(seg =>
+    seg.highlight
+      ? { text: seg.text, options: { ...base, bold: true, color: "CC2200" } }
+      : { text: seg.text, options: base }
+  );
+}
 
 const W = 10;
 const H = 5.625;
@@ -167,11 +180,10 @@ function _renderContentStandard(prs: PptxGenJS, s: ContentSlide) {
 
   paras.forEach((para, i) => {
     const py = 1.25 + i * (itemH + gap);
-    slide.addText(para, opt({
-      x: 0.35, y: py, w: 9.3, h: itemH,
-      fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑",
-      align: "left", valign: vAlign, wrap: true, lineSpacingMultiple: lSp,
-    }));
+    slide.addText(
+      buildRuns(para, { fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑" }),
+      opt({ x: 0.35, y: py, w: 9.3, h: itemH, align: "left", valign: vAlign, wrap: true, lineSpacingMultiple: lSp })
+    );
     if (i < n - 1) {
       slide.addShape("rect", opt({ x: 0.35, y: py + itemH + gap * 0.4, w: 9.3, h: 0.015, fill: { color: C.GRAY } }));
     }
@@ -206,11 +218,10 @@ function _renderContentSplit(prs: PptxGenJS, s: ContentSlide) {
 
   paras.forEach((para, i) => {
     const py = 0.25 + i * (itemH + gap);
-    slide.addText(para, opt({
-      x: 4.1, y: py, w: 5.7, h: itemH,
-      fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑",
-      align: "left", valign: vAlign, wrap: true, lineSpacingMultiple: lSp,
-    }));
+    slide.addText(
+      buildRuns(para, { fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑" }),
+      opt({ x: 4.1, y: py, w: 5.7, h: itemH, align: "left", valign: vAlign, wrap: true, lineSpacingMultiple: lSp })
+    );
     if (i < n - 1) {
       slide.addShape("rect", opt({ x: 4.1, y: py + itemH + gap * 0.4, w: 5.7, h: 0.015, fill: { color: C.GRAY } }));
     }
@@ -305,11 +316,10 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
 
     pts.forEach((pt, j) => {
       const py = bodyY + j * (itemH + gap);
-      slide.addText(pt, opt({
-        x: cx + 0.12, y: py, w: cardW - 0.24, h: itemH,
-        fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑",
-        align: "left", valign: "middle", wrap: true, lineSpacingMultiple: 1.3,
-      }));
+      slide.addText(
+        buildRuns(pt, { fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑" }),
+        opt({ x: cx + 0.12, y: py, w: cardW - 0.24, h: itemH, align: "left", valign: "middle", wrap: true, lineSpacingMultiple: 1.3 })
+      );
       if (j < np - 1) {
         slide.addShape("rect", opt({ x: cx + 0.12, y: py + itemH + gap * 0.4,
           w: cardW - 0.24, h: 0.01, fill: { color: C.GRAY } }));

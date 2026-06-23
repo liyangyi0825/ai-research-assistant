@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, useEffect, useCallback } from "react";
+import { parseHighlights } from "@/lib/pptRuns";
 import type {
   PptContent, Slide,
   CoverSlide, ContentsSlide, SectionSlide, ContentSlide,
@@ -29,6 +30,21 @@ const hex = (c?: string) => {
 // 内部坐标系：1000 × 562.5（对应 pptxgenjs 的 10" × 5.625"，100px/inch）
 // pt 转内部 px：pt × 100/72
 const f = (pt: number) => pt * 100 / 72;
+
+// [[关键词]] → 红色加粗 span，其余文字正常渲染
+function RichText({ text }: { text: string }) {
+  const segs = parseHighlights(text);
+  if (segs.length === 1 && !segs[0].highlight) return <>{text}</>;
+  return (
+    <>
+      {segs.map((seg, i) =>
+        seg.highlight
+          ? <span key={i} style={{ color: "#CC2200", fontWeight: 700 }}>{seg.text}</span>
+          : <span key={i}>{seg.text}</span>
+      )}
+    </>
+  );
+}
 
 // ── 幻灯片渲染组件 ────────────────────────────────────────────────────────────
 
@@ -138,7 +154,7 @@ function ContentStandard({ s }: { s: ContentSlide }) {
           <div style={{ position: "absolute", left: 35, top: 125 + i * (itemH + gap), right: 20, height: itemH,
             display: "flex", alignItems: vAlign,
             color: C.TEXT, fontSize: fSize, lineHeight: 1.6, overflow: "hidden" }}>
-            {para}
+            <RichText text={para} />
           </div>
           {i < n - 1 && (
             <div style={{ position: "absolute", left: 35, top: 125 + i * (itemH + gap) + itemH + gap * 0.4, right: 20, height: 1.5, background: C.GRAY }} />
@@ -179,7 +195,7 @@ function ContentSplit({ s }: { s: ContentSlide }) {
           <div style={{ position: "absolute", left: 410, top: 25 + i * (itemH + gap), right: 20, height: itemH,
             display: "flex", alignItems: vAlign,
             color: C.TEXT, fontSize: fSize, lineHeight: 1.5, overflow: "hidden" }}>
-            {para}
+            <RichText text={para} />
           </div>
           {i < n - 1 && (
             <div style={{ position: "absolute", left: 410, top: 25 + i * (itemH + gap) + itemH + gap * 0.4, right: 20, height: 1.5, background: C.GRAY }} />
@@ -275,7 +291,7 @@ function ContentCard({ s }: { s: ContentSlide }) {
                 <div style={{ position: "absolute", left: 12, top: bodyY + j * (itemH + gap), right: 12, height: itemH,
                   display: "flex", alignItems: "center",
                   color: C.TEXT, fontSize: fSize, lineHeight: 1.4, overflow: "hidden" }}>
-                  {pt}
+                  <RichText text={pt} />
                 </div>
                 {j < np - 1 && (
                   <div style={{ position: "absolute", left: 12, top: bodyY + j * (itemH + gap) + itemH + gap * 0.4,
