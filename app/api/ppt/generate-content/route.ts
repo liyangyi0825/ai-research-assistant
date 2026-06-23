@@ -213,7 +213,10 @@ ${isDefense
 【layout 字段——硬性要求，违反视为错误输出】
 
 ⛔ 绝对禁止：所有 content 页都输出 "standard"。如果你的草稿里所有 content 页都是 standard，必须修改。
-✅ 强制要求：每篇 PPT 中，content 页里 必须至少有 1 页 "hero" + 至少 2 页 "split"。
+✅ 强制要求（按 content 页总数比例计算，先数清楚再决定）：
+  - hero：content 页 ≤ 8 时用 1 页；content 页 > 8 时用 2 页。hero 不超过 2 页（过多则审美疲劳）
+  - split：content 页总数 ÷ 3，向上取整，且不少于 2 页。split 不超过 content 总数的 40%（过多则审美疲劳）
+  - 示例：content 共 6 页 → split ≥ 2 页，hero = 1 页；content 共 9 页 → split ≥ 3 页，hero = 2 页；content 共 12 页 → split ≥ 4 页，hero = 2 页
 
 内容→版式的映射规则（按此执行，不得偏离）：
 

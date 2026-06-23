@@ -117,7 +117,7 @@ function Section({ s }: { s: SectionSlide }) {
   );
 }
 
-function Content({ s }: { s: ContentSlide }) {
+function ContentStandard({ s }: { s: ContentSlide }) {
   const paras = (s.paragraphs || []).slice(0, 2);
   const totalH = 562.5 - 125 - 20;
   const paraH  = paras.length === 1 ? totalH : (totalH - 15) / 2;
@@ -142,6 +142,86 @@ function Content({ s }: { s: ContentSlide }) {
       ))}
     </div>
   );
+}
+
+function ContentSplit({ s }: { s: ContentSlide }) {
+  const paras    = (s.paragraphs || []).slice(0, 2);
+  const contentH = 562.5 - 50;
+  const paraH    = paras.length === 1 ? contentH : (contentH - 20) / 2;
+  return (
+    <div style={{ position: "absolute", inset: 0, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+      {/* 左侧深蓝面板 */}
+      <div style={{ position: "absolute", left: 0, top: 0, width: 380, bottom: 0, background: C.NAVY }} />
+      {/* 右侧白色区域 */}
+      <div style={{ position: "absolute", left: 380, top: 0, right: 0, bottom: 0, background: C.WHITE }} />
+      {/* 右侧顶部细线 */}
+      <div style={{ position: "absolute", left: 380, top: 0, right: 0, height: 7, background: C.NAVY_D }} />
+      {/* 左侧标题 */}
+      <div style={{ position: "absolute", left: 28, top: 80, width: 324, height: 280, overflow: "hidden",
+        display: "flex", alignItems: "center",
+        color: C.WHITE, fontSize: f(20), fontWeight: 700, lineHeight: 1.4 }}>
+        {s.title}
+      </div>
+      {/* 金色装饰线 */}
+      <div style={{ position: "absolute", left: 28, top: 380, width: 150, height: 7, background: C.GOLD }} />
+      {/* 右侧段落 */}
+      {paras.map((para, i) => (
+        <div key={i}>
+          <div style={{ position: "absolute", left: 410, top: 25 + i * (paraH + 20), right: 20, height: paraH,
+            color: C.TEXT, fontSize: f(15), lineHeight: 1.5, overflow: "hidden" }}>
+            {para}
+          </div>
+          {i < paras.length - 1 && (
+            <div style={{ position: "absolute", left: 410, top: 25 + paraH + 7, right: 20, height: 2, background: C.GRAY }} />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ContentHero({ s }: { s: ContentSlide }) {
+  const paras = (s.paragraphs || []).slice(0, 2);
+  return (
+    <div style={{ position: "absolute", inset: 0, background: C.LIGHT, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+      {/* 顶部深蓝细条 */}
+      <div style={{ position: "absolute", inset: "0 0 auto 0", height: 10, background: C.NAVY }} />
+      {/* 底部金色细条 */}
+      <div style={{ position: "absolute", inset: "auto 0 0 0", height: 10, background: C.GOLD }} />
+      {/* 页面标题（小字） */}
+      <div style={{ position: "absolute", left: 60, top: 18, right: 60, height: 65,
+        display: "flex", alignItems: "center", color: "#5566AA", fontSize: f(15), overflow: "hidden" }}>
+        {s.title}
+      </div>
+      {/* 金色装饰线 */}
+      <div style={{ position: "absolute", left: 60, top: 90, width: 200, height: 7, background: C.GOLD }} />
+      {/* 核心陈述（大字加粗） */}
+      {paras[0] && (
+        <div style={{ position: "absolute", left: 60, top: 110, right: 60, height: 270,
+          display: "flex", alignItems: "center",
+          color: C.NAVY, fontSize: f(22), fontWeight: 700, lineHeight: 1.5, overflow: "hidden" }}>
+          {paras[0]}
+        </div>
+      )}
+      {/* 补充说明（小字） */}
+      {paras[1] && (
+        <>
+          <div style={{ position: "absolute", left: 60, top: 390, right: 60, height: 2, background: C.GRAY }} />
+          <div style={{ position: "absolute", left: 60, top: 398, right: 60, bottom: 20,
+            color: "#445588", fontSize: f(14), lineHeight: 1.4, overflow: "hidden" }}>
+            {paras[1]}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Content({ s }: { s: ContentSlide }) {
+  const layout = s.layout ?? "standard";
+  if (layout === "split") return <ContentSplit s={s} />;
+  if (layout === "hero")  return <ContentHero s={s} />;
+  return <ContentStandard s={s} />;
 }
 
 function Figure({ s }: { s: FigureSlide }) {
