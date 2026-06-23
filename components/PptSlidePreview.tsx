@@ -302,6 +302,23 @@ function ContentCard({ s }: { s: ContentSlide }) {
           </div>
         );
       })}
+      {/* 流程箭头：flow=true 时在相邻卡片间画 CSS 箭头 */}
+      {s.flow && cards.slice(0, -1).map((_, i) => {
+        const cx_i = MARGIN + i * (cardW + GAP);
+        const arrowLeft = cx_i + cardW + 2;
+        const arrowTop  = CY + CH / 2 - 2;
+        const lineW     = GAP - 8;
+        return (
+          <div key={`flow-${i}`} style={{ position: "absolute", left: arrowLeft, top: arrowTop,
+            width: lineW, height: 4, background: C.NAVY }}>
+            <div style={{ position: "absolute", right: -7, top: -5,
+              width: 0, height: 0,
+              borderTop: "7px solid transparent",
+              borderBottom: "7px solid transparent",
+              borderLeft: `8px solid ${C.NAVY}` }} />
+          </div>
+        );
+      })}
     </div>
   );
 }

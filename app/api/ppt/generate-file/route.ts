@@ -326,6 +326,21 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
       }
     });
   });
+
+  // 流程箭头：flow=true 时在相邻卡片之间画水平箭头
+  if (s.flow) {
+    const arrowY = CY + CH / 2;
+    for (let i = 0; i < cards.length - 1; i++) {
+      const cx_i = MARGIN + i * (cardW + GAP);
+      slide.addShape("line", opt({
+        x: cx_i + cardW + 0.03,
+        y: arrowY,
+        w: GAP - 0.06,
+        h: 0,
+        line: { color: C.NAVY, w: 2.5, endArrowType: "arrow", beginArrowType: "none" },
+      }));
+    }
+  }
 }
 
 function renderFigure(prs: PptxGenJS, s: FigureSlide) {
