@@ -23,10 +23,10 @@ git fetch origin main
 git reset --hard origin/main
 
 echo ""
-echo "---> [3/5] 安装依赖（npm ci：只读 lockfile，不写 package-lock.json）"
-# npm ci 专为 CI/CD 设计：严格按 package-lock.json 安装，不会修改它
-# 避免 npm install 因平台/版本差异重写 lockfile 导致下次 pull 失败
-npm ci
+echo "---> [3/5] 安装依赖"
+# npm install 兼容性更好；git reset --hard 已在上一步丢弃 package-lock 本地改动，
+# 即使 install 重写 lockfile，下次 reset --hard 时会再次对齐，不影响部署
+npm install
 
 echo ""
 echo "---> [4/5] 删除旧构建产物，重新构建"
