@@ -138,6 +138,13 @@ function renderSection(prs: PptxGenJS, s: SectionSlide) {
 }
 
 function renderContent(prs: PptxGenJS, s: ContentSlide) {
+  const layout = s.layout ?? "standard";
+  if (layout === "split") return _renderContentSplit(prs, s);
+  if (layout === "hero")  return _renderContentHero(prs, s);
+  return _renderContentStandard(prs, s);
+}
+
+function _renderContentStandard(prs: PptxGenJS, s: ContentSlide) {
   const slide = prs.addSlide();
   addBg(slide, C.WHITE);
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
@@ -147,7 +154,7 @@ function renderContent(prs: PptxGenJS, s: ContentSlide) {
     fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 
-  const paras = (s.paragraphs || []).slice(0, 2);
+  const paras   = (s.paragraphs || []).slice(0, 2);
   const contentH = H - 1.25 - 0.2;
   const paraH    = paras.length === 1 ? contentH : (contentH - 0.15) / 2;
 
@@ -164,35 +171,114 @@ function renderContent(prs: PptxGenJS, s: ContentSlide) {
   });
 }
 
+// layout="split"：左侧深色面板展示标题，右侧白色区域展示内容段落
+function _renderContentSplit(prs: PptxGenJS, s: ContentSlide) {
+  const slide = prs.addSlide();
+  slide.addShape("rect", opt({ x: 0,   y: 0, w: 3.8, h: H, fill: { color: C.NAVY  } }));
+  slide.addShape("rect", opt({ x: 3.8, y: 0, w: 6.2, h: H, fill: { color: C.WHITE } }));
+  // 右侧顶部细线，视觉统一感
+  slide.addShape("rect", opt({ x: 3.8, y: 0, w: 6.2, h: 0.07, fill: { color: C.NAVY_D } }));
+
+  // 左侧面板：标题 + 金色装饰线
+  slide.addText(s.title || "", opt({
+    x: 0.28, y: 0.8, w: 3.24, h: 2.8,
+    fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑",
+    valign: "middle", wrap: true, lineSpacingMultiple: 1.4,
+  }));
+  slide.addShape("rect", opt({ x: 0.28, y: 3.8, w: 1.5, h: 0.07, fill: { color: C.GOLD } }));
+
+  // 右侧：内容段落
+  const paras    = (s.paragraphs || []).slice(0, 2);
+  const contentH = H - 0.5;
+  const paraH    = paras.length === 1 ? contentH : (contentH - 0.2) / 2;
+
+  paras.forEach((para, i) => {
+    const py = 0.25 + i * (paraH + 0.2);
+    slide.addText(para, opt({
+      x: 4.1, y: py, w: 5.7, h: paraH,
+      fontSize: 15, color: C.TEXT, fontFace: "微软雅黑",
+      align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.5,
+    }));
+    if (i < paras.length - 1) {
+      slide.addShape("rect", opt({ x: 4.1, y: py + paraH + 0.07, w: 5.7, h: 0.02, fill: { color: C.GRAY } }));
+    }
+  });
+}
+
+// layout="hero"：浅色背景，大字突出唯一关键数据点，仅用于全文最重要的 1-2 页
+function _renderContentHero(prs: PptxGenJS, s: ContentSlide) {
+  const slide = prs.addSlide();
+  addBg(slide, C.LIGHT);
+  slide.addShape("rect", opt({ x: 0, y: 0,        w: W, h: 0.10, fill: { color: C.NAVY } }));
+  slide.addShape("rect", opt({ x: 0, y: H - 0.10, w: W, h: 0.10, fill: { color: C.GOLD } }));
+
+  // 页面标题（小字，左上）
+  slide.addText(s.title || "", opt({
+    x: 0.6, y: 0.18, w: 8.8, h: 0.65,
+    fontSize: 15, color: "5566AA", fontFace: "微软雅黑",
+    align: "left", valign: "middle",
+  }));
+  slide.addShape("rect", opt({ x: 0.6, y: 0.9, w: 2.0, h: 0.07, fill: { color: C.GOLD } }));
+
+  const paras = (s.paragraphs || []).slice(0, 2);
+  if (paras.length >= 1) {
+    // 核心陈述：大字加粗
+    slide.addText(paras[0], opt({
+      x: 0.6, y: 1.1, w: 8.8, h: 2.7,
+      fontSize: 22, bold: true, color: C.NAVY, fontFace: "微软雅黑",
+      align: "left", valign: "middle", wrap: true, lineSpacingMultiple: 1.5,
+    }));
+  }
+  if (paras.length >= 2) {
+    // 补充说明：小字
+    slide.addShape("rect", opt({ x: 0.6, y: 3.9, w: 8.8, h: 0.02, fill: { color: C.GRAY } }));
+    slide.addText(paras[1], opt({
+      x: 0.6, y: 3.98, w: 8.8, h: 1.35,
+      fontSize: 14, color: "445588", fontFace: "微软雅黑",
+      align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.4,
+    }));
+  }
+}
+
 function renderFigure(prs: PptxGenJS, s: FigureSlide) {
   const slide = prs.addSlide();
   addBg(slide, C.WHITE);
-  slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
-  slide.addShape("rect", opt({ x: 0, y: 0, w: 0.12, h: H, fill: { color: C.GOLD } }));
+
+  // 紫色顶栏（与内容页深蓝顶栏区分，一眼看出"这是图表页"）
+  slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 0.9, fill: { color: C.PURPLE } }));
   slide.addText(s.title || "", opt({
-    x: 0.35, y: 0, w: 9.3, h: 1.0,
-    fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
+    x: 0.3, y: 0, w: 9.4, h: 0.9,
+    fontSize: 18, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 
-  // 图表占位框（虚线边框 + 灰色背景）
+  // 图片区（撑高到约 55% 幻灯片高度，用户可在 PPT 软件中直接拖入图片替换）
   slide.addShape("rect", opt({
-    x: 0.5, y: 1.15, w: 9.0, h: 2.8,
-    fill: { color: "F5F5F5" },
+    x: 0.4, y: 0.98, w: 9.2, h: 3.1,
+    fill: { color: "F8F8F8" },
     line: { color: "CCCCCC", dashType: "dash", pt: 1 },
   }));
   slide.addText("请在此插入图表", opt({
-    x: 0.5, y: 1.9, w: 9.0, h: 0.5,
-    fontSize: 16, color: "AAAAAA", fontFace: "微软雅黑", align: "center",
+    x: 0.4, y: 2.1, w: 9.2, h: 0.55,
+    fontSize: 14, color: "BBBBBB", fontFace: "微软雅黑", align: "center",
   }));
-  slide.addText(`[${s.title || "图表标题"}]`, opt({
-    x: 0.5, y: 2.45, w: 9.0, h: 0.35,
-    fontSize: 11, color: "CCCCCC", fontFace: "微软雅黑", align: "center",
+  slide.addText("（在 PPT 中双击占位框 / 拖入图片文件）", opt({
+    x: 0.4, y: 2.68, w: 9.2, h: 0.38,
+    fontSize: 10, color: "CCCCCC", fontFace: "微软雅黑", align: "center",
   }));
+  // 图表说明：以斜体小字显示在占位框底部
+  if (s.figure_desc) {
+    slide.addText(s.figure_desc, opt({
+      x: 0.5, y: 3.6, w: 9.0, h: 0.42,
+      fontSize: 10, italic: true, color: "AAAAAA", fontFace: "微软雅黑",
+      align: "center", valign: "middle", wrap: true,
+    }));
+  }
 
-  // 分析区
-  slide.addShape("rect", opt({ x: 0.35, y: 4.05, w: 9.3, h: 0.02, fill: { color: C.GRAY } }));
+  // 分析条：浅紫色背景 + 左侧紫色强调竖条
+  slide.addShape("rect", opt({ x: 0,    y: 4.15, w: W,    h: 1.475, fill: { color: "F5F0FF" } }));
+  slide.addShape("rect", opt({ x: 0,    y: 4.15, w: 0.12, h: 1.475, fill: { color: C.PURPLE } }));
   slide.addText(s.analysis || "", opt({
-    x: 0.35, y: 4.15, w: 9.3, h: 1.3,
+    x: 0.28, y: 4.2, w: 9.5, h: 1.375,
     fontSize: 13, color: C.TEXT, fontFace: "微软雅黑",
     align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.4,
   }));
@@ -245,9 +331,9 @@ function renderTable(prs: PptxGenJS, s: TableSlide) {
   const slide = prs.addSlide();
   addBg(slide, C.WHITE);
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
-  slide.addShape("rect", opt({ x: 0, y: 0, w: 0.12, h: H, fill: { color: C.GOLD } }));
+  // 表格页不加左侧金条——表格自身行列结构已有足够视觉分区，金条反而增加噪音
   slide.addText(s.title || "", opt({
-    x: 0.35, y: 0, w: 9.3, h: 1.0,
+    x: 0.3, y: 0, w: 9.4, h: 1.0,
     fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 

@@ -5,7 +5,14 @@
       "PowerShell(& \"C:\\\\Program Files\\\\nodejs\\\\node.exe\" -v)",
       "PowerShell(& \"C:\\\\Program Files\\\\nodejs\\\\npm.cmd\" -v)",
       "PowerShell(Get-ChildItem \"D:\\\\网站项目\" -Force | Where-Object { $_.Name -ne \"node_modules\" -and $_.Name -ne \".next\" } | Select-Object Name, LastWriteTime)",
-      "PowerShell($env:PATH = \"C:\\\\Program Files\\\\nodejs;\" + $env:PATH; Set-Location \"D:\\\\网站项目\"; npx shadcn@latest init --yes --defaults 2>&1)"
+      "PowerShell($env:PATH = \"C:\\\\Program Files\\\\nodejs;\" + $env:PATH; Set-Location \"D:\\\\网站项目\"; npx shadcn@latest init --yes --defaults 2>&1)",
+      "Bash(pip3 install *)",
+      "Bash(cat)",
+      "Bash(chmod +x /tmp/askpass.sh)",
+      "Bash(SSH_ASKPASS=/tmp/askpass.sh SSH_ASKPASS_REQUIRE=force ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@49.232.49.120 'echo '\\\\''连接成功'\\\\''; uname -a; whoami')",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }
