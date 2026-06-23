@@ -118,12 +118,12 @@ function Section({ s }: { s: SectionSlide }) {
 }
 
 function ContentStandard({ s }: { s: ContentSlide }) {
-  const paras = (s.paragraphs || []).slice(0, 5);
+  const paras = (s.paragraphs || []).slice(0, 6);
   const n = paras.length;
   const totalH = 417.5; // 562.5 - 125 - 20
   const gap = 12;
   const itemH = (totalH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
-  const fSize = n >= 3 ? f(15) : f(16);
+  const fSize = n >= 5 ? f(14) : n >= 3 ? f(15) : f(16);
   const vAlign = n >= 3 ? "center" : "flex-start";
   return (
     <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
@@ -150,12 +150,12 @@ function ContentStandard({ s }: { s: ContentSlide }) {
 }
 
 function ContentSplit({ s }: { s: ContentSlide }) {
-  const paras = (s.paragraphs || []).slice(0, 5);
+  const paras = (s.paragraphs || []).slice(0, 6);
   const n = paras.length;
   const contentH = 512.5; // 562.5 - 50
   const gap = 12;
   const itemH = (contentH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
-  const fSize = n >= 3 ? f(14) : f(15);
+  const fSize = n >= 5 ? f(13) : n >= 3 ? f(14) : f(15);
   const vAlign = n >= 3 ? "center" : "flex-start";
   return (
     <div style={{ position: "absolute", inset: 0, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>

@@ -155,12 +155,12 @@ function _renderContentStandard(prs: PptxGenJS, s: ContentSlide) {
     fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 
-  const paras = (s.paragraphs || []).slice(0, 5);
+  const paras = (s.paragraphs || []).slice(0, 6);
   const n = paras.length;
   const contentH = H - 1.25 - 0.2;
   const gap = 0.12;
   const itemH = (contentH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
-  const fSize = n >= 3 ? 15 : 16;
+  const fSize = n >= 5 ? 14 : n >= 3 ? 15 : 16;
   const vAlign = n >= 3 ? "middle" : "top";
   const lSp   = n >= 3 ? 1.3 : 1.4;
 
@@ -194,12 +194,12 @@ function _renderContentSplit(prs: PptxGenJS, s: ContentSlide) {
   slide.addShape("rect", opt({ x: 0.28, y: 3.8, w: 1.5, h: 0.07, fill: { color: C.GOLD } }));
 
   // 右侧：内容段落
-  const paras = (s.paragraphs || []).slice(0, 5);
+  const paras = (s.paragraphs || []).slice(0, 6);
   const n = paras.length;
   const contentH = H - 0.5;
   const gap = 0.12;
   const itemH = (contentH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
-  const fSize = n >= 3 ? 14 : 15;
+  const fSize = n >= 5 ? 13 : n >= 3 ? 14 : 15;
   const vAlign = n >= 3 ? "middle" : "top";
   const lSp   = n >= 3 ? 1.3 : 1.5;
 
