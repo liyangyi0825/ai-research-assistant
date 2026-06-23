@@ -227,10 +227,74 @@ function ContentHero({ s }: { s: ContentSlide }) {
   );
 }
 
+function ContentCard({ s }: { s: ContentSlide }) {
+  const CARD_HEAD_COLORS = ["#1B3A8C", "#224A9A", "#2D60B0"];
+  const cards = (s.cards || []).slice(0, 3);
+  const n = Math.max(cards.length, 1);
+  const MARGIN = 28;
+  const GAP    = 18;
+  const CY     = 100;          // cards 起始 y（px）
+  const CH     = 442.5;        // cards 高度（px）
+  const HEAD_H = 48;
+  const cardW  = (1000 - 2 * MARGIN - GAP * (n - 1)) / n;
+
+  return (
+    <div style={{ position: "absolute", inset: 0, background: C.WHITE,
+      fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+      {/* 页面顶部深蓝标题栏 */}
+      <div style={{ position: "absolute", left: 0, top: 0, right: 0, height: 85, background: C.NAVY }} />
+      <div style={{ position: "absolute", left: 0, top: 0, width: 10, bottom: 0, background: C.GOLD }} />
+      <div style={{ position: "absolute", left: 28, top: 0, right: 20, height: 85,
+        display: "flex", alignItems: "center", color: "#fff", fontSize: f(20), fontWeight: 700 }}>
+        {s.title}
+      </div>
+      {/* 卡片 */}
+      {cards.map((card, i) => {
+        const cx    = MARGIN + i * (cardW + GAP);
+        const pts   = (card.points || []).slice(0, 5);
+        const np    = pts.length;
+        const bodyY = HEAD_H + 10;   // 相对卡片顶部的偏移
+        const bodyH = CH - HEAD_H - 15;
+        const gap   = 10;
+        const itemH = (bodyH - gap * Math.max(np - 1, 0)) / Math.max(np, 1);
+        const fSize = np >= 4 ? f(12) : f(13);
+        const hc    = CARD_HEAD_COLORS[i] ?? CARD_HEAD_COLORS[CARD_HEAD_COLORS.length - 1];
+        return (
+          <div key={i} style={{ position: "absolute", left: cx, top: CY, width: cardW, height: CH,
+            background: "#F8FAFC", border: "0.5px solid #DDE4ED", overflow: "hidden" }}>
+            {/* 深色标题栏 */}
+            <div style={{ position: "absolute", left: 0, top: 0, right: 0, height: HEAD_H, background: hc }} />
+            <div style={{ position: "absolute", left: 12, top: 0, right: 12, height: HEAD_H,
+              display: "flex", alignItems: "center",
+              color: "#fff", fontSize: f(13), fontWeight: 700 }}>
+              {card.heading}
+            </div>
+            {/* 要点 */}
+            {pts.map((pt, j) => (
+              <div key={j}>
+                <div style={{ position: "absolute", left: 12, top: bodyY + j * (itemH + gap), right: 12, height: itemH,
+                  display: "flex", alignItems: "center",
+                  color: C.TEXT, fontSize: fSize, lineHeight: 1.4, overflow: "hidden" }}>
+                  {pt}
+                </div>
+                {j < np - 1 && (
+                  <div style={{ position: "absolute", left: 12, top: bodyY + j * (itemH + gap) + itemH + gap * 0.4,
+                    right: 12, height: 1, background: C.GRAY }} />
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function Content({ s }: { s: ContentSlide }) {
   const layout = s.layout ?? "standard";
   if (layout === "split") return <ContentSplit s={s} />;
   if (layout === "hero")  return <ContentHero s={s} />;
+  if (layout === "card")  return <ContentCard s={s} />;
   return <ContentStandard s={s} />;
 }
 

@@ -142,6 +142,7 @@ function renderContent(prs: PptxGenJS, s: ContentSlide) {
   console.log(`[ppt-render-debug] content页 "${s.title?.slice(0, 20)}"  layout字段=${s.layout ?? "(未定义)"}  → 走 ${layout}`);
   if (layout === "split") return _renderContentSplit(prs, s);
   if (layout === "hero")  return _renderContentHero(prs, s);
+  if (layout === "card")  return _renderContentCard(prs, s);
   return _renderContentStandard(prs, s);
 }
 
@@ -249,6 +250,72 @@ function _renderContentHero(prs: PptxGenJS, s: ContentSlide) {
       align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.4,
     }));
   }
+}
+
+// layout="card"：深色标题栏卡片，2-3 个并列主题横向排列
+function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
+  const slide = prs.addSlide();
+  addBg(slide, C.WHITE);
+
+  // 页面顶部深蓝标题栏（与 standard 一致）
+  slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 0.85, fill: { color: C.NAVY } }));
+  slide.addShape("rect", opt({ x: 0, y: 0, w: 0.1, h: H, fill: { color: C.GOLD } }));
+  slide.addText(s.title || "", opt({
+    x: 0.28, y: 0, w: 9.5, h: 0.85,
+    fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
+  }));
+
+  // 卡片区域坐标
+  const CARD_HEAD_COLORS = ["1B3A8C", "224A9A", "2D60B0"];
+  const cards = (s.cards || []).slice(0, 3);
+  const n = Math.max(cards.length, 1);
+  const MARGIN = 0.28;
+  const GAP    = 0.18;
+  const CY     = 1.0;          // cards 起始 y
+  const CH     = H - CY - 0.2; // cards 高度 4.425"
+  const HEAD_H = 0.48;
+  const cardW  = (W - 2 * MARGIN - GAP * (n - 1)) / n;
+
+  cards.forEach((card, i) => {
+    const cx = MARGIN + i * (cardW + GAP);
+
+    // 卡片底板（浅灰蓝底 + 细边框）
+    slide.addShape("rect", opt({ x: cx, y: CY, w: cardW, h: CH,
+      fill: { color: "F8FAFC" }, line: { color: "DDE4ED", w: 0.5 } }));
+
+    // 深色标题栏
+    const hc = CARD_HEAD_COLORS[i] ?? CARD_HEAD_COLORS[CARD_HEAD_COLORS.length - 1];
+    slide.addShape("rect", opt({ x: cx, y: CY, w: cardW, h: HEAD_H, fill: { color: hc } }));
+
+    // 标题文字
+    slide.addText(card.heading || "", opt({
+      x: cx + 0.12, y: CY, w: cardW - 0.24, h: HEAD_H,
+      fontSize: 13, bold: true, color: C.WHITE, fontFace: "微软雅黑",
+      align: "left", valign: "middle",
+    }));
+
+    // 要点列表
+    const pts   = (card.points || []).slice(0, 5);
+    const np    = pts.length;
+    const bodyY = CY + HEAD_H + 0.1;
+    const bodyH = CH - HEAD_H - 0.15;
+    const gap   = 0.1;
+    const itemH = (bodyH - gap * Math.max(np - 1, 0)) / Math.max(np, 1);
+    const fSize = np >= 4 ? 12 : 13;
+
+    pts.forEach((pt, j) => {
+      const py = bodyY + j * (itemH + gap);
+      slide.addText(pt, opt({
+        x: cx + 0.12, y: py, w: cardW - 0.24, h: itemH,
+        fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑",
+        align: "left", valign: "middle", wrap: true, lineSpacingMultiple: 1.3,
+      }));
+      if (j < np - 1) {
+        slide.addShape("rect", opt({ x: cx + 0.12, y: py + itemH + gap * 0.4,
+          w: cardW - 0.24, h: 0.01, fill: { color: C.GRAY } }));
+      }
+    });
+  });
 }
 
 function renderFigure(prs: PptxGenJS, s: FigureSlide) {
