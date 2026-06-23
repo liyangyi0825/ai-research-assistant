@@ -118,9 +118,13 @@ function Section({ s }: { s: SectionSlide }) {
 }
 
 function ContentStandard({ s }: { s: ContentSlide }) {
-  const paras = (s.paragraphs || []).slice(0, 2);
-  const totalH = 562.5 - 125 - 20;
-  const paraH  = paras.length === 1 ? totalH : (totalH - 15) / 2;
+  const paras = (s.paragraphs || []).slice(0, 5);
+  const n = paras.length;
+  const totalH = 417.5; // 562.5 - 125 - 20
+  const gap = 12;
+  const itemH = (totalH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
+  const fSize = n >= 3 ? f(15) : f(16);
+  const vAlign = n >= 3 ? "center" : "flex-start";
   return (
     <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
@@ -131,12 +135,13 @@ function ContentStandard({ s }: { s: ContentSlide }) {
       </div>
       {paras.map((para, i) => (
         <div key={i}>
-          <div style={{ position: "absolute", left: 35, top: 125 + i * (paraH + 15), right: 20, height: paraH,
-            color: C.TEXT, fontSize: f(16), lineHeight: 1.6, overflow: "hidden" }}>
+          <div style={{ position: "absolute", left: 35, top: 125 + i * (itemH + gap), right: 20, height: itemH,
+            display: "flex", alignItems: vAlign,
+            color: C.TEXT, fontSize: fSize, lineHeight: 1.6, overflow: "hidden" }}>
             {para}
           </div>
-          {i < paras.length - 1 && (
-            <div style={{ position: "absolute", left: 35, top: 125 + paraH + 5, right: 20, height: 2, background: C.GRAY }} />
+          {i < n - 1 && (
+            <div style={{ position: "absolute", left: 35, top: 125 + i * (itemH + gap) + itemH + gap * 0.4, right: 20, height: 1.5, background: C.GRAY }} />
           )}
         </div>
       ))}
@@ -145,9 +150,13 @@ function ContentStandard({ s }: { s: ContentSlide }) {
 }
 
 function ContentSplit({ s }: { s: ContentSlide }) {
-  const paras    = (s.paragraphs || []).slice(0, 2);
-  const contentH = 562.5 - 50;
-  const paraH    = paras.length === 1 ? contentH : (contentH - 20) / 2;
+  const paras = (s.paragraphs || []).slice(0, 5);
+  const n = paras.length;
+  const contentH = 512.5; // 562.5 - 50
+  const gap = 12;
+  const itemH = (contentH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
+  const fSize = n >= 3 ? f(14) : f(15);
+  const vAlign = n >= 3 ? "center" : "flex-start";
   return (
     <div style={{ position: "absolute", inset: 0, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       {/* 左侧深蓝面板 */}
@@ -167,12 +176,13 @@ function ContentSplit({ s }: { s: ContentSlide }) {
       {/* 右侧段落 */}
       {paras.map((para, i) => (
         <div key={i}>
-          <div style={{ position: "absolute", left: 410, top: 25 + i * (paraH + 20), right: 20, height: paraH,
-            color: C.TEXT, fontSize: f(15), lineHeight: 1.5, overflow: "hidden" }}>
+          <div style={{ position: "absolute", left: 410, top: 25 + i * (itemH + gap), right: 20, height: itemH,
+            display: "flex", alignItems: vAlign,
+            color: C.TEXT, fontSize: fSize, lineHeight: 1.5, overflow: "hidden" }}>
             {para}
           </div>
-          {i < paras.length - 1 && (
-            <div style={{ position: "absolute", left: 410, top: 25 + paraH + 7, right: 20, height: 2, background: C.GRAY }} />
+          {i < n - 1 && (
+            <div style={{ position: "absolute", left: 410, top: 25 + i * (itemH + gap) + itemH + gap * 0.4, right: 20, height: 1.5, background: C.GRAY }} />
           )}
         </div>
       ))}

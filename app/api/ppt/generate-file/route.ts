@@ -155,19 +155,24 @@ function _renderContentStandard(prs: PptxGenJS, s: ContentSlide) {
     fontSize: 20, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 
-  const paras   = (s.paragraphs || []).slice(0, 2);
+  const paras = (s.paragraphs || []).slice(0, 5);
+  const n = paras.length;
   const contentH = H - 1.25 - 0.2;
-  const paraH    = paras.length === 1 ? contentH : (contentH - 0.15) / 2;
+  const gap = 0.12;
+  const itemH = (contentH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
+  const fSize = n >= 3 ? 15 : 16;
+  const vAlign = n >= 3 ? "middle" : "top";
+  const lSp   = n >= 3 ? 1.3 : 1.4;
 
   paras.forEach((para, i) => {
-    const py = 1.25 + i * (paraH + 0.15);
+    const py = 1.25 + i * (itemH + gap);
     slide.addText(para, opt({
-      x: 0.35, y: py, w: 9.3, h: paraH,
-      fontSize: 16, color: C.TEXT, fontFace: "微软雅黑",
-      align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.4,
+      x: 0.35, y: py, w: 9.3, h: itemH,
+      fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑",
+      align: "left", valign: vAlign, wrap: true, lineSpacingMultiple: lSp,
     }));
-    if (i < paras.length - 1) {
-      slide.addShape("rect", opt({ x: 0.35, y: py + paraH + 0.05, w: 9.3, h: 0.02, fill: { color: C.GRAY } }));
+    if (i < n - 1) {
+      slide.addShape("rect", opt({ x: 0.35, y: py + itemH + gap * 0.4, w: 9.3, h: 0.015, fill: { color: C.GRAY } }));
     }
   });
 }
@@ -189,19 +194,24 @@ function _renderContentSplit(prs: PptxGenJS, s: ContentSlide) {
   slide.addShape("rect", opt({ x: 0.28, y: 3.8, w: 1.5, h: 0.07, fill: { color: C.GOLD } }));
 
   // 右侧：内容段落
-  const paras    = (s.paragraphs || []).slice(0, 2);
+  const paras = (s.paragraphs || []).slice(0, 5);
+  const n = paras.length;
   const contentH = H - 0.5;
-  const paraH    = paras.length === 1 ? contentH : (contentH - 0.2) / 2;
+  const gap = 0.12;
+  const itemH = (contentH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
+  const fSize = n >= 3 ? 14 : 15;
+  const vAlign = n >= 3 ? "middle" : "top";
+  const lSp   = n >= 3 ? 1.3 : 1.5;
 
   paras.forEach((para, i) => {
-    const py = 0.25 + i * (paraH + 0.2);
+    const py = 0.25 + i * (itemH + gap);
     slide.addText(para, opt({
-      x: 4.1, y: py, w: 5.7, h: paraH,
-      fontSize: 15, color: C.TEXT, fontFace: "微软雅黑",
-      align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.5,
+      x: 4.1, y: py, w: 5.7, h: itemH,
+      fontSize: fSize, color: C.TEXT, fontFace: "微软雅黑",
+      align: "left", valign: vAlign, wrap: true, lineSpacingMultiple: lSp,
     }));
-    if (i < paras.length - 1) {
-      slide.addShape("rect", opt({ x: 4.1, y: py + paraH + 0.07, w: 5.7, h: 0.02, fill: { color: C.GRAY } }));
+    if (i < n - 1) {
+      slide.addShape("rect", opt({ x: 4.1, y: py + itemH + gap * 0.4, w: 5.7, h: 0.015, fill: { color: C.GRAY } }));
     }
   });
 }
