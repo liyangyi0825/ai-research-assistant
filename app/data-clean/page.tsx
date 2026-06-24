@@ -1,0 +1,618 @@
+"use client";
+
+import { useState, useRef } from "react";
+import { Button } from "@/components/ui/button";
+import { Header } from "@/components/Header";
+import { toast } from "sonner";
+import {
+  ResponsiveContainer,
+  LineChart, Line,
+  BarChart, Bar,
+  ScatterChart, Scatter,
+  XAxis, YAxis,
+  CartesianGrid, Tooltip, Legend,
+} from "recharts";
+import * as XLSX from "xlsx";
+
+// ── 类型定义 ───────────────────────────────────────────────────────────────
+
+interface ColumnDef {
+  original: string;
+  renamed:  string;
+  type:     "datetime" | "numeric" | "category" | "text";
+}
+
+type CleaningRule =
+  | { id: string; type: "drop_empty_rows"; description: string }
+  | { id: string; type: "rename_columns";  description: string }
+  | { id: string; type: "strip_unit";    column: string; unit: string; description: string }
+  | { id: string; type: "drop_missing";  column: string; description: string }
+  | { id: string; type: "drop_outliers"; column: string; min: number; max: number; description: string }
+  | { id: string; type: "parse_number";  column: string; description: string };
+
+interface ChartSuggestion {
+  id:    string;
+  type:  "line" | "bar" | "scatter";
+  x:     string;
+  y:     string[];
+  title: string;
+}
+
+interface AnalysisResult {
+  columns: ColumnDef[];
+  issues:  string[];
+  rules:   CleaningRule[];
+  charts:  ChartSuggestion[];
+}
+
+// ── 清洗逻辑（纯函数，在浏览器执行，不上传完整数据）───────────────────────
+
+function escapeRe(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function applyRules(
+  headers: string[],
+  rows:    string[][],
+  columns: ColumnDef[],
+  rules:   CleaningRule[],
+): { headers: string[]; rows: (string | number)[][] } {
+  let h = [...headers];
+  let r: (string | number)[][] = rows.map(row => [...row] as (string | number)[]);
+  const MISSING = new Set(["", "n/a", "na", "nan", "null", "none", "-", "undefined"]);
+  const idx = (col: string) => h.indexOf(col);
+
+  // 保证顺序：先 drop_empty → 再 rename → 再其他
+  const sorted: CleaningRule[] = [
+    ...rules.filter(x => x.type === "drop_empty_rows"),
+    ...rules.filter(x => x.type === "rename_columns"),
+    ...rules.filter(x => x.type !== "drop_empty_rows" && x.type !== "rename_columns"),
+  ];
+
+  for (const rule of sorted) {
+    if (rule.type === "drop_empty_rows") {
+      r = r.filter(row => row.some(c => String(c ?? "").trim() !== ""));
+    } else if (rule.type === "rename_columns") {
+      const map = new Map(columns.map(c => [c.original, c.renamed]));
+      h = h.map(name => map.get(name) ?? name);
+    } else if (rule.type === "strip_unit") {
+      const i = idx(rule.column);
+      if (i < 0) continue;
+      const re = new RegExp(`\\s*${escapeRe(rule.unit)}\\s*$`, "i");
+      r = r.map(row => {
+        const raw = String(row[i] ?? "").replace(re, "").trim();
+        const n   = parseFloat(raw);
+        row[i]    = isNaN(n) ? raw : n;
+        return row;
+      });
+    } else if (rule.type === "parse_number") {
+      const i = idx(rule.column);
+      if (i < 0) continue;
+      r = r.map(row => {
+        const n = parseFloat(String(row[i] ?? ""));
+        if (!isNaN(n)) row[i] = n;
+        return row;
+      });
+    } else if (rule.type === "drop_missing") {
+      const i = idx(rule.column);
+      if (i < 0) continue;
+      r = r.filter(row => !MISSING.has(String(row[i] ?? "").toLowerCase().trim()));
+    } else if (rule.type === "drop_outliers") {
+      const i = idx(rule.column);
+      if (i < 0) continue;
+      r = r.filter(row => {
+        const n = parseFloat(String(row[i] ?? ""));
+        if (isNaN(n)) return true;
+        return n >= rule.min && n <= rule.max;
+      });
+    }
+  }
+  return { headers: h, rows: r };
+}
+
+// ── 常量 ──────────────────────────────────────────────────────────────────
+
+const CHART_COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#F97316"];
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_ROWS       = 100_000;
+const SAMPLE_SIZE    = 100;
+
+// ── 辅助组件 ──────────────────────────────────────────────────────────────
+
+function DotLoader() {
+  return (
+    <span className="inline-flex gap-1 items-center">
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+      <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" />
+    </span>
+  );
+}
+
+function DataTable({
+  headers,
+  rows,
+  maxRows = 50,
+}: {
+  headers: string[];
+  rows: (string | number)[][];
+  maxRows?: number;
+}) {
+  return (
+    <div className="overflow-auto rounded-xl border border-gray-200 max-h-60">
+      <table className="text-xs min-w-full border-collapse">
+        <thead>
+          <tr className="bg-gray-50 sticky top-0 z-10">
+            {headers.map((h, i) => (
+              <th key={i} className="px-3 py-2 text-left font-semibold text-gray-600 border-b border-gray-200 whitespace-nowrap">
+                {h || <span className="text-gray-300">(空)</span>}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, maxRows).map((row, i) => (
+            <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50/40"}>
+              {row.map((cell, j) => (
+                <td key={j} className="px-3 py-1.5 text-gray-700 border-b border-gray-100 whitespace-nowrap max-w-[200px] truncate">
+                  {String(cell ?? "")}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── 主组件 ───────────────────────────────────────────────────────────────
+
+type Phase = "upload" | "preview" | "analyzing" | "plan" | "done";
+
+export default function DataCleanPage() {
+  const [phase,          setPhase]          = useState<Phase>("upload");
+  const [fileName,       setFileName]       = useState("");
+  const [rawHeaders,     setRawHeaders]     = useState<string[]>([]);
+  const [rawRows,        setRawRows]        = useState<string[][]>([]);
+  const [totalRows,      setTotalRows]      = useState(0);
+  const [analysis,       setAnalysis]       = useState<AnalysisResult | null>(null);
+  const [enabledRules,   setEnabledRules]   = useState<Set<string>>(new Set());
+  const [cleanedHeaders, setCleanedHeaders] = useState<string[]>([]);
+  const [cleanedRows,    setCleanedRows]    = useState<(string | number)[][]>([]);
+  const [activeChartIdx, setActiveChartIdx] = useState(0);
+  const [analyzeError,   setAnalyzeError]   = useState("");
+  const [activeTab,      setActiveTab]      = useState<"before" | "after">("before");
+
+  const fileInputRef     = useRef<HTMLInputElement>(null);
+  const chartRef         = useRef<HTMLDivElement>(null);
+
+  // ── 文件解析 ─────────────────────────────────────────────────────────────
+
+  async function handleFile(file: File) {
+    if (!file.name.match(/\.(xlsx?|csv)$/i)) {
+      toast.error("只支持 .xlsx / .xls / .csv 格式");
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      toast.error("文件超过 10MB 限制，请拆分后重试");
+      return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb     = XLSX.read(buffer);
+      const ws     = wb.Sheets[wb.SheetNames[0]];
+      const raw    = XLSX.utils.sheet_to_json<(string | number)[]>(ws, { header: 1, defval: "" });
+
+      if (raw.length < 2) { toast.error("文件无有效数据（至少需要标题行 + 1 行数据）"); return; }
+
+      const headers = (raw[0] as (string | number)[]).map(h => String(h ?? "").trim());
+      const rows    = (raw.slice(1) as (string | number)[][])
+        .map(row => {
+          const r = [...row];
+          while (r.length < headers.length) r.push("");
+          return r.slice(0, headers.length).map(c => String(c ?? "").trim());
+        })
+        .slice(0, MAX_ROWS);
+
+      if (rows.length === MAX_ROWS) {
+        toast("文件超过 10 万行，已截取前 10 万行进行处理");
+      }
+
+      setFileName(file.name);
+      setRawHeaders(headers);
+      setRawRows(rows);
+      setTotalRows(rows.length);
+      setPhase("preview");
+      setAnalysis(null);
+      setEnabledRules(new Set());
+      setCleanedHeaders([]);
+      setCleanedRows([]);
+      setAnalyzeError("");
+      setActiveTab("before");
+    } catch {
+      toast.error("文件解析失败，请检查文件格式是否正确");
+    }
+  }
+
+  function handleReset() {
+    setPhase("upload");
+    setFileName("");
+    setRawHeaders([]);
+    setRawRows([]);
+    setTotalRows(0);
+    setAnalysis(null);
+    setEnabledRules(new Set());
+    setCleanedHeaders([]);
+    setCleanedRows([]);
+    setAnalyzeError("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  // ── AI 分析 ──────────────────────────────────────────────────────────────
+
+  async function handleAnalyze() {
+    setPhase("analyzing");
+    setAnalyzeError("");
+    try {
+      const res  = await fetch("/api/data-clean", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({
+          headers,
+          sample:    rawRows.slice(0, SAMPLE_SIZE),
+          totalRows,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "分析失败");
+      setAnalysis(data as AnalysisResult);
+      setEnabledRules(new Set((data as AnalysisResult).rules.map((r: CleaningRule) => r.id)));
+      setPhase("plan");
+    } catch (err) {
+      setAnalyzeError(err instanceof Error ? err.message : "分析失败，请重试");
+      setPhase("preview");
+    }
+  }
+
+  // ── 执行清洗 ─────────────────────────────────────────────────────────────
+
+  function handleClean() {
+    if (!analysis) return;
+    const active = analysis.rules.filter(r => enabledRules.has(r.id));
+    const { headers: h, rows: r } = applyRules(rawHeaders, rawRows, analysis.columns, active);
+    setCleanedHeaders(h);
+    setCleanedRows(r);
+    setPhase("done");
+    setActiveChartIdx(0);
+    setActiveTab("after");
+  }
+
+  // ── 下载 ─────────────────────────────────────────────────────────────────
+
+  function handleDownloadExcel() {
+    const ws = XLSX.utils.aoa_to_sheet([cleanedHeaders, ...cleanedRows.map(r => r.map(String))]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "清洗后数据");
+    XLSX.writeFile(wb, fileName.replace(/\.[^.]+$/, "") + "_cleaned.xlsx");
+  }
+
+  async function handleDownloadPng() {
+    if (!chartRef.current) return;
+    try {
+      const { toPng } = await import("html-to-image");
+      const url = await toPng(chartRef.current, { backgroundColor: "#fff", pixelRatio: 2 });
+      const a   = document.createElement("a");
+      a.href     = url;
+      a.download = `chart_${activeChartIdx + 1}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {
+      toast.error("图表导出失败，请重试");
+    }
+  }
+
+  // ── 图表渲染 ──────────────────────────────────────────────────────────────
+
+  const chartObjects = cleanedRows.map(row => {
+    const obj: Record<string, string | number> = {};
+    cleanedHeaders.forEach((h, i) => { obj[h] = row[i]; });
+    return obj;
+  });
+
+  function renderChart(chart: ChartSuggestion) {
+    if (chart.type === "line") return (
+      <ResponsiveContainer width="100%" height={280}>
+        <LineChart data={chartObjects}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={chart.x} tick={{ fontSize: 11 }} />
+          <YAxis tick={{ fontSize: 11 }} />
+          <Tooltip />
+          <Legend />
+          {chart.y.map((col, i) => (
+            <Line key={col} type="monotone" dataKey={col}
+              stroke={CHART_COLORS[i % CHART_COLORS.length]} dot={false} strokeWidth={2} />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+    );
+    if (chart.type === "bar") return (
+      <ResponsiveContainer width="100%" height={280}>
+        <BarChart data={chartObjects}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={chart.x} tick={{ fontSize: 11 }} />
+          <YAxis tick={{ fontSize: 11 }} />
+          <Tooltip />
+          <Legend />
+          {chart.y.map((col, i) => (
+            <Bar key={col} dataKey={col} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    );
+    if (chart.type === "scatter") return (
+      <ResponsiveContainer width="100%" height={280}>
+        <ScatterChart>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis type="number" dataKey={chart.x}    name={chart.x}    tick={{ fontSize: 11 }} />
+          <YAxis type="number" dataKey={chart.y[0]} name={chart.y[0]} tick={{ fontSize: 11 }} />
+          <Tooltip cursor={{ strokeDasharray: "3 3" }} />
+          <Legend />
+          <Scatter name={chart.title} data={chartObjects} fill={CHART_COLORS[0]} />
+        </ScatterChart>
+      </ResponsiveContainer>
+    );
+    return null;
+  }
+
+  // ── 渲染 ──────────────────────────────────────────────────────────────────
+
+  const headers = rawHeaders; // alias for clarity in JSX
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
+      <Header title="数据清洗" />
+
+      <main className="flex-1 flex flex-col items-center px-4 sm:px-6 py-6 sm:py-10 pb-24 sm:pb-10">
+        <div className="w-full max-w-4xl space-y-4 sm:space-y-5">
+
+          {/* 页面标题 */}
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold text-gray-800 mb-1">数据清洗工具</h1>
+            <p className="text-sm text-gray-500">上传 Excel / CSV，AI 自动识别问题并生成清洗方案</p>
+          </div>
+
+          {/* ① 上传区域 */}
+          {phase === "upload" && (
+            <div
+              className="bg-white rounded-2xl border-2 border-dashed border-gray-300 hover:border-blue-400 transition-colors p-8 sm:p-12 text-center cursor-pointer"
+              onClick={() => fileInputRef.current?.click()}
+              onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) handleFile(f); }}
+              onDragOver={e => e.preventDefault()}
+            >
+              <div className="text-5xl mb-3">📊</div>
+              <p className="text-base sm:text-lg font-medium text-gray-700 mb-2">点击选择文件，或拖拽到这里</p>
+              <p className="text-sm text-gray-400">支持 .xlsx / .xls / .csv，最大 10MB，最多 10 万行</p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+              />
+            </div>
+          )}
+
+          {/* 文件信息栏（上传后始终显示） */}
+          {phase !== "upload" && (
+            <div className="bg-white rounded-2xl p-4 sm:p-5 shadow-sm flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-semibold text-gray-800 truncate">📊 {fileName}</p>
+                <p className="text-sm text-gray-400 mt-0.5">
+                  共 {totalRows.toLocaleString()} 行 · {rawHeaders.length} 列
+                </p>
+              </div>
+              <Button variant="outline" size="sm" onClick={handleReset} className="shrink-0">重新上传</Button>
+            </div>
+          )}
+
+          {/* ② 原始数据预览 */}
+          {(phase === "preview" || phase === "analyzing") && (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="px-4 sm:px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
+                <p className="font-semibold text-gray-700 text-sm">原始数据预览（前 50 行）</p>
+                <span className="text-xs text-gray-400">共 {totalRows.toLocaleString()} 行</span>
+              </div>
+              <div className="p-4">
+                <DataTable headers={rawHeaders} rows={rawRows as (string | number)[][]} maxRows={50} />
+              </div>
+            </div>
+          )}
+
+          {/* 分析错误提示 */}
+          {analyzeError && phase === "preview" && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600">
+              ❌ {analyzeError}
+            </div>
+          )}
+
+          {/* ② 分析按钮 */}
+          {phase === "preview" && (
+            <div className="bg-white rounded-2xl p-5 sm:p-6 text-center shadow-sm border border-blue-100">
+              <div className="text-3xl mb-2">🤖</div>
+              <h2 className="font-semibold text-gray-800 mb-1">让 AI 分析数据质量</h2>
+              <p className="text-sm text-gray-500 mb-4">AI 将识别列含义、发现数据问题、给出清洗方案（每月限 10 次）</p>
+              <Button size="lg" className="w-full sm:w-auto" onClick={handleAnalyze}>开始 AI 分析</Button>
+            </div>
+          )}
+
+          {/* AI 分析中 */}
+          {phase === "analyzing" && (
+            <div className="bg-white rounded-2xl p-8 text-center shadow-sm">
+              <div className="flex justify-center mb-4"><DotLoader /></div>
+              <p className="text-base font-medium text-gray-700">AI 正在分析数据结构和质量问题…</p>
+              <p className="text-sm text-gray-400 mt-1">通常需要 5-10 秒</p>
+            </div>
+          )}
+
+          {/* ③ 清洗方案（plan / done 阶段都显示） */}
+          {(phase === "plan" || phase === "done") && analysis && (
+            <div className="bg-white rounded-2xl shadow-sm border border-amber-100 overflow-hidden">
+              <div className="px-4 sm:px-5 py-3 sm:py-4 border-b border-amber-50 bg-amber-50">
+                <h2 className="font-semibold text-amber-900">🔍 AI 分析结果</h2>
+              </div>
+              <div className="p-4 sm:p-5 space-y-4">
+
+                {/* 发现的问题 */}
+                {analysis.issues.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">发现的问题</p>
+                    <ul className="space-y-1">
+                      {analysis.issues.map((issue, i) => (
+                        <li key={i} className="flex items-start gap-2 text-sm text-gray-700">
+                          <span className="text-amber-500 shrink-0 mt-0.5">⚠</span>
+                          {issue}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* 清洗规则（逐条开关） */}
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                    清洗规则（共 {analysis.rules.length} 条，可按需关闭）
+                  </p>
+                  <div className="space-y-2">
+                    {analysis.rules.map(rule => (
+                      <label key={rule.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={enabledRules.has(rule.id)}
+                          onChange={e => {
+                            const next = new Set(enabledRules);
+                            e.target.checked ? next.add(rule.id) : next.delete(rule.id);
+                            setEnabledRules(next);
+                          }}
+                          className="w-4 h-4 accent-blue-500 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <span className="text-xs font-mono text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded mr-2">
+                            {rule.type}
+                          </span>
+                          <span className="text-sm text-gray-700">{rule.description}</span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {phase === "plan" && (
+                  <Button
+                    className="w-full"
+                    onClick={handleClean}
+                    disabled={enabledRules.size === 0}
+                  >
+                    ✅ 执行清洗（已选 {enabledRules.size} 条规则）
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ④ 清洗前后对比 */}
+          {phase === "done" && (
+            <div className="bg-white rounded-2xl shadow-sm border border-green-100 overflow-hidden">
+              <div className="px-4 sm:px-5 py-3 sm:py-4 border-b border-green-50 bg-green-50 flex items-center justify-between">
+                <h2 className="font-semibold text-green-900">✅ 清洗完成</h2>
+                <span className="text-sm text-green-700">
+                  {rawRows.length} 行 → {cleanedRows.length} 行
+                  {rawRows.length - cleanedRows.length > 0 && (
+                    <span className="text-green-500 ml-1">（删除 {rawRows.length - cleanedRows.length} 行）</span>
+                  )}
+                </span>
+              </div>
+
+              {/* 前/后 Tab */}
+              <div className="flex border-b border-gray-100">
+                {(["before", "after"] as const).map(tab => (
+                  <button
+                    key={tab}
+                    onClick={() => setActiveTab(tab)}
+                    className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
+                      activeTab === tab
+                        ? "text-blue-600 border-b-2 border-blue-500 bg-blue-50/30"
+                        : "text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    {tab === "before" ? `清洗前（${rawRows.length} 行）` : `清洗后（${cleanedRows.length} 行）`}
+                  </button>
+                ))}
+              </div>
+
+              <div className="p-4">
+                {activeTab === "before"
+                  ? <DataTable headers={rawHeaders} rows={rawRows as (string | number)[][]} maxRows={100} />
+                  : <DataTable headers={cleanedHeaders} rows={cleanedRows} maxRows={100} />
+                }
+              </div>
+
+              <div className="px-4 pb-4">
+                <Button onClick={handleDownloadExcel} className="w-full sm:w-auto bg-green-600 hover:bg-green-700 text-white">
+                  ⬇ 下载清洗后的 Excel
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* ⑤ 图表预览 */}
+          {phase === "done" && analysis && analysis.charts.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm border border-indigo-100 overflow-hidden">
+              <div className="px-4 sm:px-5 py-3 sm:py-4 border-b border-indigo-50 bg-indigo-50">
+                <h2 className="font-semibold text-indigo-900">📈 AI 推荐图表</h2>
+                <p className="text-xs text-indigo-500 mt-0.5">基于清洗后的数据生成</p>
+              </div>
+
+              {/* 图表 Tab */}
+              {analysis.charts.length > 1 && (
+                <div className="flex border-b border-gray-100">
+                  {analysis.charts.map((chart, i) => (
+                    <button
+                      key={chart.id}
+                      onClick={() => setActiveChartIdx(i)}
+                      className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
+                        activeChartIdx === i
+                          ? "text-indigo-600 border-b-2 border-indigo-500 bg-indigo-50/30"
+                          : "text-gray-500 hover:text-gray-700"
+                      }`}
+                    >
+                      {chart.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* 图表区域（ref 用于 PNG 导出） */}
+              <div className="p-4">
+                <div ref={chartRef} className="bg-white p-2 rounded-lg">
+                  <p className="text-sm font-medium text-gray-700 mb-3 text-center">
+                    {analysis.charts[activeChartIdx]?.title}
+                  </p>
+                  {analysis.charts[activeChartIdx] && renderChart(analysis.charts[activeChartIdx])}
+                </div>
+              </div>
+
+              <div className="px-4 pb-4">
+                <Button variant="outline" onClick={handleDownloadPng} className="w-full sm:w-auto">
+                  ⬇ 下载图表 PNG
+                </Button>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </main>
+    </div>
+  );
+}

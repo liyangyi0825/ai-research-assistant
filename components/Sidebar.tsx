@@ -15,6 +15,7 @@ const NAV_GROUPS = [
       { icon: "🧭", label: "概念探索器",   href: "/concept-explorer" },
       { icon: "🎯", label: "论文转 PPT",   href: "/ppt" },
       { icon: "📚", label: "多篇综述对比", href: "/literature-review" },
+      { icon: "🧹", label: "数据清洗",     href: "/data-clean" },
     ],
   },
   {
@@ -35,6 +36,7 @@ const HREF_TO_TAB: Record<string, string> = {
   "/concept-explorer":  "concept-explorer",
   "/ppt":               "ppt",
   "/literature-review": "literature-review",
+  "/data-clean":        "data-clean",
   "/my-papers":         "my-papers",
   "/my-profile":        "my-profile",
   "/my-notes":          "my-notes",
