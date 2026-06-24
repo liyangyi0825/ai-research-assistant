@@ -1,14 +1,13 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { Button } from "@/components/ui/button";
 
-type Tab  = "password" | "magic";
-type View = "login" | "register" | "forgot" | "reset-sent" | "magic-sent" | "registered";
+type Tab  = "otp" | "password";
+type View = "login" | "register" | "forgot" | "reset-sent" | "registered";
 
-// 眼睛图标
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -27,9 +26,10 @@ function EyeIcon({ open }: { open: boolean }) {
 
 function LoginForm() {
   const searchParams = useSearchParams();
-  const [tab,  setTab]  = useState<Tab>("password");
+  const [tab,  setTab]  = useState<Tab>("otp");
   const [view, setView] = useState<View>("login");
 
+  // 通用字段
   const [email,           setEmail]           = useState("");
   const [password,        setPassword]        = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -40,31 +40,23 @@ function LoginForm() {
   const [cooldown,        setCooldown]        = useState(0);
   const [unverifiedEmail, setUnverifiedEmail] = useState("");
 
-  // URL 里带了 error=auth_failed 时显示提示
+  // OTP 专用
+  const [otpStep, setOtpStep] = useState<"email" | "code">("email");
+  const [digits,  setDigits]  = useState<string[]>(Array(6).fill(""));
+  const digitRefs = useRef<(HTMLInputElement | null)[]>(Array(6).fill(null));
+
+  // URL 里带了 error=auth_failed
   useEffect(() => {
     if (searchParams.get("error") === "auth_failed") {
-      setError("登录链接已失效或过期，请重新发送");
+      setError("链接已失效，请用验证码重新登录");
     }
   }, [searchParams]);
 
-  // 邮件发出后监听另一个标签页登录完成的广播
-  useEffect(() => {
-    if (view !== "magic-sent") return;
-    let ch: BroadcastChannel | null = null;
-    try {
-      ch = new BroadcastChannel("supabase_auth");
-      ch.addEventListener("message", (e) => {
-        if (e.data?.type === "LOGIN_SUCCESS") window.location.href = e.data.redirectTo || "/";
-      });
-    } catch { /* 不支持时忽略 */ }
-    return () => { ch?.close(); };
-  }, [view]);
-
-  // 60 秒重发冷却倒计时
+  // 60 秒倒计时
   useEffect(() => {
     if (cooldown <= 0) return;
-    const timer = setTimeout(() => setCooldown(c => c - 1), 1000);
-    return () => clearTimeout(timer);
+    const t = setTimeout(() => setCooldown(c => c - 1), 1000);
+    return () => clearTimeout(t);
   }, [cooldown]);
 
   function getRedirectTarget() {
@@ -77,21 +69,104 @@ function LoginForm() {
   }
 
   function switchTab(t: Tab) {
-    setTab(t); setView("login"); resetFields();
+    setTab(t); setView("login"); setOtpStep("email");
+    setDigits(Array(6).fill("")); setCooldown(0); resetFields();
   }
 
-  // ── 重新发送验证邮件 ─────────────────────────────────────────────────
+  // ── 重发注册验证邮件（密码注册流程）────────────────────────────────────
   async function resendVerification(emailToSend: string) {
     if (cooldown > 0 || loading) return;
     setLoading(true); setError("");
     const supabase = getSupabaseBrowserClient();
     const { error: err } = await supabase.auth.resend({ type: "signup", email: emailToSend });
     setLoading(false);
-    if (err) setError(err.message);
-    else setCooldown(60);
+    if (err) setError(err.message); else setCooldown(60);
   }
 
-  // ── 邮箱密码登录 ──────────────────────────────────────────────────────
+  // ── OTP：发送验证码 ──────────────────────────────────────────────────────
+  async function handleSendOtp(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email.trim() || loading) return;
+    setLoading(true); setError("");
+    const supabase = getSupabaseBrowserClient();
+    const { error: err } = await supabase.auth.signInWithOtp({ email: email.trim() });
+    setLoading(false);
+    if (err) {
+      setError(err.message.includes("rate") ? "发送太频繁，请稍后再试" : "发送失败：" + err.message);
+    } else {
+      setOtpStep("code");
+      setCooldown(60);
+      setDigits(Array(6).fill(""));
+      setTimeout(() => digitRefs.current[0]?.focus(), 150);
+    }
+  }
+
+  // ── OTP：重新发送 ────────────────────────────────────────────────────────
+  async function handleResendOtp() {
+    if (cooldown > 0 || loading) return;
+    setLoading(true); setError("");
+    const supabase = getSupabaseBrowserClient();
+    const { error: err } = await supabase.auth.signInWithOtp({ email: email.trim() });
+    setLoading(false);
+    if (err) {
+      setError(err.message.includes("rate") ? "发送太频繁，请稍后再试" : "发送失败：" + err.message);
+    } else {
+      setCooldown(60);
+      setDigits(Array(6).fill(""));
+      setError("");
+      setTimeout(() => digitRefs.current[0]?.focus(), 150);
+    }
+  }
+
+  // ── OTP：校验验证码（接收 token 字符串，避免 state 陈旧）───────────────
+  async function verifyOtpToken(token: string) {
+    if (token.length !== 6 || loading) return;
+    setLoading(true); setError("");
+    const supabase = getSupabaseBrowserClient();
+    const { error: err } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token,
+      type: "email",
+    });
+    setLoading(false);
+    if (err) {
+      setError("验证码错误或已过期，请重新发送");
+      setDigits(Array(6).fill(""));
+      setTimeout(() => digitRefs.current[0]?.focus(), 50);
+    } else {
+      window.location.href = getRedirectTarget();
+    }
+  }
+
+  // ── OTP：格子输入 ────────────────────────────────────────────────────────
+  function handleDigitChange(index: number, value: string) {
+    // 整段粘贴（如从短信复制 6 位）
+    if (value.length > 1) {
+      const pasted = value.replace(/\D/g, "").slice(0, 6);
+      const next   = Array(6).fill("").map((_, i) => pasted[i] ?? "");
+      setDigits(next);
+      digitRefs.current[Math.min(pasted.length, 5)]?.focus();
+      if (pasted.length === 6) verifyOtpToken(pasted);
+      return;
+    }
+    const digit = value.replace(/\D/g, "");
+    const next  = [...digits];
+    next[index] = digit;
+    setDigits(next);
+    if (digit && index < 5) digitRefs.current[index + 1]?.focus();
+    if (digit && index === 5) {
+      const full = next.join("");
+      if (full.length === 6) verifyOtpToken(full);
+    }
+  }
+
+  function handleDigitKeyDown(index: number, e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Backspace" && !digits[index] && index > 0) digitRefs.current[index - 1]?.focus();
+    if (e.key === "ArrowLeft"  && index > 0) digitRefs.current[index - 1]?.focus();
+    if (e.key === "ArrowRight" && index < 5) digitRefs.current[index + 1]?.focus();
+  }
+
+  // ── 邮箱密码登录 ──────────────────────────────────────────────────────────
   async function handlePasswordLogin(e: React.FormEvent) {
     e.preventDefault();
     if (!email.trim() || !password) return;
@@ -112,33 +187,29 @@ function LoginForm() {
     }
   }
 
-  // ── 注册 ──────────────────────────────────────────────────────────────
+  // ── 注册 ──────────────────────────────────────────────────────────────────
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
     if (!email.trim() || !password || !confirmPassword) return;
-    if (password.length < 8)       { setError("密码至少需要 8 位"); return; }
+    if (password.length < 8)        { setError("密码至少需要 8 位"); return; }
     if (password !== confirmPassword) { setError("两次输入的密码不一致"); return; }
     setLoading(true); setError("");
     const supabase = getSupabaseBrowserClient();
     const { data, error: err } = await supabase.auth.signUp({
-      email: email.trim(),
-      password,
+      email: email.trim(), password,
       options: { emailRedirectTo: `${window.location.origin}/auth/callback` },
     });
     setLoading(false);
     if (err) {
       setError(err.message);
     } else if (data.session) {
-      // 邮箱确认已关闭，直接登录
       window.location.href = getRedirectTarget();
     } else {
-      // 需要邮件确认
-      setCooldown(60);
-      setView("registered");
+      setCooldown(60); setView("registered");
     }
   }
 
-  // ── 忘记密码 ──────────────────────────────────────────────────────────
+  // ── 忘记密码 ──────────────────────────────────────────────────────────────
   async function handleForgotPassword(e: React.FormEvent) {
     e.preventDefault();
     if (!email.trim()) return;
@@ -148,41 +219,10 @@ function LoginForm() {
       redirectTo: `${window.location.origin}/auth/callback?redirectTo=/reset-password`,
     });
     setLoading(false);
-    if (err) setError(err.message);
-    else setView("reset-sent");
+    if (err) setError(err.message); else setView("reset-sent");
   }
 
-  // ── 邮件链接登录 ──────────────────────────────────────────────────────
-  async function handleMagicLink(e: React.FormEvent) {
-    e.preventDefault();
-    if (!email.trim()) return;
-    setLoading(true); setError("");
-    const supabase = getSupabaseBrowserClient();
-    const { error: err } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback?redirectTo=${encodeURIComponent(getRedirectTarget())}`,
-      },
-    });
-    setLoading(false);
-    if (err) setError(err.message);
-    else setView("magic-sent");
-  }
-
-  // ── 全屏特殊状态（不显示 Tab）────────────────────────────────────────
-  if (view === "magic-sent") return (
-    <div className="bg-white rounded-2xl p-8 shadow-sm text-center">
-      <div className="text-5xl mb-4">📬</div>
-      <h2 className="text-lg font-semibold text-gray-800 mb-2">邮件已发送！</h2>
-      <p className="text-sm text-gray-500 mb-1">已向 <strong className="text-gray-700">{email}</strong> 发送了登录链接</p>
-      <p className="text-sm text-gray-400">点击邮件里的按钮即可登录，链接 10 分钟内有效</p>
-      <p className="text-xs text-amber-600 bg-amber-50 rounded-lg px-3 py-2 mt-3">
-        ⚠️ 请在<strong>同一台设备同一个浏览器</strong>里点击链接
-      </p>
-      <button className="mt-4 text-sm text-blue-500 hover:underline" onClick={() => setView("login")}>重新发送</button>
-    </div>
-  );
-
+  // ── 全屏特殊状态 ──────────────────────────────────────────────────────────
   if (view === "reset-sent") return (
     <div className="bg-white rounded-2xl p-8 shadow-sm text-center">
       <div className="text-5xl mb-4">📨</div>
@@ -232,18 +272,96 @@ function LoginForm() {
     <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
       {/* Tab 切换 */}
       <div className="flex border-b border-gray-100">
-        {(["password", "magic"] as Tab[]).map((t) => (
+        {(["otp", "password"] as Tab[]).map(t => (
           <button key={t} onClick={() => switchTab(t)}
             className={`flex-1 py-3.5 text-sm font-medium transition-colors ${
               tab === t ? "text-blue-600 border-b-2 border-blue-600 bg-white"
                         : "text-gray-500 hover:text-gray-700"}`}>
-            {t === "password" ? "邮箱密码登录" : "邮件链接登录"}
+            {t === "otp" ? "验证码登录" : "邮箱密码登录"}
           </button>
         ))}
       </div>
 
       <div className="p-6">
-        {/* ── 密码登录 ── */}
+
+        {/* ── 验证码登录 ── */}
+        {tab === "otp" && otpStep === "email" && (
+          <form onSubmit={handleSendOtp} className="space-y-3">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">验证码登录</h2>
+            <p className="text-sm text-gray-500 mb-4">
+              输入邮箱，我们将发送 6 位验证码，无需密码即可登录
+            </p>
+            <input
+              type="email" value={email} onChange={e => setEmail(e.target.value)}
+              placeholder="your@email.com" required disabled={loading}
+              className={inputCls}
+            />
+            {errEl}
+            <Button type="submit" size="lg" className="w-full" disabled={loading || !email.trim()}>
+              {loading ? "发送中…" : "发送验证码"}
+            </Button>
+            <p className="text-xs text-center text-gray-400 pt-1">
+              没有账号？输入邮箱发送验证码后会自动创建
+            </p>
+          </form>
+        )}
+
+        {tab === "otp" && otpStep === "code" && (
+          <div className="space-y-5">
+            <div>
+              <h2 className="text-base font-semibold text-gray-800 mb-1">输入验证码</h2>
+              <p className="text-sm text-gray-500">
+                已发送到 <strong className="text-gray-700">{email}</strong>，10 分钟内有效
+              </p>
+            </div>
+
+            {/* 6 个独立格子 */}
+            <div className="flex gap-2 justify-center">
+              {digits.map((d, i) => (
+                <input
+                  key={i}
+                  ref={el => { digitRefs.current[i] = el; }}
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={d}
+                  onChange={e => handleDigitChange(i, e.target.value)}
+                  onKeyDown={e => handleDigitKeyDown(i, e)}
+                  onFocus={e => e.target.select()}
+                  disabled={loading}
+                  className={`w-11 h-14 text-center text-2xl font-bold border-2 rounded-xl outline-none transition-colors disabled:opacity-50
+                    ${d ? "border-blue-400 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-800"}
+                    focus:border-blue-500 focus:ring-2 focus:ring-blue-100`}
+                />
+              ))}
+            </div>
+
+            {loading && (
+              <p className="text-center text-sm text-gray-400 animate-pulse">验证中…</p>
+            )}
+            {errEl}
+
+            <div className="flex flex-col items-center gap-2.5 text-sm pt-1">
+              <button
+                type="button"
+                onClick={handleResendOtp}
+                disabled={cooldown > 0 || loading}
+                className="text-blue-500 hover:text-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {cooldown > 0 ? `重新发送（${cooldown}s）` : "重新发送验证码"}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setOtpStep("email"); setDigits(Array(6).fill("")); setError(""); setCooldown(0); }}
+                className="text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                修改邮箱
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── 邮箱密码登录 ── */}
         {tab === "password" && view === "login" && (
           <form onSubmit={handlePasswordLogin} className="space-y-3">
             <h2 className="text-base font-semibold text-gray-800 mb-4">登录账号</h2>
@@ -265,12 +383,9 @@ function LoginForm() {
                 <p className="text-amber-700 mb-2">
                   📧 请先验证邮箱，验证邮件已发送到 <strong>{unverifiedEmail}</strong>
                 </p>
-                <button
-                  type="button"
-                  onClick={() => resendVerification(unverifiedEmail)}
+                <button type="button" onClick={() => resendVerification(unverifiedEmail)}
                   disabled={cooldown > 0 || loading}
-                  className="text-blue-500 hover:underline disabled:opacity-50"
-                >
+                  className="text-blue-500 hover:underline disabled:opacity-50">
                   {cooldown > 0 ? `重新发送（${cooldown}s）` : "没收到？点击重新发送"}
                 </button>
               </div>
@@ -334,8 +449,7 @@ function LoginForm() {
             <input type="email" value={email} onChange={e => setEmail(e.target.value)}
               placeholder="your@email.com" required disabled={loading} className={inputCls} />
             {errEl}
-            <Button type="submit" size="lg" className="w-full"
-              disabled={loading || !email.trim()}>
+            <Button type="submit" size="lg" className="w-full" disabled={loading || !email.trim()}>
               {loading ? "发送中…" : "发送重置链接"}
             </Button>
             <div className="text-center pt-1">
@@ -345,20 +459,6 @@ function LoginForm() {
           </form>
         )}
 
-        {/* ── 邮件链接登录 ── */}
-        {tab === "magic" && (
-          <form onSubmit={handleMagicLink} className="space-y-3">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">邮件链接登录</h2>
-            <p className="text-sm text-gray-500 mb-4">输入邮箱，收到邮件后点击链接即可登录，无需密码</p>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
-              placeholder="your@email.com" required disabled={loading} className={inputCls} />
-            {errEl}
-            <Button type="submit" size="lg" className="w-full"
-              disabled={loading || !email.trim()}>
-              {loading ? "发送中…" : "发送登录链接"}
-            </Button>
-          </form>
-        )}
       </div>
     </div>
   );
