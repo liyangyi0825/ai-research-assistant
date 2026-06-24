@@ -42,8 +42,8 @@ function LoginForm() {
 
   // OTP 专用
   const [otpStep, setOtpStep] = useState<"email" | "code">("email");
-  const [digits,  setDigits]  = useState<string[]>(Array(6).fill(""));
-  const digitRefs = useRef<(HTMLInputElement | null)[]>(Array(6).fill(null));
+  const [digits,  setDigits]  = useState<string[]>(Array(8).fill(""));
+  const digitRefs = useRef<(HTMLInputElement | null)[]>(Array(8).fill(null));
 
   // URL 里带了 error=auth_failed
   useEffect(() => {
@@ -70,7 +70,7 @@ function LoginForm() {
 
   function switchTab(t: Tab) {
     setTab(t); setView("login"); setOtpStep("email");
-    setDigits(Array(6).fill("")); setCooldown(0); resetFields();
+    setDigits(Array(8).fill("")); setCooldown(0); resetFields();
   }
 
   // ── 重发注册验证邮件（密码注册流程）────────────────────────────────────
@@ -96,7 +96,7 @@ function LoginForm() {
     } else {
       setOtpStep("code");
       setCooldown(60);
-      setDigits(Array(6).fill(""));
+      setDigits(Array(8).fill(""));
       setTimeout(() => digitRefs.current[0]?.focus(), 150);
     }
   }
@@ -112,7 +112,7 @@ function LoginForm() {
       setError(err.message.includes("rate") ? "发送太频繁，请稍后再试" : "发送失败：" + err.message);
     } else {
       setCooldown(60);
-      setDigits(Array(6).fill(""));
+      setDigits(Array(8).fill(""));
       setError("");
       setTimeout(() => digitRefs.current[0]?.focus(), 150);
     }
@@ -120,7 +120,7 @@ function LoginForm() {
 
   // ── OTP：校验验证码（接收 token 字符串，避免 state 陈旧）───────────────
   async function verifyOtpToken(token: string) {
-    if (token.length !== 6 || loading) return;
+    if (token.length !== 8 || loading) return;
     setLoading(true); setError("");
     const supabase = getSupabaseBrowserClient();
     const { error: err } = await supabase.auth.verifyOtp({
@@ -131,7 +131,7 @@ function LoginForm() {
     setLoading(false);
     if (err) {
       setError("验证码错误或已过期，请重新发送");
-      setDigits(Array(6).fill(""));
+      setDigits(Array(8).fill(""));
       setTimeout(() => digitRefs.current[0]?.focus(), 50);
     } else {
       window.location.href = getRedirectTarget();
@@ -142,19 +142,19 @@ function LoginForm() {
   function handleDigitChange(index: number, value: string) {
     // 整段粘贴（如从短信复制 6 位）
     if (value.length > 1) {
-      const pasted = value.replace(/\D/g, "").slice(0, 6);
-      const next   = Array(6).fill("").map((_, i) => pasted[i] ?? "");
+      const pasted = value.replace(/\D/g, "").slice(0, 8);
+      const next   = Array(8).fill("").map((_, i) => pasted[i] ?? "");
       setDigits(next);
-      digitRefs.current[Math.min(pasted.length, 5)]?.focus();
-      if (pasted.length === 6) verifyOtpToken(pasted);
+      digitRefs.current[Math.min(pasted.length, 7)]?.focus();
+      if (pasted.length === 8) verifyOtpToken(pasted);
       return;
     }
     const digit = value.replace(/\D/g, "");
     const next  = [...digits];
     next[index] = digit;
     setDigits(next);
-    if (digit && index < 5) digitRefs.current[index + 1]?.focus();
-    if (digit && index === 5) {
+    if (digit && index < 7) digitRefs.current[index + 1]?.focus();
+    if (digit && index === 7) {
       const full = next.join("");
       if (full.length === 6) verifyOtpToken(full);
     }
@@ -163,7 +163,7 @@ function LoginForm() {
   function handleDigitKeyDown(index: number, e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Backspace" && !digits[index] && index > 0) digitRefs.current[index - 1]?.focus();
     if (e.key === "ArrowLeft"  && index > 0) digitRefs.current[index - 1]?.focus();
-    if (e.key === "ArrowRight" && index < 5) digitRefs.current[index + 1]?.focus();
+    if (e.key === "ArrowRight" && index < 7) digitRefs.current[index + 1]?.focus();
   }
 
   // ── 邮箱密码登录 ──────────────────────────────────────────────────────────
@@ -289,7 +289,7 @@ function LoginForm() {
           <form onSubmit={handleSendOtp} className="space-y-3">
             <h2 className="text-base font-semibold text-gray-800 mb-1">验证码登录</h2>
             <p className="text-sm text-gray-500 mb-4">
-              输入邮箱，我们将发送 6 位验证码，无需密码即可登录
+              输入邮箱，我们将发送 8 位验证码，无需密码即可登录
             </p>
             <input
               type="email" value={email} onChange={e => setEmail(e.target.value)}
@@ -323,7 +323,7 @@ function LoginForm() {
                   ref={el => { digitRefs.current[i] = el; }}
                   type="text"
                   inputMode="numeric"
-                  maxLength={6}
+                  maxLength={8}
                   value={d}
                   onChange={e => handleDigitChange(i, e.target.value)}
                   onKeyDown={e => handleDigitKeyDown(i, e)}
@@ -352,7 +352,7 @@ function LoginForm() {
               </button>
               <button
                 type="button"
-                onClick={() => { setOtpStep("email"); setDigits(Array(6).fill("")); setError(""); setCooldown(0); }}
+                onClick={() => { setOtpStep("email"); setDigits(Array(8).fill("")); setError(""); setCooldown(0); }}
                 className="text-gray-400 hover:text-gray-600 transition-colors"
               >
                 修改邮箱
