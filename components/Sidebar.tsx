@@ -250,11 +250,19 @@ export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
             href="https://beian.mps.gov.cn"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs transition-colors whitespace-nowrap"
+            className="text-xs transition-colors whitespace-nowrap inline-flex items-center gap-0.5"
             style={{ color: "#334155" }}
             onMouseEnter={e => (e.currentTarget.style.color = "#64748B")}
             onMouseLeave={e => (e.currentTarget.style.color = "#334155")}
           >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="https://beian.mps.gov.cn/img/logo01.dd7ff50e.png"
+              alt="公安备案"
+              width={14}
+              height={14}
+              style={{ verticalAlign: "middle" }}
+            />
             冀公网安备13028302000277号
           </a>
         </div>
