@@ -36,6 +36,10 @@ const C = {
 
 const CARD_COLORS = [C.NAVY, C.RED, C.GREEN, C.ORANGE, C.PURPLE];
 
+// 1×1 透明 PNG（base64）— 必须叠放在形状/文字图层之上（最后渲染），
+// 使 PowerPoint 右键时识别为图片对象并显示"更改图片"选项
+const TRANSPARENT_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
 // 把 [[关键词]] 解析成 pptxgenjs text run 数组；普通文字透传 base 样式，高亮词红色加粗
 function buildRuns(
   text: string,
@@ -288,7 +292,8 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
   const cardW  = (W - 2 * MARGIN - GAP * (n - 1)) / n;
 
   cards.forEach((card, i) => {
-    const cx = MARGIN + i * (cardW + GAP);
+    const cx      = MARGIN + i * (cardW + GAP);
+    const HAS_IMG = Boolean(card.imageHint);
 
     // 卡片底板（浅灰蓝底 + 细边框）
     slide.addShape("rect", opt({ x: cx, y: CY, w: cardW, h: CH,
@@ -305,14 +310,14 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
       align: "left", valign: "middle",
     }));
 
-    // 要点列表
-    const pts   = (card.points || []).slice(0, 5);
-    const np    = pts.length;
-    const bodyY = CY + HEAD_H + 0.1;
-    const bodyH = CH - HEAD_H - 0.15;
-    const gap   = 0.1;
-    const itemH = (bodyH - gap * Math.max(np - 1, 0)) / Math.max(np, 1);
-    const fSize = np >= 4 ? 12 : 13;
+    // 要点列表（有图位时最多 2 条，高度缩减为 1.1"）
+    const bodyY  = CY + HEAD_H + 0.1;
+    const bodyH  = HAS_IMG ? 1.1 : (CH - HEAD_H - 0.15);
+    const pts    = (card.points || []).slice(0, HAS_IMG ? 2 : 5);
+    const np     = pts.length;
+    const gap    = 0.1;
+    const itemH  = (bodyH - gap * Math.max(np - 1, 0)) / Math.max(np, 1);
+    const fSize  = HAS_IMG ? 12 : (np >= 4 ? 12 : 13);
 
     pts.forEach((pt, j) => {
       const py = bodyY + j * (itemH + gap);
@@ -325,6 +330,42 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
           w: cardW - 0.24, h: 0.01, fill: { color: C.GRAY } }));
       }
     });
+
+    // 图片占位框（有 imageHint 时）
+    // 渲染顺序：① 灰底 → ② 建议文字 → ③ 操作提示 → ④ 透明 PNG（最后 = 最顶层）
+    if (HAS_IMG) {
+      const imgX = cx + 0.1;
+      const imgY = bodyY + bodyH + 0.1;
+      const imgW = cardW - 0.2;
+      const imgH = CY + CH - imgY - 0.1;   // ≈ 2.46"
+
+      // ① 灰色底板 + 虚线边框（视觉层）
+      slide.addShape("rect", opt({
+        x: imgX, y: imgY, w: imgW, h: imgH,
+        fill: { color: "E8ECF0" },
+        line: { color: "B0BEC5", dashType: "dash", w: 0.75 },
+      }));
+
+      // ② 建议配图说明（视觉层）
+      slide.addText(`📷  ${card.imageHint || "建议插入配图"}`, opt({
+        x: imgX, y: imgY + 0.3, w: imgW, h: 0.55,
+        fontSize: 12, color: C.NAVY, fontFace: "微软雅黑",
+        align: "center", valign: "middle",
+      }));
+
+      // ③ 操作提示（视觉层）
+      slide.addText("右键 → 更改图片，替换为您的配图", opt({
+        x: imgX, y: imgY + imgH - 0.5, w: imgW, h: 0.4,
+        fontSize: 10, color: "888888", fontFace: "微软雅黑",
+        align: "center", valign: "middle",
+      }));
+
+      // ④ 透明 PNG 叠放最顶层 — 使 PowerPoint 右键识别为图片对象
+      slide.addImage(opt({
+        data: `data:image/png;base64,${TRANSPARENT_PNG}`,
+        x: imgX, y: imgY, w: imgW, h: imgH,
+      }));
+    }
   });
 
   // 流程箭头：flow=true 时在相邻卡片之间画水平箭头

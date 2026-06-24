@@ -33,7 +33,7 @@ export interface ContentSlide {
   layout?: "standard" | "split" | "hero" | "card";
   title: string;
   paragraphs: string[]; // standard/split: 完整要点列表；hero: [核心数据陈述, 补充说明(可选)]；card: 留空数组 []
-  cards?: Array<{ heading: string; points: string[] }>; // card 版式专用：2-3 个并列主题卡片，每卡含标题和要点
+  cards?: Array<{ heading: string; points: string[]; imageHint?: string }>; // card 版式专用：2-3 个并列主题卡片；imageHint 存在时在卡片下半生成图片占位框
   flow?: boolean; // card 版式专用：true = 卡片间有先后顺序，渲染时画流程箭头
   notes: string;
 }
@@ -289,6 +289,21 @@ card 版式（流程顺序，有箭头）：
 - flow: false 或省略 → 卡片是并列关系（多维度评估、优缺点对比、不同材料对比）
 - 判断口诀：能说"先做A，再做B，最后C"→ flow:true；能说"从X角度/Y角度看"→ flow:false
 - 有顺序的卡片建议在 heading 里加 ①②③ 序号，让观众一眼看清顺序
+
+【imageHint 字段规则（card 版式专用，每张卡片可选）】
+- imageHint 是一句简短的中文描述（15字以内），说明该卡片"建议配什么图"，如："SEM颗粒形貌图"、"循环性能曲线"、"材料制备流程示意图"
+- 仅在"这个卡片若有配图会大幅提升理解"时才添加 imageHint，不要每个卡片都强制加
+- 适合加 imageHint 的场景：SEM/TEM/XRD 等实验图片、关键数据曲线图、结构/装置示意图、实验装置照片
+- 不适合加 imageHint 的场景：纯数据对比/文字叙述（没有天然对应的图片）
+- 有 imageHint 的卡片，points 只需写 1-2 条最核心的要点（图片占据卡片下半部分，文字区缩短）
+- 同一张 card 幻灯片，可以部分卡片有 imageHint，部分没有
+
+card 版式（含图片占位框示例）：
+{ "type": "content", "layout": "card", "title": "微观结构表征", "paragraphs": [], "cards": [
+  { "heading": "SEM 形貌", "points": ["• 颗粒呈球形，D50粒径 [[150 nm]]，分布均匀"], "imageHint": "SEM颗粒形貌图" },
+  { "heading": "XRD 物相", "points": ["• 2θ=26.4°衍射峰对应石墨层间距，结晶度良好"], "imageHint": "XRD衍射图谱" },
+  { "heading": "BET 比表面", "points": ["• 比表面积 [[142 m²/g]]，有效提升电解液接触面积", "• 孔径分布以介孔为主（2-50 nm）"] }
+], "flow": false, "notes": "前两张卡片配实验图片，第三张纯文字数据" }
 
 5. figure（图表分析页，每个重要图表一页，内容要详细）
 { "type": "figure", "title": "图1：循环性能对比曲线", "figure_desc": "图表展示了不同固含量样品（30、60、100 mg/mL）在1C倍率下500次循环的容量保持率变化趋势，横轴为循环次数，纵轴为比容量（mAh/g）", "analysis": "高固含量样品（100 mg/mL）经500次循环后容量保持率仅为61%，远低于低固含量样品（30 mg/mL）的89%。这一显著差异表明浆料固含量过高会导致纳米硅颗粒团聚加剧，粒径增大至5 μm以上，从而加速体积膨胀引起的结构破坏。", "notes": "重点强调89%和61%的差距，说明固含量对循环性能的关键影响" }

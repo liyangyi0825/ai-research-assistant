@@ -266,15 +266,19 @@ function ContentCard({ s }: { s: ContentSlide }) {
       </div>
       {/* 卡片 */}
       {cards.map((card, i) => {
-        const cx    = MARGIN + i * (cardW + GAP);
-        const pts   = (card.points || []).slice(0, 5);
-        const np    = pts.length;
-        const bodyY = HEAD_H + 10;   // 相对卡片顶部的偏移
-        const bodyH = CH - HEAD_H - 15;
-        const gap   = 10;
-        const itemH = (bodyH - gap * Math.max(np - 1, 0)) / Math.max(np, 1);
-        const fSize = np >= 4 ? f(12) : f(13);
-        const hc    = CARD_HEAD_COLORS[i] ?? CARD_HEAD_COLORS[CARD_HEAD_COLORS.length - 1];
+        const cx      = MARGIN + i * (cardW + GAP);
+        const HAS_IMG = Boolean(card.imageHint);
+        const pts     = (card.points || []).slice(0, HAS_IMG ? 2 : 5);
+        const np      = pts.length;
+        const bodyY   = HEAD_H + 10;   // 相对卡片顶部的偏移
+        const bodyH   = HAS_IMG ? 110 : (CH - HEAD_H - 15);
+        const gap     = 10;
+        const itemH   = (bodyH - gap * Math.max(np - 1, 0)) / Math.max(np, 1);
+        const fSize   = HAS_IMG ? f(12) : (np >= 4 ? f(12) : f(13));
+        const hc      = CARD_HEAD_COLORS[i] ?? CARD_HEAD_COLORS[CARD_HEAD_COLORS.length - 1];
+        // 图片占位框尺寸（像素）
+        const imgY    = bodyY + bodyH + 8;
+        const imgH    = CH - HEAD_H - bodyH - 25;
         return (
           <div key={i} style={{ position: "absolute", left: cx, top: CY, width: cardW, height: CH,
             background: "#F8FAFC", border: "0.5px solid #DDE4ED", overflow: "hidden" }}>
@@ -299,6 +303,27 @@ function ContentCard({ s }: { s: ContentSlide }) {
                 )}
               </div>
             ))}
+            {/* 图片占位框（有 imageHint 时） */}
+            {HAS_IMG && (
+              <div style={{
+                position: "absolute", left: 10, right: 10,
+                top: imgY, height: imgH,
+                background: "#E8ECF0",
+                border: "1.5px dashed #B0BEC5",
+                borderRadius: 4,
+                display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
+                gap: 6,
+              }}>
+                <div style={{ fontSize: f(14) }}>📷</div>
+                <div style={{ fontSize: f(10), color: "#1B3A8C", fontWeight: 600, textAlign: "center", padding: "0 8px" }}>
+                  {card.imageHint}
+                </div>
+                <div style={{ fontSize: f(8.5), color: "#888", textAlign: "center", padding: "0 8px" }}>
+                  右键 → 更改图片
+                </div>
+              </div>
+            )}
           </div>
         );
       })}
