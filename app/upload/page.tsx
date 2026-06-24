@@ -165,6 +165,9 @@ function UploadPageInner() {
   const [copiedBibtex, setCopiedBibtex] = useState(false);
   const [copiedGbt, setCopiedGbt] = useState(false);
 
+  // ── LaTeX 导出状态 ──
+  const [latexStatus, setLatexStatus] = useState<"idle" | "loading" | "error">("idle");
+
   // 自动滚动到对话底部
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -407,6 +410,7 @@ function UploadPageInner() {
     setGbt7714("");
     setCopiedBibtex(false);
     setCopiedGbt(false);
+    setLatexStatus("idle");
     setCurrentView("summary");
     setPptStatus("idle");
     setPptScene(null);
@@ -592,6 +596,39 @@ function UploadPageInner() {
       setCiteStatus("done");
     } catch {
       setCiteStatus("error");
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 导出 LaTeX（ZIP 包含 summary.tex + references.bib）
+  // ─────────────────────────────────────────────────────────────────────────────
+  async function handleExportLatex() {
+    if (latexStatus === "loading") return;
+    setLatexStatus("loading");
+    try {
+      const res = await fetch("/api/generate-latex", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paperContent: extractedText }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || "导出失败");
+      }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = "latex_export.zip";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setLatexStatus("idle");
+    } catch (err) {
+      setLatexStatus("error");
+      toast.error(err instanceof Error ? err.message : "导出失败，请重试");
+      setTimeout(() => setLatexStatus("idle"), 3000);
     }
   }
 
@@ -861,6 +898,14 @@ function UploadPageInner() {
                   })}
                   <div className="flex gap-2 flex-wrap">
                     <Button variant="outline" className="flex-1" onClick={handleSummarize}>重新生成总结</Button>
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      onClick={handleExportLatex}
+                      disabled={latexStatus === "loading"}
+                    >
+                      {latexStatus === "loading" ? "正在生成…" : "📄 导出 LaTeX"}
+                    </Button>
                   </div>
                 </div>
               )}

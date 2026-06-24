@@ -12,6 +12,7 @@ export const FREE_MONTHLY_LIMITS = {
   extract_refs: 10,       // PDF文件提取每月10次
   profile_summarize: 5,   // 科研档案AI整理每月5次
   literature_review: 3,   // 多篇综述对比每月3次
+  latex_export: 5,        // LaTeX 导出每月5次
 } as const;
 
 export type UsageActionType = keyof typeof FREE_MONTHLY_LIMITS;
