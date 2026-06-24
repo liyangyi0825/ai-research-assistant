@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import { toast } from "sonner";
@@ -13,6 +13,7 @@ import {
   CartesianGrid, Tooltip, Legend,
 } from "recharts";
 import * as XLSX from "xlsx";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 // ── 类型定义 ───────────────────────────────────────────────────────────────
 
@@ -183,9 +184,77 @@ export default function DataCleanPage() {
   const [activeChartIdx, setActiveChartIdx] = useState(0);
   const [analyzeError,   setAnalyzeError]   = useState("");
   const [activeTab,      setActiveTab]      = useState<"before" | "after">("before");
+  const [isRestoredFromDB,   setIsRestoredFromDB]   = useState(false);
+  const [truncatedOnRestore, setTruncatedOnRestore] = useState(false);
 
   const fileInputRef     = useRef<HTMLInputElement>(null);
   const chartRef         = useRef<HTMLDivElement>(null);
+
+  // 页面加载时从 DB 恢复最近一次清洗结果
+  useEffect(() => {
+    async function init() {
+      console.log("[data-clean] 开始从 DB 恢复");
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        console.log("[data-clean] 恢复-当前用户:", user?.id ?? "未登录");
+        if (!user) return;
+        const { data, error } = await supabase
+          .from("data_clean_sessions")
+          .select("*")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        console.log("[data-clean] 查询结果:", error ?? "成功", "data:", data ? `file=${data.file_name}` : null);
+        if (!data) return;
+        const a = data.analysis as AnalysisResult;
+        setFileName(data.file_name as string);
+        setTotalRows(data.raw_row_count as number);
+        setAnalysis(a);
+        setEnabledRules(new Set(a.rules.map((r: CleaningRule) => r.id)));
+        setCleanedHeaders(data.cleaned_headers as string[]);
+        const restoredRows = data.cleaned_data as (string | number)[][];
+        setCleanedRows(restoredRows);
+        setPhase("done");
+        setActiveTab("after");
+        setIsRestoredFromDB(true);
+        setTruncatedOnRestore((data.cleaned_row_count as number) > restoredRows.length);
+      } catch { /* 静默 */ }
+    }
+    init();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 将清洗结果保存到 DB（静默执行，不阻塞 UI）
+  async function saveCleanSession(
+    h: string[],
+    r: (string | number)[][],
+    a: AnalysisResult,
+    name: string,
+    rowCount: number,
+    colCount: number,
+  ) {
+    console.log("[data-clean] 开始保存到 DB");
+    try {
+      const supabase = getSupabaseBrowserClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      console.log("[data-clean] 当前用户:", user?.id ?? "未登录");
+      if (!user) return;
+      const { error } = await supabase.from("data_clean_sessions").insert({
+        user_id: user.id,
+        file_name: name,
+        raw_row_count: rowCount,
+        raw_col_count: colCount,
+        cleaned_row_count: r.length,
+        analysis: a,
+        cleaned_headers: h,
+        cleaned_data: r.slice(0, 5000),
+      });
+      console.log("[data-clean] 保存结果:", error ?? "成功");
+    } catch (e) {
+      console.error("[data-clean] 保存异常:", e);
+    }
+  }
 
   // ── 文件解析 ─────────────────────────────────────────────────────────────
 
@@ -246,6 +315,8 @@ export default function DataCleanPage() {
     setCleanedHeaders([]);
     setCleanedRows([]);
     setAnalyzeError("");
+    setIsRestoredFromDB(false);
+    setTruncatedOnRestore(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -286,6 +357,9 @@ export default function DataCleanPage() {
     setPhase("done");
     setActiveChartIdx(0);
     setActiveTab("after");
+    setIsRestoredFromDB(false);
+    setTruncatedOnRestore(false);
+    saveCleanSession(h, r, analysis, fileName, totalRows, rawHeaders.length);
   }
 
   // ── 下载 ─────────────────────────────────────────────────────────────────
@@ -410,10 +484,23 @@ export default function DataCleanPage() {
               <div className="min-w-0">
                 <p className="font-semibold text-gray-800 truncate">📊 {fileName}</p>
                 <p className="text-sm text-gray-400 mt-0.5">
-                  共 {totalRows.toLocaleString()} 行 · {rawHeaders.length} 列
+                  共 {totalRows.toLocaleString()} 行 · {isRestoredFromDB ? (analysis?.columns.length ?? "?") : rawHeaders.length} 列
                 </p>
               </div>
               <Button variant="outline" size="sm" onClick={handleReset} className="shrink-0">重新上传</Button>
+            </div>
+          )}
+
+          {/* 恢复提示条 */}
+          {isRestoredFromDB && (
+            <div className="flex items-center justify-between bg-blue-50 border border-blue-100 rounded-xl px-4 py-2.5">
+              <span className="text-sm text-blue-700">✨ 已恢复上次的清洗结果</span>
+              <button
+                onClick={handleReset}
+                className="text-xs text-blue-400 hover:text-blue-600 transition-colors ml-4 shrink-0"
+              >
+                清空重新开始
+              </button>
             </div>
           )}
 
@@ -527,10 +614,10 @@ export default function DataCleanPage() {
               <div className="px-4 sm:px-5 py-3 sm:py-4 border-b border-green-50 bg-green-50 flex items-center justify-between">
                 <h2 className="font-semibold text-green-900">✅ 清洗完成</h2>
                 <span className="text-sm text-green-700">
-                  {rawRows.length} 行 → {cleanedRows.length} 行
-                  {rawRows.length - cleanedRows.length > 0 && (
-                    <span className="text-green-500 ml-1">（删除 {rawRows.length - cleanedRows.length} 行）</span>
-                  )}
+                  {isRestoredFromDB
+                    ? <>已清洗 {cleanedRows.length.toLocaleString()} 行{truncatedOnRestore && <span className="text-amber-600 ml-1">（超 5000 行仅恢复前 5000 行）</span>}</>
+                    : <>{rawRows.length} 行 → {cleanedRows.length} 行{rawRows.length - cleanedRows.length > 0 && <span className="text-green-500 ml-1">（删除 {rawRows.length - cleanedRows.length} 行）</span>}</>
+                  }
                 </span>
               </div>
 
@@ -546,14 +633,18 @@ export default function DataCleanPage() {
                         : "text-gray-500 hover:text-gray-700"
                     }`}
                   >
-                    {tab === "before" ? `清洗前（${rawRows.length} 行）` : `清洗后（${cleanedRows.length} 行）`}
+                    {tab === "before"
+                      ? (isRestoredFromDB ? "清洗前（未保存）" : `清洗前（${rawRows.length} 行）`)
+                      : `清洗后（${cleanedRows.length} 行）`}
                   </button>
                 ))}
               </div>
 
               <div className="p-4">
                 {activeTab === "before"
-                  ? <DataTable headers={rawHeaders} rows={rawRows as (string | number)[][]} maxRows={100} />
+                  ? rawRows.length > 0
+                    ? <DataTable headers={rawHeaders} rows={rawRows as (string | number)[][]} maxRows={100} />
+                    : <p className="text-sm text-gray-400 text-center py-6">原始数据未保存，如需对比请重新上传文件</p>
                   : <DataTable headers={cleanedHeaders} rows={cleanedRows} maxRows={100} />
                 }
               </div>

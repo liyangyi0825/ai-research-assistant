@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { toast } from "sonner";
+import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 type UploadedFile = { file: File; id: string };
 type Stage = "upload" | "extracting" | "analyzing" | "done" | "error";
@@ -66,6 +67,7 @@ export default function LiteratureReviewPage() {
   // 刷新恢复
   const [showRestoreBanner, setShowRestoreBanner] = useState(false);
   const [restoredPaperNames, setRestoredPaperNames] = useState<string[]>([]);
+  const [restoredPaperChars, setRestoredPaperChars] = useState<number[]>([]);
   const STORAGE_KEY = "iyanhub_review";
   const SEVEN_DAYS  = 7 * 24 * 60 * 60 * 1000;
 
@@ -95,34 +97,71 @@ export default function LiteratureReviewPage() {
     if (stage === "done") saveLatestRef.current();
   }, [stage]);
 
-  // 页面加载时恢复
+  // 页面加载时恢复（优先 DB，回退 localStorage）
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    try {
-      const data = JSON.parse(raw) as {
-        paperNames: string[];
-        extractedTexts: string[];
-        analysisText: string;
-        timestamp: number;
-      };
-      if (Date.now() - data.timestamp > SEVEN_DAYS) {
-        localStorage.removeItem(STORAGE_KEY);
-        return;
-      }
-      if (!data.analysisText || !data.paperNames?.length) return;
-      const texts = data.extractedTexts ?? [];
-      const initStatus: Record<number, ExtractStatus> = {};
-      data.paperNames.forEach((_, i) => { initStatus[i] = "done"; });
-      setRestoredPaperNames(data.paperNames);
-      setExtractedTexts(texts);
-      setTotalChars(texts.reduce((s, t) => s + t.length, 0));
-      setExtractStatus(initStatus);
-      setAnalysisText(data.analysisText);
-      setStage("done");
-      setExpanded(DEFAULT_EXPANDED);
-      setShowRestoreBanner(true);
-    } catch { /* 静默 */ }
+    async function init() {
+      // 1. 优先从 DB 恢复
+      console.log("[literature-review] 开始从 DB 恢复");
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        console.log("[literature-review] 恢复-当前用户:", user?.id ?? "未登录");
+        if (user) {
+          const { data, error } = await supabase
+            .from("literature_review_sessions")
+            .select("*")
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          console.log("[literature-review] 查询结果:", error ?? "成功", "data:", data ? `papers=${(data.paper_names as string[])?.length}` : null);
+          if (data?.analysis_text) {
+            const names = data.paper_names as string[];
+            const chars = data.paper_chars as number[];
+            const initStatus: Record<number, ExtractStatus> = {};
+            names.forEach((_, i) => { initStatus[i] = "done"; });
+            setRestoredPaperNames(names);
+            setRestoredPaperChars(chars);
+            setExtractedTexts(new Array(names.length).fill(""));
+            setTotalChars(chars.reduce((s, c) => s + c, 0));
+            setExtractStatus(initStatus);
+            setAnalysisText(data.analysis_text as string);
+            setStage("done");
+            setExpanded(DEFAULT_EXPANDED);
+            setShowRestoreBanner(true);
+            return;
+          }
+        }
+      } catch { /* 静默 */ }
+
+      // 2. 回退 localStorage
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      try {
+        const lsData = JSON.parse(raw) as {
+          paperNames: string[];
+          extractedTexts: string[];
+          analysisText: string;
+          timestamp: number;
+        };
+        if (Date.now() - lsData.timestamp > SEVEN_DAYS) {
+          localStorage.removeItem(STORAGE_KEY);
+          return;
+        }
+        if (!lsData.analysisText || !lsData.paperNames?.length) return;
+        const texts = lsData.extractedTexts ?? [];
+        const initStatus: Record<number, ExtractStatus> = {};
+        lsData.paperNames.forEach((_, i) => { initStatus[i] = "done"; });
+        setRestoredPaperNames(lsData.paperNames);
+        setExtractedTexts(texts);
+        setTotalChars(texts.reduce((s, t) => s + t.length, 0));
+        setExtractStatus(initStatus);
+        setAnalysisText(lsData.analysisText);
+        setStage("done");
+        setExpanded(DEFAULT_EXPANDED);
+        setShowRestoreBanner(true);
+      } catch { /* 静默 */ }
+    }
+    init();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -231,6 +270,26 @@ export default function LiteratureReviewPage() {
       }
 
       setStage("done");
+      // 自动保存到 DB（内层 try-catch，不影响主流程）
+      console.log("[literature-review] 开始保存到 DB");
+      try {
+        const supabase = getSupabaseBrowserClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        console.log("[literature-review] 当前用户:", user?.id ?? "未登录");
+        if (user) {
+          const pNames = files.map(f => f.file.name.replace(/\.pdf$/i, ""));
+          const { error } = await supabase.from("literature_review_sessions").insert({
+            user_id: user.id,
+            paper_names: pNames,
+            paper_chars: texts.map(t => t.length),
+            paper_count: pNames.length,
+            analysis_text: fullText,
+          });
+          console.log("[literature-review] 保存结果:", error ?? "成功");
+        }
+      } catch (e) {
+        console.error("[literature-review] 保存异常:", e);
+      }
     } catch (err) {
       setAnalysisError(err instanceof Error ? err.message : "分析失败，请重试");
       setStage("error");
@@ -281,6 +340,7 @@ export default function LiteratureReviewPage() {
     setCopyDone(false);
     setExpanded(DEFAULT_EXPANDED);
     setRestoredPaperNames([]);
+    setRestoredPaperChars([]);
     setShowRestoreBanner(false);
   }
 
@@ -429,9 +489,9 @@ export default function LiteratureReviewPage() {
                           ) : st === "done" ? "✅" : st === "error" ? "❌" : "⏳"}
                         </span>
                         <span className="text-sm text-gray-600 truncate flex-1">{name}</span>
-                        {st === "done" && extractedTexts[idx] !== undefined && (
+                        {st === "done" && (
                           <span className="text-xs text-gray-400 shrink-0">
-                            {extractedTexts[idx].length.toLocaleString()} 字
+                            {(restoredPaperChars[idx] ?? extractedTexts[idx]?.length ?? 0).toLocaleString()} 字
                           </span>
                         )}
                       </li>
