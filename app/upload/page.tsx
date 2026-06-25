@@ -196,9 +196,9 @@ function UploadPageInner() {
     }).catch(() => {});
   }, [messages, paperId, chatLoading]);
 
-  // 总结完成后自动触发引用生成（从 DB 加载的已有总结不重复生成）
+  // 总结完成后自动触发引用生成（包括从 DB 恢复的总结）
   useEffect(() => {
-    if (summaryStatus === "done" && citeStatus === "idle" && !summaryFromDB) {
+    if (summaryStatus === "done" && citeStatus === "idle") {
       generateCitation();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
