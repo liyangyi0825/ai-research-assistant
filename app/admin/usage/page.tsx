@@ -95,6 +95,29 @@ export default async function AdminUsagePage() {
     extract_refs:    stats.reduce((a, s) => a + s.extractRefs,    0),
   };
 
+  // 最近 30 天每日调用趋势（按上海时区分组）
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 29);
+  thirtyDaysAgo.setHours(0, 0, 0, 0);
+
+  const dailyCounts: Record<string, number> = {};
+  for (const r of usage) {
+    const d = new Date(r.created_at);
+    if (d < thirtyDaysAgo) continue;
+    const isoDate = d.toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" }); // YYYY-MM-DD
+    dailyCounts[isoDate] = (dailyCounts[isoDate] ?? 0) + 1;
+  }
+
+  const dailyData = Object.entries(dailyCounts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([isoDate, count]) => {
+      const [, m, dd] = isoDate.split("-").map(Number);
+      return { label: `${m}/${dd}`, count };
+    });
+
+  const maxDailyCount = Math.max(...dailyData.map(d => d.count), 1);
+  const totalLast30 = dailyData.reduce((a, d) => a + d.count, 0);
+
   return (
     <div className="min-h-screen" style={{ background: "#F8FAFC" }}>
 
@@ -141,6 +164,40 @@ export default async function AdminUsagePage() {
             )
           )}
         </div>
+
+        {/* ── 每日调用趋势 ──────────────────────────────── */}
+        <section>
+          <h2 className="text-base font-semibold text-gray-700 mb-3">
+            📈 每日调用趋势
+            <span className="ml-2 text-xs font-normal text-gray-400">最近 30 天 · 共 {totalLast30} 次</span>
+          </h2>
+
+          {dailyData.length === 0 ? (
+            <div className="bg-white rounded-xl p-8 text-center text-gray-400">暂无调用数据</div>
+          ) : (
+            <div className="bg-white rounded-xl shadow-sm p-5">
+              <div className="overflow-x-auto">
+                <div className="flex gap-1" style={{ minWidth: `${dailyData.length * 36}px` }}>
+                  {dailyData.map(({ label, count }) => {
+                    const barHeight = Math.max(Math.round((count / maxDailyCount) * 100), 3);
+                    return (
+                      <div key={label} className="flex flex-col items-center gap-1 flex-1 min-w-[32px]">
+                        <span className="text-[10px] text-gray-500 font-medium h-4 flex items-center justify-center">{count}</span>
+                        <div className="flex flex-col justify-end w-full" style={{ height: "100px" }}>
+                          <div
+                            className="w-full bg-blue-400 rounded-t-sm"
+                            style={{ height: `${barHeight}px` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-gray-400 whitespace-nowrap">{label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
 
         {/* ── 用户明细表 ───────────────────────────────── */}
         <section>
