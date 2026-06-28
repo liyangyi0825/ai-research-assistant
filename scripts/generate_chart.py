@@ -44,6 +44,15 @@ if x_col not in data.columns:
 
 print(f"[debug] x data: {data[x_col].tolist()[:5]}", file=sys.stderr)
 
+# Y轴列名兜底过滤
+valid_y_cols = [col for col in y_cols if col in data.columns]
+if not valid_y_cols:
+    print(json.dumps({'success': False,
+                      'error': f'Y轴列名不存在，可用列：{list(data.columns)}'}))
+    sys.exit(1)
+y_cols = valid_y_cols
+print(f"[debug] y_cols (valid): {y_cols}", file=sys.stderr)
+
 # X轴统一用位置索引绘图，字符串标签单独设置
 x_raw = data[x_col].fillna('').astype(str).tolist()
 x_pos = list(range(len(x_raw)))

@@ -371,14 +371,17 @@ export default function DataCleanPage() {
     setPhase("done");
     setActiveTab("after");
     setChartPngUrl(""); setChartSvgUrl(""); setChartError("");
-    // 用清洗后实际的列名更新图表 x/y（防止 rename 后名字变了）
+    // 用清洗后实际列名预填图表配置，严格过滤不存在的列
     if (analysis.charts?.length > 0) {
+      const colSet = new Set(h);
       const first = analysis.charts[0];
-      setChartXCol(first.x);
-      setChartYCols(first.y);
+      const safeX = colSet.has(first.x) ? first.x : (h[0] ?? "");
+      const safeY = first.y.filter(col => colSet.has(col));
+      setChartXCol(safeX);
+      setChartYCols(safeY);
       setChartType(first.type as "line" | "bar" | "scatter");
       setChartTitle(first.title ?? "");
-      setChartXLabel(first.x);
+      setChartXLabel(safeX);
     }
     setIsRestoredFromDB(false);
     setTruncatedOnRestore(false);
@@ -394,6 +397,14 @@ export default function DataCleanPage() {
       toast.error("请先选择 X 轴和至少一个 Y 轴列");
       return;
     }
+    // 发送前再次过滤，确保 y_cols 都在实际数据列里
+    const colSet = new Set(cleanedHeaders);
+    const safeYCols = chartYCols.filter(c => colSet.has(c));
+    if (safeYCols.length === 0) {
+      toast.error("所选 Y 轴列在清洗后数据中不存在，请重新勾选");
+      return;
+    }
+
     setChartGenerating(true);
     setChartError("");
     setChartPngUrl("");
@@ -412,7 +423,7 @@ export default function DataCleanPage() {
           data:       dataRows,
           chart_type: chartType,
           x_col:      chartXCol,
-          y_cols:     chartYCols,
+          y_cols:     safeYCols,
           title:      chartTitle,
           x_label:    chartXLabel || chartXCol,
           y_label:    chartYLabel,

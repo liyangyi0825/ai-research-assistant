@@ -30,6 +30,19 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "参数不完整" }, { status: 400 });
     }
 
+    // 过滤掉数据里不存在的列名，防止 Python KeyError
+    const actualCols = new Set(Object.keys(body.data[0]));
+    const filteredYCols = body.y_cols.filter(c => actualCols.has(c));
+    console.log('[chart] actualCols:', [...actualCols]);
+    console.log('[chart] filteredYCols:', filteredYCols);
+    if (filteredYCols.length === 0) {
+      return Response.json(
+        { error: `Y轴列名不存在，数据实际列名：${[...actualCols].join('、')}` },
+        { status: 400 }
+      );
+    }
+    body.y_cols = filteredYCols;
+
     // 确保 public/charts 目录存在
     fs.mkdirSync(CHARTS_DIR, { recursive: true });
 
