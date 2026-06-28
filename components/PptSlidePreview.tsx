@@ -144,13 +144,7 @@ function Section({ s }: { s: SectionSlide }) {
 }
 
 function ContentStandard({ s }: { s: ContentSlide }) {
-  const paras = (s.paragraphs || []).slice(0, 6);
-  const n = paras.length;
-  const totalH = 417.5; // 562.5 - 125 - 20
-  const gap = 12;
-  const itemH = (totalH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
-  const fSize = n >= 5 ? f(14) : n >= 3 ? f(15) : f(16);
-  const vAlign = n >= 3 ? "center" : "flex-start";
+  const paras = (s.paragraphs || []).slice(0, 3);
   return (
     <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
@@ -159,30 +153,21 @@ function ContentStandard({ s }: { s: ContentSlide }) {
         color: C.WHITE, fontSize: f(20), fontWeight: 700 }}>
         {s.title}
       </div>
-      {paras.map((para, i) => (
-        <div key={i}>
-          <div style={{ position: "absolute", left: 35, top: 125 + i * (itemH + gap), right: 20, height: itemH,
-            display: "flex", alignItems: vAlign,
-            color: C.TEXT, fontSize: fSize, lineHeight: 1.6, overflow: "hidden" }}>
+      {/* 流式段落区域 */}
+      <div style={{ position: "absolute", left: 35, top: 116, right: 22, bottom: 14, overflow: "hidden",
+        display: "flex", flexDirection: "column", gap: 20 }}>
+        {paras.map((para, i) => (
+          <div key={i} style={{ color: C.TEXT, fontSize: f(14.5), lineHeight: 1.8, textAlign: "justify" }}>
             <RichText text={para} />
           </div>
-          {i < n - 1 && (
-            <div style={{ position: "absolute", left: 35, top: 125 + i * (itemH + gap) + itemH + gap * 0.4, right: 20, height: 1.5, background: C.GRAY }} />
-          )}
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
 
 function ContentSplit({ s }: { s: ContentSlide }) {
-  const paras = (s.paragraphs || []).slice(0, 6);
-  const n = paras.length;
-  const contentH = 512.5; // 562.5 - 50
-  const gap = 12;
-  const itemH = (contentH - gap * Math.max(n - 1, 0)) / Math.max(n, 1);
-  const fSize = n >= 5 ? f(13) : n >= 3 ? f(14) : f(15);
-  const vAlign = n >= 3 ? "center" : "flex-start";
+  const paras = (s.paragraphs || []).slice(0, 3);
   return (
     <div style={{ position: "absolute", inset: 0, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       {/* 左侧深蓝面板 */}
@@ -199,19 +184,15 @@ function ContentSplit({ s }: { s: ContentSlide }) {
       </div>
       {/* 金色装饰线 */}
       <div style={{ position: "absolute", left: 28, top: 380, width: 150, height: 7, background: C.GOLD }} />
-      {/* 右侧段落 */}
-      {paras.map((para, i) => (
-        <div key={i}>
-          <div style={{ position: "absolute", left: 410, top: 25 + i * (itemH + gap), right: 20, height: itemH,
-            display: "flex", alignItems: vAlign,
-            color: C.TEXT, fontSize: fSize, lineHeight: 1.5, overflow: "hidden" }}>
+      {/* 右侧流式段落 */}
+      <div style={{ position: "absolute", left: 408, top: 20, right: 18, bottom: 14, overflow: "hidden",
+        display: "flex", flexDirection: "column", gap: 20 }}>
+        {paras.map((para, i) => (
+          <div key={i} style={{ color: C.TEXT, fontSize: f(14), lineHeight: 1.8, textAlign: "justify" }}>
             <RichText text={para} />
           </div>
-          {i < n - 1 && (
-            <div style={{ position: "absolute", left: 410, top: 25 + i * (itemH + gap) + itemH + gap * 0.4, right: 20, height: 1.5, background: C.GRAY }} />
-          )}
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
