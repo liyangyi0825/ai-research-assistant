@@ -62,7 +62,14 @@ colors = ['#1f77b4', '#d62728', '#2ca02c', '#ff7f0e', '#9467bd']
 markers = ['o', 's', '^', 'D', 'v']
 
 for i, y_col in enumerate(y_cols):
-    y = pd.to_numeric(data[y_col], errors='coerce')
+    if y_col not in data.columns:
+        print(f"[debug] skip missing y_col: {repr(y_col)}", file=sys.stderr)
+        continue
+    try:
+        y = pd.to_numeric(data[y_col], errors='coerce')
+    except Exception as e:
+        print(f"[debug] y_col error {repr(y_col)}: {e}", file=sys.stderr)
+        continue
     color = colors[i % len(colors)]
     marker = markers[i % len(markers)]
     if chart_type == 'line':
