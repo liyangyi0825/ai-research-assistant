@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "deepseek-v4-pro",
         max_tokens: 8000,
         temperature: 0.3,
         stream: true,
@@ -82,28 +82,40 @@ export async function POST(req: NextRequest) {
 格式要求：
 1. 严格按照【研究问题】【研究方法】【主要结论】【创新点】四个标题输出，不要添加其他内容
 2. 使用 Markdown 格式标记重点：
-   - 关键术语、核心发现、重要数字用 **加粗** 标出（每段最多 2-3 处，不要过度加粗）
+   - 关键术语、核心数据、重要结论用 **加粗** 标出（每段最多 2-3 处，不要过度加粗）
    - 有多个并列要点时，用列表格式（每项以 - 开头）展示
    - 没有并列要点时，直接写段落即可
-3. 内容详实，根据论文复杂程度自由决定每段长度，不人为限制字数，重要数据和细节要保留
+3. 内容详实，根据论文复杂程度自由决定每段长度，重要数据和细节必须保留
+
+⚠️ 数据提取要求（最重要，每条结论必须有数据支撑）：
+主动从论文中提取并引用以下内容：
+- 实验数值：精度、误差、速度、效率等具体数字（如"旋转精度 ±0.02°"、"响应时间 12ms"）
+- 对比数据：与现有方法相比提升了多少（如"比传统方法效率提升 34%"、"工作空间扩大 2.3 倍"）
+- 实验条件：样本量、测试环境、验证方式（如"在 500 次实验中"、"经 RMSE 验证"）
+- 关键参数：论文中出现的具体设计数字（如"质量 6.74kg、半径 250mm"）
+- 图表来源：结论来自某图或某表时，标注"（见 Fig.X）"或"（Table X）"
+
+⛔ 禁止出现：
+- 无数据支撑的模糊结论：如"效果较好"、"性能有所提升"、"明显改善"
+- 纯定性描述（结论后没有跟具体数值）
+- 直接照搬摘要原文
 
 输出格式示例：
 【研究问题】
-本文针对**某领域核心问题**展开研究，背景是...
+本文针对**某领域核心问题**展开研究。现有方法在某指标上误差达 X°，无法满足精度要求（<0.5°），因此提出了...
 
 【研究方法】
-作者采用了**方法名称**，主要包括：
-- 步骤或模块一
-- 步骤或模块二
+作者采用了**方法名称**（质量 6.74kg，半径 250mm），主要包括：
+- 步骤一：具体做法 + 关键参数
+- 步骤二：具体做法 + 实验条件（如"在 500N 负载下测试"）
 
 【主要结论】
-实验结果表明**关键指标提升了 X%**，具体发现：
-- 结论一
-- 结论二
+- 旋转精度提升至 **±0.02°** 以内，优于现有最优方法的 ±0.08°（提升 75%，Table 3）
+- 工作空间扩大了 **2.3 倍**（与传统并联机构相比，Fig.5 对比实验）
 
 【创新点】
-- 首次提出了**创新方法名**
-- 在**特定场景**下取得了超越基线的效果
+- 首次提出了**创新方法名**，使某指标从 X 提升至 Y（提升幅度 Z%）
+- 在**特定场景**下，以 Xms 响应时间实现了超越基线的效果
 
 论文内容如下：
 ---
@@ -149,6 +161,7 @@ ${truncatedContent}
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
+      const thinkingBlocks = new Set<number>();
       let lastHeartbeat = Date.now();
       try {
         while (true) {
@@ -161,20 +174,27 @@ ${truncatedContent}
             lastHeartbeat = Date.now();
           }
 
-          // 原样转发给前端
-          await writer.write(value);
-
-          // 解析 SSE：拿 token 数 + 提取生成文字
+          // 解析 SSE：拿 token 数 + 提取生成文字 + 过滤 thinking 块
           sseBuffer += decoder.decode(value, { stream: true });
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop() ?? "";
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
+            if (!line.startsWith("data: ")) {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
             const raw = line.slice(6).trim();
-            if (!raw || raw === "[DONE]") continue;
+            if (!raw || raw === "[DONE]") {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
             try {
               const evt = JSON.parse(raw);
+              if (evt.type === "content_block_start" && evt.content_block?.type === "thinking") {
+                thinkingBlocks.add(evt.index ?? -1);
+              }
+              if (typeof evt.index === "number" && thinkingBlocks.has(evt.index)) continue;
               if (evt.type === "message_start" && evt.message?.usage) {
                 inputTokens = evt.message.usage.input_tokens ?? 0;
                 cacheCreate = evt.message.usage.cache_creation_input_tokens ?? 0;
@@ -196,7 +216,8 @@ ${truncatedContent}
                     .eq("user_id", user.id);
                 }
               }
-            } catch { /* 跳过无法解析的行 */ }
+              await writer.write(encoder.encode(line + "\n"));
+            } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
 

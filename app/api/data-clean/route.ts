@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
         "content-type":       "application/json",
       },
       body: JSON.stringify({
-        model:       "claude-sonnet-4-6",
+        model:       "deepseek-v4-pro",
         max_tokens:  3000,
         temperature: 0.1,
         messages: [{
@@ -110,7 +110,8 @@ ${csvRows}
       });
     }
 
-    let raw: string = data.content?.[0]?.text ?? "";
+    const textBlock = data.content?.find((b: { type: string }) => b.type === "text");
+    let raw: string = textBlock?.text ?? "";
     // 防御：Claude 有时会加 ```json 代码块
     raw = raw.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "").trim();
 

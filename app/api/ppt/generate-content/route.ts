@@ -345,7 +345,7 @@ ${keyContent}`;
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "deepseek-v4-pro",
         max_tokens: 16000,
         temperature: 0.3,
         stream: true,

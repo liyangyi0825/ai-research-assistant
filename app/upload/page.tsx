@@ -1079,9 +1079,7 @@ function UploadPageInner() {
                               <div className="rounded-2xl px-3 sm:px-4 py-2.5 sm:py-3 text-sm leading-relaxed bg-gray-100 text-gray-800 rounded-bl-sm w-full">
                                 {!msg.content && isStreamingThis
                                   ? <span className="flex gap-1 py-0.5"><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" /><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" /><span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" /></span>
-                                  : isStreamingThis
-                                    ? <pre className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap" style={{ fontFamily: "inherit" }}>{msg.content}</pre>
-                                    : <MarkdownContent content={msg.content} />
+                                  : <MarkdownContent content={msg.content} />
                                 }
                                 {isStreamingThis && msg.content && (
                                   <span className="inline-block w-0.5 h-3.5 bg-gray-500 ml-0.5 align-middle animate-pulse" />

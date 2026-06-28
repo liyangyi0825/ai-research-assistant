@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
 
     const prompt = buildPrompt(block, concept.trim(), papers, originText, conceptsText);
 
-    const maxTokens = block === 1 ? 700 : block === 3 ? 900 : 900;
+    const maxTokens = 8000;
 
     const anthropicRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -130,7 +130,7 @@ export async function POST(req: NextRequest) {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "deepseek-v4-pro",
         max_tokens: maxTokens,
         temperature: 0.3,
         stream: true,
@@ -169,22 +169,38 @@ export async function POST(req: NextRequest) {
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
+      const enc = new TextEncoder();
+      const thinkingBlocks = new Set<number>();
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          await writer.write(value);
 
           sseBuffer += decoder.decode(value, { stream: true });
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop() ?? "";
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
+            // 非 data 行（空行等）保持原样转发，维持 SSE 格式
+            if (!line.startsWith("data: ")) {
+              await writer.write(enc.encode(line + "\n"));
+              continue;
+            }
             const raw = line.slice(6).trim();
-            if (!raw || raw === "[DONE]") continue;
+            if (!raw || raw === "[DONE]") {
+              await writer.write(enc.encode(line + "\n"));
+              continue;
+            }
             try {
               const evt = JSON.parse(raw);
+              // 记录 thinking 块的 index，后续跳过属于它的所有事件
+              if (evt.type === "content_block_start" && evt.content_block?.type === "thinking") {
+                thinkingBlocks.add(evt.index ?? -1);
+              }
+              // 跳过 thinking 块的所有事件
+              if (typeof evt.index === "number" && thinkingBlocks.has(evt.index)) continue;
+
+              // 提取 token 用量
               if (evt.type === "message_start" && evt.message?.usage) {
                 inputTokens = evt.message.usage.input_tokens ?? 0;
                 cacheCreate = evt.message.usage.cache_creation_input_tokens ?? 0;
@@ -192,7 +208,12 @@ export async function POST(req: NextRequest) {
               } else if (evt.type === "message_delta" && evt.usage) {
                 outputTokens = evt.usage.output_tokens ?? 0;
               }
-            } catch { /* 跳过 */ }
+
+              // 转发非 thinking 事件
+              await writer.write(enc.encode(line + "\n"));
+            } catch {
+              await writer.write(enc.encode(line + "\n"));
+            }
           }
         }
       } finally {

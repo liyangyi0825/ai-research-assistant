@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
+        model: "deepseek-v4-pro",
         max_tokens: 6000,
         temperature: 0.2,
         messages: [
@@ -90,7 +90,8 @@ ${truncatedContent}
     }
 
     const data = await anthropicRes.json();
-    const raw: string = data.content?.[0]?.text ?? "";
+    const textBlock = data.content?.find((b: { type: string }) => b.type === "text");
+    const raw: string = textBlock?.text ?? "";
 
     // 记录用量（后台异步，不阻塞响应）
     if (userId) {

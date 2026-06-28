@@ -6,6 +6,7 @@ import { Header } from "@/components/Header";
 import { ContextChat } from "@/components/ContextChat";
 import { toast } from "sonner";
 import type { AnalyzedPaper } from "@/app/api/papers/search/route";
+import { MarkdownContent } from "@/components/MarkdownContent";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -257,9 +258,7 @@ function SearchResults({
 
           {/* 流式推荐文本 */}
           {recommendText && (
-            <p className="text-xs text-amber-900 leading-relaxed whitespace-pre-wrap">
-              {recommendText}
-            </p>
+            <MarkdownContent content={recommendText} className="text-xs text-amber-900" />
           )}
         </div>
       )}

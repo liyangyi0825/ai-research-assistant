@@ -93,7 +93,7 @@ ${text}`;
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
+        model: "deepseek-v4-pro",
         max_tokens: 4000,
         temperature: 0.3,
         stream: true,
@@ -127,9 +127,12 @@ ${text}`;
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    let sseBuffer = "";
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
+      const thinkingBlocks = new Set<number>();
       let lastHeartbeat = Date.now();
       try {
         while (true) {
@@ -142,7 +145,29 @@ ${text}`;
             lastHeartbeat = Date.now();
           }
 
-          await writer.write(value);
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
+            const raw = line.slice(6).trim();
+            if (!raw || raw === "[DONE]") {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
+            try {
+              const evt = JSON.parse(raw);
+              if (evt.type === "content_block_start" && evt.content_block?.type === "thinking") {
+                thinkingBlocks.add(evt.index ?? -1);
+              }
+              if (typeof evt.index === "number" && thinkingBlocks.has(evt.index)) continue;
+              await writer.write(encoder.encode(line + "\n"));
+            } catch { await writer.write(encoder.encode(line + "\n")); }
+          }
         }
         await writer.close();
       } catch (e) {

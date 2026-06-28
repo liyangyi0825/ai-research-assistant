@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "deepseek-v4-pro",
         max_tokens: 2000,
         temperature: 0.5,
         stream: true,
@@ -76,6 +76,7 @@ export async function POST(req: NextRequest) {
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
+      const thinkingBlocks = new Set<number>();
       let lastHeartbeat = Date.now();
       try {
         while (true) {
@@ -85,16 +86,25 @@ export async function POST(req: NextRequest) {
             await writer.write(encoder.encode(": k\n\n"));
             lastHeartbeat = Date.now();
           }
-          await writer.write(value);
           sseBuffer += decoder.decode(value, { stream: true });
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop() ?? "";
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
+            if (!line.startsWith("data: ")) {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
             const raw = line.slice(6).trim();
-            if (!raw || raw === "[DONE]") continue;
+            if (!raw || raw === "[DONE]") {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
             try {
               const evt = JSON.parse(raw);
+              if (evt.type === "content_block_start" && evt.content_block?.type === "thinking") {
+                thinkingBlocks.add(evt.index ?? -1);
+              }
+              if (typeof evt.index === "number" && thinkingBlocks.has(evt.index)) continue;
               if (evt.type === "message_start" && evt.message?.usage) {
                 inputTokens = evt.message.usage.input_tokens ?? 0;
                 cacheCreate = evt.message.usage.cache_creation_input_tokens ?? 0;
@@ -102,7 +112,8 @@ export async function POST(req: NextRequest) {
               } else if (evt.type === "message_delta" && evt.usage) {
                 outputTokens = evt.usage.output_tokens ?? 0;
               }
-            } catch { /* skip */ }
+              await writer.write(encoder.encode(line + "\n"));
+            } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
       } finally {

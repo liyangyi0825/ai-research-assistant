@@ -42,7 +42,7 @@ async function translateToEnglish(concept: string, apiKey: string): Promise<stri
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "deepseek-v4-pro",
         max_tokens: 60,
         temperature: 0.1,
         messages: [{
@@ -52,7 +52,8 @@ async function translateToEnglish(concept: string, apiKey: string): Promise<stri
       }),
     });
     const data = await res.json();
-    const translated = (data.content?.[0]?.text ?? "").trim();
+    const textBlock = data.content?.find((b: { type: string }) => b.type === "text");
+    const translated = (textBlock?.text ?? "").trim();
     return translated || concept;
   } catch {
     return concept;

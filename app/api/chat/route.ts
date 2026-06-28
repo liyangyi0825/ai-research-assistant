@@ -45,17 +45,13 @@ export async function POST(req: NextRequest) {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
-          "anthropic-beta": "prompt-caching-2024-07-31",
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-5",
+          model: "deepseek-v4-pro",
           max_tokens: 8000,
           temperature: 0.5,
           stream: true,
-          system: [
-            {
-              type: "text",
-              text: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
+          system: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
 请用中文回答，回答要准确、简洁，并直接基于论文内容。如果论文中没有相关信息，请如实说明。
 回答中如涉及数学公式，用简单 LaTeX 格式：行内公式用 $...$，独立公式用 $$...$$。禁止使用 \begin{align}、\begin{cases}、\begin{equation} 等复杂环境，改用文字描述或简单单行公式代替。${notesSection}
 
@@ -63,9 +59,6 @@ export async function POST(req: NextRequest) {
 ---
 ${truncatedContent}
 ---`,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
           messages: messages,
         }),
       }
@@ -105,6 +98,7 @@ ${truncatedContent}
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
+      const thinkingBlocks = new Set<number>();
       let lastHeartbeat = Date.now();
       try {
         while (true) {
@@ -115,18 +109,27 @@ ${truncatedContent}
             await writer.write(encoder.encode(": k\n\n"));
             lastHeartbeat = Date.now();
           }
-          await writer.write(value);
 
           sseBuffer += decoder.decode(value, { stream: true });
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop() ?? "";
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
+            if (!line.startsWith("data: ")) {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
             const raw = line.slice(6).trim();
-            if (!raw || raw === "[DONE]") continue;
+            if (!raw || raw === "[DONE]") {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
             try {
               const evt = JSON.parse(raw);
+              if (evt.type === "content_block_start" && evt.content_block?.type === "thinking") {
+                thinkingBlocks.add(evt.index ?? -1);
+              }
+              if (typeof evt.index === "number" && thinkingBlocks.has(evt.index)) continue;
               if (evt.type === "message_start" && evt.message?.usage) {
                 inputTokens = evt.message.usage.input_tokens ?? 0;
                 cacheCreate = evt.message.usage.cache_creation_input_tokens ?? 0;
@@ -134,7 +137,8 @@ ${truncatedContent}
               } else if (evt.type === "message_delta" && evt.usage) {
                 outputTokens = evt.usage.output_tokens ?? 0;
               }
-            } catch { /* 跳过无法解析的行 */ }
+              await writer.write(encoder.encode(line + "\n"));
+            } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
       } finally {

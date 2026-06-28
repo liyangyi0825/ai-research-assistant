@@ -55,7 +55,7 @@ ${paragraphs.join("\n[PARA]\n")}`;
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "deepseek-v4-pro",
         max_tokens: 4000,
         stream: true,
         messages: [{ role: "user", content: prompt }],
@@ -69,6 +69,7 @@ ${paragraphs.join("\n[PARA]\n")}`;
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
+    const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
@@ -89,22 +90,32 @@ ${paragraphs.join("\n[PARA]\n")}`;
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
+      const thinkingBlocks = new Set<number>();
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          await writer.write(value);
 
           sseBuffer += decoder.decode(value, { stream: true });
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop() ?? "";
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
+            if (!line.startsWith("data: ")) {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
             const raw = line.slice(6).trim();
-            if (!raw || raw === "[DONE]") continue;
+            if (!raw || raw === "[DONE]") {
+              await writer.write(encoder.encode(line + "\n"));
+              continue;
+            }
             try {
               const evt = JSON.parse(raw);
+              if (evt.type === "content_block_start" && evt.content_block?.type === "thinking") {
+                thinkingBlocks.add(evt.index ?? -1);
+              }
+              if (typeof evt.index === "number" && thinkingBlocks.has(evt.index)) continue;
               if (evt.type === "message_start" && evt.message?.usage) {
                 inputTokens = evt.message.usage.input_tokens ?? 0;
                 cacheCreate = evt.message.usage.cache_creation_input_tokens ?? 0;
@@ -112,7 +123,8 @@ ${paragraphs.join("\n[PARA]\n")}`;
               } else if (evt.type === "message_delta" && evt.usage) {
                 outputTokens = evt.usage.output_tokens ?? 0;
               }
-            } catch { /* skip */ }
+              await writer.write(encoder.encode(line + "\n"));
+            } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
       } finally {

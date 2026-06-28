@@ -47,8 +47,8 @@ export async function POST(req: NextRequest) {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
-        max_tokens: 800,
+        model: "deepseek-v4-pro",
+        max_tokens: 8000,
         temperature: 0.3,
         messages: [
           {
@@ -77,11 +77,18 @@ ${truncated}
     }
 
     const data = await anthropicRes.json();
-    const text: string = data.content?.[0]?.text ?? "";
+    const textBlock = data.content?.find((b: { type: string }) => b.type === "text");
+    const text: string = textBlock?.text ?? "";
 
     // 清除可能的 markdown 代码块再解析 JSON
     const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-    const parsed = JSON.parse(cleaned);
+    let parsed: { bibtex?: string; gbt7714?: string };
+    try {
+      parsed = JSON.parse(cleaned) as { bibtex?: string; gbt7714?: string };
+    } catch {
+      console.error("[cite] JSON 解析失败，raw text:", text.slice(0, 300));
+      return NextResponse.json({ error: "AI 返回格式异常，请重试" }, { status: 500 });
+    }
 
     // 写入 usage 记录
     if (userId) {

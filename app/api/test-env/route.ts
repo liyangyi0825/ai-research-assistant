@@ -16,7 +16,7 @@ export async function GET() {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-3-haiku-20240307",
+      model: "deepseek-v4-pro",
       max_tokens: 10,
       messages: [{ role: "user", content: "say hi" }],
     }),

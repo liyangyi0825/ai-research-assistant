@@ -147,7 +147,7 @@ export async function POST(req: NextRequest) {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "deepseek-v4-pro",
         max_tokens: 2000,
         temperature: 0.3,
         messages: [
@@ -175,7 +175,8 @@ ${papersText}`,
 
     if (claudeRes.ok) {
       const aiData = await claudeRes.json();
-      const aiText: string = aiData.content?.[0]?.text ?? "";
+      const aiTextBlock = aiData.content?.find((b: { type: string }) => b.type === "text");
+      const aiText: string = aiTextBlock?.text ?? "";
       try {
         const cleaned = aiText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
         const parsed = JSON.parse(cleaned);
