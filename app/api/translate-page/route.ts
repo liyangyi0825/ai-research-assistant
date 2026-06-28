@@ -129,6 +129,7 @@ ${text}`;
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     let sseBuffer = "";
+    let firstChunkLogged = false;
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
@@ -145,7 +146,12 @@ ${text}`;
             lastHeartbeat = Date.now();
           }
 
-          sseBuffer += decoder.decode(value, { stream: true });
+          const chunk = decoder.decode(value, { stream: true });
+          if (!firstChunkLogged) {
+            console.log("[translate-page] first chunk:", chunk.slice(0, 200));
+            firstChunkLogged = true;
+          }
+          sseBuffer += chunk;
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop() ?? "";
 

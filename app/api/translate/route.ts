@@ -74,6 +74,7 @@ ${paragraphs.join("\n[PARA]\n")}`;
 
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
     let sseBuffer = "";
+    let firstChunkLogged = false;
 
     if (userId) {
       after(async () => {
@@ -96,7 +97,12 @@ ${paragraphs.join("\n[PARA]\n")}`;
           const { done, value } = await reader.read();
           if (done) break;
 
-          sseBuffer += decoder.decode(value, { stream: true });
+          const chunk = decoder.decode(value, { stream: true });
+          if (!firstChunkLogged) {
+            console.log("[translate] first chunk:", chunk.slice(0, 200));
+            firstChunkLogged = true;
+          }
+          sseBuffer += chunk;
           const lines = sseBuffer.split("\n");
           sseBuffer = lines.pop() ?? "";
 
