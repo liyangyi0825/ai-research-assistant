@@ -38,7 +38,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const prompt = `请将以下论文第 ${pageNum} 页的内容翻译成中文。
+    const prompt = `本页文字从双栏PDF提取，可能存在左右栏交叉混排。
+请先理解全文内容和逻辑，然后按正确阅读顺序（先读完左栏，再读右栏）重新整理后翻译，
+确保译文段落顺序与论文原始逻辑一致。
+
+请将以下论文第 ${pageNum} 页的内容翻译成中文。
 
 基本要求：
 - 保留段落结构，每个自然段对应输出一段
@@ -94,7 +98,7 @@ ${text}`;
       },
       body: JSON.stringify({
         model: "deepseek-v4-pro",
-        max_tokens: 4000,
+        max_tokens: 8000,
         temperature: 0.3,
         stream: true,
         messages: [{ role: "user", content: prompt }],
