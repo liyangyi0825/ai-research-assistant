@@ -4,14 +4,6 @@ import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import { toast } from "sonner";
-import {
-  ResponsiveContainer,
-  LineChart, Line,
-  BarChart, Bar,
-  ScatterChart, Scatter,
-  XAxis, YAxis,
-  CartesianGrid, Tooltip, Legend,
-} from "recharts";
 import * as XLSX from "xlsx";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 
@@ -113,7 +105,6 @@ function applyRules(
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
 
-const CHART_COLORS = ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#F97316"];
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_ROWS       = 100_000;
 const SAMPLE_SIZE    = 100;
@@ -181,14 +172,24 @@ export default function DataCleanPage() {
   const [enabledRules,   setEnabledRules]   = useState<Set<string>>(new Set());
   const [cleanedHeaders, setCleanedHeaders] = useState<string[]>([]);
   const [cleanedRows,    setCleanedRows]    = useState<(string | number)[][]>([]);
-  const [activeChartIdx, setActiveChartIdx] = useState(0);
   const [analyzeError,   setAnalyzeError]   = useState("");
   const [activeTab,      setActiveTab]      = useState<"before" | "after">("before");
   const [isRestoredFromDB,   setIsRestoredFromDB]   = useState(false);
   const [truncatedOnRestore, setTruncatedOnRestore] = useState(false);
 
-  const fileInputRef     = useRef<HTMLInputElement>(null);
-  const chartRef         = useRef<HTMLDivElement>(null);
+  // ── 论文图表生成状态 ────────────────────────────────────────────────────────
+  const [chartXCol,      setChartXCol]      = useState("");
+  const [chartYCols,     setChartYCols]     = useState<string[]>([]);
+  const [chartType,      setChartType]      = useState<"line" | "bar" | "scatter">("line");
+  const [chartTitle,     setChartTitle]     = useState("");
+  const [chartXLabel,    setChartXLabel]    = useState("");
+  const [chartYLabel,    setChartYLabel]    = useState("");
+  const [chartGenerating,setChartGenerating]= useState(false);
+  const [chartPngUrl,    setChartPngUrl]    = useState("");
+  const [chartSvgUrl,    setChartSvgUrl]    = useState("");
+  const [chartError,     setChartError]     = useState("");
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 页面加载时从 DB 恢复最近一次清洗结果
   useEffect(() => {
@@ -317,6 +318,8 @@ export default function DataCleanPage() {
     setAnalyzeError("");
     setIsRestoredFromDB(false);
     setTruncatedOnRestore(false);
+    setChartXCol(""); setChartYCols([]); setChartTitle("");
+    setChartXLabel(""); setChartYLabel(""); setChartPngUrl(""); setChartSvgUrl(""); setChartError("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -337,8 +340,19 @@ export default function DataCleanPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "分析失败");
-      setAnalysis(data as AnalysisResult);
-      setEnabledRules(new Set((data as AnalysisResult).rules.map((r: CleaningRule) => r.id)));
+      const a = data as AnalysisResult;
+      setAnalysis(a);
+      setEnabledRules(new Set(a.rules.map((r: CleaningRule) => r.id)));
+      // 用 AI 推荐的第一个图表预填轴配置
+      if (a.charts?.length > 0) {
+        const first = a.charts[0];
+        setChartXCol(first.x);
+        setChartYCols(first.y);
+        setChartType(first.type as "line" | "bar" | "scatter");
+        setChartTitle(first.title ?? "");
+        setChartXLabel(first.x);
+        setChartYLabel("");
+      }
       setPhase("plan");
     } catch (err) {
       setAnalyzeError(err instanceof Error ? err.message : "分析失败，请重试");
@@ -355,8 +369,17 @@ export default function DataCleanPage() {
     setCleanedHeaders(h);
     setCleanedRows(r);
     setPhase("done");
-    setActiveChartIdx(0);
     setActiveTab("after");
+    setChartPngUrl(""); setChartSvgUrl(""); setChartError("");
+    // 用清洗后实际的列名更新图表 x/y（防止 rename 后名字变了）
+    if (analysis.charts?.length > 0) {
+      const first = analysis.charts[0];
+      setChartXCol(first.x);
+      setChartYCols(first.y);
+      setChartType(first.type as "line" | "bar" | "scatter");
+      setChartTitle(first.title ?? "");
+      setChartXLabel(first.x);
+    }
     setIsRestoredFromDB(false);
     setTruncatedOnRestore(false);
     saveCleanSession(h, r, analysis, fileName, totalRows, rawHeaders.length);
@@ -364,80 +387,53 @@ export default function DataCleanPage() {
 
   // ── 下载 ─────────────────────────────────────────────────────────────────
 
+  // ── 论文图表生成 ──────────────────────────────────────────────────────────
+
+  async function handleGenerateChart() {
+    if (!chartXCol || chartYCols.length === 0) {
+      toast.error("请先选择 X 轴和至少一个 Y 轴列");
+      return;
+    }
+    setChartGenerating(true);
+    setChartError("");
+    setChartPngUrl("");
+    setChartSvgUrl("");
+    try {
+      // 把清洗后数据转成 [{列名: 值}] 格式传给后端
+      const dataRows = cleanedRows.map(row => {
+        const obj: Record<string, string | number> = {};
+        cleanedHeaders.forEach((h, i) => { obj[h] = row[i]; });
+        return obj;
+      });
+      const res = await fetch("/api/generate-chart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          data:       dataRows,
+          chart_type: chartType,
+          x_col:      chartXCol,
+          y_cols:     chartYCols,
+          title:      chartTitle,
+          x_label:    chartXLabel || chartXCol,
+          y_label:    chartYLabel,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "生成失败");
+      setChartPngUrl(json.pngUrl + "?t=" + Date.now());
+      setChartSvgUrl(json.svgUrl);
+    } catch (e) {
+      setChartError(e instanceof Error ? e.message : "生成失败，请重试");
+    } finally {
+      setChartGenerating(false);
+    }
+  }
+
   function handleDownloadExcel() {
     const ws = XLSX.utils.aoa_to_sheet([cleanedHeaders, ...cleanedRows.map(r => r.map(String))]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "清洗后数据");
     XLSX.writeFile(wb, fileName.replace(/\.[^.]+$/, "") + "_cleaned.xlsx");
-  }
-
-  async function handleDownloadPng() {
-    if (!chartRef.current) return;
-    try {
-      const { toPng } = await import("html-to-image");
-      const url = await toPng(chartRef.current, { backgroundColor: "#fff", pixelRatio: 2 });
-      const a   = document.createElement("a");
-      a.href     = url;
-      a.download = `chart_${activeChartIdx + 1}.png`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    } catch {
-      toast.error("图表导出失败，请重试");
-    }
-  }
-
-  // ── 图表渲染 ──────────────────────────────────────────────────────────────
-
-  const chartObjects = cleanedRows.map(row => {
-    const obj: Record<string, string | number> = {};
-    cleanedHeaders.forEach((h, i) => { obj[h] = row[i]; });
-    return obj;
-  });
-
-  function renderChart(chart: ChartSuggestion) {
-    if (chart.type === "line") return (
-      <ResponsiveContainer width="100%" height={280}>
-        <LineChart data={chartObjects}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey={chart.x} tick={{ fontSize: 11 }} />
-          <YAxis tick={{ fontSize: 11 }} />
-          <Tooltip />
-          <Legend />
-          {chart.y.map((col, i) => (
-            <Line key={col} type="monotone" dataKey={col}
-              stroke={CHART_COLORS[i % CHART_COLORS.length]} dot={false} strokeWidth={2} />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
-    );
-    if (chart.type === "bar") return (
-      <ResponsiveContainer width="100%" height={280}>
-        <BarChart data={chartObjects}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey={chart.x} tick={{ fontSize: 11 }} />
-          <YAxis tick={{ fontSize: 11 }} />
-          <Tooltip />
-          <Legend />
-          {chart.y.map((col, i) => (
-            <Bar key={col} dataKey={col} fill={CHART_COLORS[i % CHART_COLORS.length]} />
-          ))}
-        </BarChart>
-      </ResponsiveContainer>
-    );
-    if (chart.type === "scatter") return (
-      <ResponsiveContainer width="100%" height={280}>
-        <ScatterChart>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis type="number" dataKey={chart.x}    name={chart.x}    tick={{ fontSize: 11 }} />
-          <YAxis type="number" dataKey={chart.y[0]} name={chart.y[0]} tick={{ fontSize: 11 }} />
-          <Tooltip cursor={{ strokeDasharray: "3 3" }} />
-          <Legend />
-          <Scatter name={chart.title} data={chartObjects} fill={CHART_COLORS[0]} />
-        </ScatterChart>
-      </ResponsiveContainer>
-    );
-    return null;
   }
 
   // ── 渲染 ──────────────────────────────────────────────────────────────────
@@ -657,47 +653,162 @@ export default function DataCleanPage() {
             </div>
           )}
 
-          {/* ⑤ 图表预览 */}
-          {phase === "done" && analysis && analysis.charts.length > 0 && (
+          {/* ⑤ 论文图表生成 */}
+          {phase === "done" && cleanedHeaders.length > 0 && (
             <div className="bg-white rounded-2xl shadow-sm border border-indigo-100 overflow-hidden">
               <div className="px-4 sm:px-5 py-3 sm:py-4 border-b border-indigo-50 bg-indigo-50">
-                <h2 className="font-semibold text-indigo-900">📈 AI 推荐图表</h2>
-                <p className="text-xs text-indigo-500 mt-0.5">基于清洗后的数据生成</p>
+                <h2 className="font-semibold text-indigo-900">📈 论文图表生成</h2>
+                <p className="text-xs text-indigo-500 mt-0.5">基于清洗后数据，生成可发表的高质量图表（300 DPI）</p>
               </div>
 
-              {/* 图表 Tab */}
-              {analysis.charts.length > 1 && (
-                <div className="flex border-b border-gray-100">
-                  {analysis.charts.map((chart, i) => (
-                    <button
-                      key={chart.id}
-                      onClick={() => setActiveChartIdx(i)}
-                      className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
-                        activeChartIdx === i
-                          ? "text-indigo-600 border-b-2 border-indigo-500 bg-indigo-50/30"
-                          : "text-gray-500 hover:text-gray-700"
-                      }`}
+              <div className="p-4 sm:p-5 space-y-4">
+                {/* 轴配置区 */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* 图表类型 */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">图表类型</label>
+                    <select
+                      value={chartType}
+                      onChange={e => setChartType(e.target.value as "line" | "bar" | "scatter")}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
                     >
-                      {chart.title}
-                    </button>
-                  ))}
-                </div>
-              )}
+                      <option value="line">折线图</option>
+                      <option value="bar">柱状图</option>
+                      <option value="scatter">散点图</option>
+                    </select>
+                  </div>
 
-              {/* 图表区域（ref 用于 PNG 导出） */}
-              <div className="p-4">
-                <div ref={chartRef} className="bg-white p-2 rounded-lg">
-                  <p className="text-sm font-medium text-gray-700 mb-3 text-center">
-                    {analysis.charts[activeChartIdx]?.title}
-                  </p>
-                  {analysis.charts[activeChartIdx] && renderChart(analysis.charts[activeChartIdx])}
-                </div>
-              </div>
+                  {/* X 轴 */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">X 轴列</label>
+                    <select
+                      value={chartXCol}
+                      onChange={e => setChartXCol(e.target.value)}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                    >
+                      <option value="">-- 选择 X 轴 --</option>
+                      {cleanedHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </div>
 
-              <div className="px-4 pb-4">
-                <Button variant="outline" onClick={handleDownloadPng} className="w-full sm:w-auto">
-                  ⬇ 下载图表 PNG
+                  {/* X 轴标签 */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">X 轴标签（可选）</label>
+                    <input
+                      type="text"
+                      value={chartXLabel}
+                      onChange={e => setChartXLabel(e.target.value)}
+                      placeholder={chartXCol || "例：时间（小时）"}
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                    />
+                  </div>
+
+                  {/* Y 轴标签 */}
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">Y 轴标签（可选）</label>
+                    <input
+                      type="text"
+                      value={chartYLabel}
+                      onChange={e => setChartYLabel(e.target.value)}
+                      placeholder="例：电力负荷 (MW)"
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                    />
+                  </div>
+
+                  {/* 图表标题 */}
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-semibold text-gray-500 mb-1">图表标题（可选）</label>
+                    <input
+                      type="text"
+                      value={chartTitle}
+                      onChange={e => setChartTitle(e.target.value)}
+                      placeholder="例：三天电力负荷趋势对比"
+                      className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                    />
+                  </div>
+                </div>
+
+                {/* Y 轴多选 */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-2">
+                    Y 轴列（可多选，已选 {chartYCols.length} 列）
+                  </label>
+                  <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto p-1">
+                    {cleanedHeaders.filter(h => h !== chartXCol).map(h => {
+                      const checked = chartYCols.includes(h);
+                      return (
+                        <label
+                          key={h}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+                            checked
+                              ? "border-indigo-400 bg-indigo-50 text-indigo-700 font-medium"
+                              : "border-gray-200 text-gray-600 hover:border-indigo-200"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={e => {
+                              setChartYCols(prev =>
+                                e.target.checked ? [...prev, h] : prev.filter(c => c !== h)
+                              );
+                            }}
+                            className="w-3 h-3 accent-indigo-500"
+                          />
+                          {h}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 生成按钮 */}
+                <Button
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
+                  onClick={handleGenerateChart}
+                  disabled={chartGenerating || !chartXCol || chartYCols.length === 0}
+                >
+                  {chartGenerating ? (
+                    <span className="inline-flex items-center gap-2"><DotLoader /> 生成中，请稍候…</span>
+                  ) : "🎨 生成论文图表"}
                 </Button>
+
+                {/* 错误提示 */}
+                {chartError && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-600">
+                    ❌ {chartError}
+                  </div>
+                )}
+
+                {/* 预览区 */}
+                {chartPngUrl && (
+                  <div className="space-y-3">
+                    <p className="text-xs font-semibold text-gray-500">预览（点击可放大）</p>
+                    <a href={chartPngUrl} target="_blank" rel="noreferrer">
+                      <img
+                        src={chartPngUrl}
+                        alt="论文图表预览"
+                        className="w-full rounded-xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow"
+                      />
+                    </a>
+                    <div className="flex gap-2">
+                      <a
+                        href={chartPngUrl}
+                        download
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        ⬇ 下载 PNG（300 DPI）
+                      </a>
+                      <a
+                        href={chartSvgUrl}
+                        download
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                      >
+                        ⬇ 下载 SVG（矢量）
+                      </a>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
