@@ -7,7 +7,9 @@ export async function GET() {
     return NextResponse.json({ error: "API Key 未配置" });
   }
 
-  // 用最简单的模型发一条测试消息
+  // 显示 key 的前4位和后4位，用于核对是否是正确的 key
+  const keyHint = `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}`;
+
   const res = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -24,6 +26,7 @@ export async function GET() {
 
   const body = await res.text();
   return NextResponse.json({
+    keyHint,
     status: res.status,
     response: body,
   });
