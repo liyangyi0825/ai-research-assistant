@@ -745,7 +745,7 @@ export default function DataCleanPage() {
                     Y 轴列（可多选，已选 {chartYCols.length} 列）
                   </label>
                   <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto p-1">
-                    {cleanedHeaders.filter(h => h !== chartXCol).map(h => {
+                    {[...new Set(cleanedHeaders.filter(h => h !== chartXCol))].map(h => {
                       const checked = chartYCols.includes(h);
                       return (
                         <label

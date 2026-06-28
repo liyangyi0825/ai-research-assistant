@@ -92,6 +92,8 @@ if chart_type in ('line', 'scatter'):
     ax.set_xticks(shown_pos)
     ax.set_xticklabels(shown_labels, rotation=45, ha='right')
 
+if not y_label and y_cols:
+    y_label = y_cols[0] if len(y_cols) == 1 else '数值'
 ax.set_xlabel(x_label)
 ax.set_ylabel(y_label)
 if title:
