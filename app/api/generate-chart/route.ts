@@ -75,6 +75,8 @@ export async function POST(req: NextRequest) {
     // 把绝对路径转为公开 URL（/charts/xxx.png）
     const pngUrl = "/charts/" + path.basename(result.png);
     const svgUrl = "/charts/" + path.basename(result.svg);
+    console.log('[chart] 返回前端 URL:', { pngUrl, svgUrl });
+    console.log('[chart] 文件实际路径:', { png: result.png, svg: result.svg });
 
     return Response.json({ pngUrl, svgUrl });
   } catch (error) {
