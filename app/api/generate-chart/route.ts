@@ -22,6 +22,10 @@ export async function POST(req: NextRequest) {
       y_label?: string;
     };
 
+    console.log('[chart] 收到请求:', { x_col: body.x_col, y_cols: body.y_cols, chart_type: body.chart_type });
+    console.log('[chart] Python路径:', PYTHON);
+    console.log('[chart] 脚本路径:', SCRIPT);
+
     if (!body.data?.length || !body.x_col || !body.y_cols?.length) {
       return Response.json({ error: "参数不完整" }, { status: 400 });
     }
@@ -39,8 +43,10 @@ export async function POST(req: NextRequest) {
 
     const result = await new Promise<{ png: string; svg: string }>((resolve, reject) => {
       execFile(PYTHON, [SCRIPT, config], { timeout: 30_000 }, (err, stdout, stderr) => {
+        console.log('[chart] stdout:', stdout);
+        console.log('[chart] stderr:', stderr);
+        console.log('[chart] error:', err);
         if (err) {
-          console.error("[generate-chart] Python error:", stderr);
           reject(new Error(stderr || err.message));
           return;
         }
@@ -48,8 +54,7 @@ export async function POST(req: NextRequest) {
           const parsed = JSON.parse(stdout.trim());
           resolve(parsed);
         } catch {
-          console.error("[generate-chart] stdout parse error:", stdout);
-          reject(new Error("Python 输出解析失败"));
+          reject(new Error("Python 输出解析失败: " + stdout.slice(0, 200)));
         }
       });
     });

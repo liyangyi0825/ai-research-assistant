@@ -739,7 +739,8 @@ export default function DataCleanPage() {
                       return (
                         <label
                           key={h}
-                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+                          title={h}
+                          className={`flex items-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs cursor-pointer transition-colors break-all ${
                             checked
                               ? "border-indigo-400 bg-indigo-50 text-indigo-700 font-medium"
                               : "border-gray-200 text-gray-600 hover:border-indigo-200"
@@ -753,7 +754,7 @@ export default function DataCleanPage() {
                                 e.target.checked ? [...prev, h] : prev.filter(c => c !== h)
                               );
                             }}
-                            className="w-3 h-3 accent-indigo-500"
+                            className="w-3 h-3 mt-0.5 accent-indigo-500 shrink-0"
                           />
                           {h}
                         </label>

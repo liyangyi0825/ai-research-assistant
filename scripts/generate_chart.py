@@ -81,7 +81,7 @@ ax.set_ylabel(y_label)
 if title:
     ax.set_title(title, fontsize=15, fontweight='bold', pad=12)
 if len(y_cols) > 1:
-    ax.legend()
+    ax.legend(fontsize=9, loc='best', framealpha=0.8)
 ax.spines['top'].set_visible(False)
 ax.spines['right'].set_visible(False)
 plt.tight_layout()
