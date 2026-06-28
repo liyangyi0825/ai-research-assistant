@@ -1,4 +1,4 @@
-// 后端接口：根据研究课题生成中英双语检索词组合
+﻿// 后端接口：根据研究课题生成中英双语检索词组合
 // 路径：POST /api/keywords
 
 import { NextRequest, NextResponse } from "next/server";
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   let userId: string | null = null;
 
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }

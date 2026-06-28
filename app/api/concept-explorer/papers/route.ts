@@ -1,4 +1,4 @@
-// 后端接口：从学术数据库搜索概念相关论文
+﻿// 后端接口：从学术数据库搜索概念相关论文
 // 路径：POST /api/concept-explorer/papers
 // 中文概念自动翻译成英文再搜索
 // - oldest（最早论文）：OpenAlex API，按发表年份升序
@@ -118,7 +118,7 @@ export async function POST(req: NextRequest) {
 
     let searchTerm = rawConcept;
     if (hasChinese(rawConcept)) {
-      const apiKey = process.env.ANTHROPIC_API_KEY;
+      const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
       if (apiKey) {
         searchTerm = await translateToEnglish(rawConcept, apiKey);
       }

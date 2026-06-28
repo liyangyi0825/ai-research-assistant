@@ -1,4 +1,4 @@
-// 后端接口：接收论文文字，调用 Claude API 生成结构化总结（流式输出）
+﻿// 后端接口：接收论文文字，调用 Claude API 生成结构化总结（流式输出）
 // 路径：POST /api/summarize
 // ⚠️ API Key 在服务器端读取，绝不暴露给浏览器
 
@@ -10,7 +10,7 @@ const DB_SAVE_INTERVAL = 400; // 每累积 400 个字符写一次数据库
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return NextResponse.json(
         { error: "服务器未配置 API Key，请检查 .env.local 文件" },

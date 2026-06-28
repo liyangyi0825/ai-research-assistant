@@ -1,4 +1,4 @@
-// POST /api/papers/search
+﻿// POST /api/papers/search
 // 输入：{ keywords: string（英文检索词）, topic: string（用户课题） }
 // 输出：{ papers: AnalyzedPaper[] }
 // 流程：Semantic Scholar 搜索 → Claude 一次性批量分析相关性 + 翻译标题
@@ -33,7 +33,7 @@ export interface AnalyzedPaper {
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
     // 复用 keyword_gen 配额（AI 精准搜索消耗一次）

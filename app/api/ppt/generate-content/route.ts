@@ -1,4 +1,4 @@
-// POST /api/ppt/generate-content
+﻿// POST /api/ppt/generate-content
 // 输入：{ paperContent: string, scene: "defense" | "meeting" }
 // 输出：{ pptContent: PptContent } 结构化 JSON，供前端预览和后续生成 PPTX 文件使用
 
@@ -106,7 +106,7 @@ export interface PptContent {
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
     const { allowed, used, limit, userId } = await checkUsageLimit("ppt_generate");

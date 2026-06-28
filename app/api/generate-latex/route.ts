@@ -1,4 +1,4 @@
-// POST /api/generate-latex
+﻿// POST /api/generate-latex
 // 输入：{ paperContent: string }
 // 输出：ZIP 文件（含 summary.tex + references.bib）
 // 用途：将论文内容转为 LaTeX 结构化总结，可在 Overleaf 中用 XeLaTeX 编译
@@ -11,7 +11,7 @@ import JSZip from "jszip";
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return Response.json({ error: "服务器未配置 API Key，请检查 .env.local 文件" }, { status: 500 });
     }

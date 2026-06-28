@@ -1,4 +1,4 @@
-// 后端接口：基于论文内容进行对话（流式输出）
+﻿// 后端接口：基于论文内容进行对话（流式输出）
 // 路径：POST /api/chat
 
 import { NextRequest, NextResponse, after } from "next/server";
@@ -7,7 +7,7 @@ import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return NextResponse.json(
         { error: "服务器未配置 API Key" },

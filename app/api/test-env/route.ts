@@ -1,8 +1,8 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 
 export async function GET() {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
   if (!apiKey) {
     return NextResponse.json({ error: "API Key 未配置" });
   }

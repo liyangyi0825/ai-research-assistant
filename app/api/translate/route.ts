@@ -1,4 +1,4 @@
-// 后端接口：接收论文段落列表，调用 Claude API 流式翻译
+﻿// 后端接口：接收论文段落列表，调用 Claude API 流式翻译
 // 路径：POST /api/translate
 // 输入：{ paragraphs: string[] }  ← 已在客户端拆好的段落数组
 // 输出：SSE 流，翻译文字中用 [|||] 分隔每个段落的译文
@@ -9,7 +9,7 @@ import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }

@@ -1,4 +1,4 @@
-// 科研档案 AI 整理：把 5 个问答整理成结构化档案
+﻿// 科研档案 AI 整理：把 5 个问答整理成结构化档案
 // 路径：POST /api/profile/summarize
 
 import { NextRequest, NextResponse } from "next/server";
@@ -15,7 +15,7 @@ const QUESTIONS = [
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
     const supabase = await getSupabaseAuthClient();

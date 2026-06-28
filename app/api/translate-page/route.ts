@@ -1,4 +1,4 @@
-// 按页翻译接口：每次翻译 PDF 的一页
+﻿// 按页翻译接口：每次翻译 PDF 的一页
 // 只在第一页（isFirst=true）检查并记录用量，整篇 PDF 只消耗一次配额
 import { NextRequest } from "next/server";
 import { after } from "next/server";
@@ -7,7 +7,7 @@ import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return Response.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }

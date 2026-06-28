@@ -1,4 +1,4 @@
-// POST /api/context-chat
+﻿// POST /api/context-chat
 // 通用上下文对话接口（检索词页 / 概念探索页复用）
 // 消耗 chat 配额，流式输出
 
@@ -8,7 +8,7 @@ import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }

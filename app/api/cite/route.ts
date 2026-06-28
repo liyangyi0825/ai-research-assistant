@@ -1,4 +1,4 @@
-// 后端接口：从论文内容生成 BibTeX 和 GB/T 7714 引用格式
+﻿// 后端接口：从论文内容生成 BibTeX 和 GB/T 7714 引用格式
 // 路径：POST /api/cite
 
 import { NextRequest, NextResponse } from "next/server";
@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
   let userId: string | null = null;
 
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }

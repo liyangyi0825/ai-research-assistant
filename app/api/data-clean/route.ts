@@ -1,4 +1,4 @@
-// POST /api/data-clean
+﻿// POST /api/data-clean
 // 输入：{ headers: string[], sample: string[][], totalRows: number }
 // 输出：{ columns, issues, rules, charts } 清洗方案 JSON
 // 只发前 100 行样本给 Claude，清洗本身在前端执行
@@ -10,7 +10,7 @@ import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return Response.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }

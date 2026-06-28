@@ -1,4 +1,4 @@
-// POST /api/papers/recommend
+﻿// POST /api/papers/recommend
 // 输入：{ papers: AnalyzedPaper[], topic: string }
 // 输出：SSE 流。第一行是 LABELS JSON，后续是推荐分析文本
 // 不单独消耗配额（与 AI 精准搜索共享一次 keyword_gen）
@@ -10,7 +10,7 @@ import type { AnalyzedPaper } from "@/app/api/papers/search/route";
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
     const supabase = await getSupabaseAuthClient();

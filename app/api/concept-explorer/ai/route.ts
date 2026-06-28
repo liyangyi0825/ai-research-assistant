@@ -1,4 +1,4 @@
-// 后端接口：概念探索器的 Claude 流式 AI（区块 1/3/4）
+﻿// 后端接口：概念探索器的 Claude 流式 AI（区块 1/3/4）
 // 路径：POST /api/concept-explorer/ai
 
 import { NextRequest, NextResponse, after } from "next/server";
@@ -98,7 +98,7 @@ ${originText.slice(0, 500) || "（暂无）"}
 
 export async function POST(req: NextRequest) {
   try {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }
