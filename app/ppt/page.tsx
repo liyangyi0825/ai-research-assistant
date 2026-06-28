@@ -43,6 +43,7 @@ export default function PptPage() {
   const [restoredPptTitle, setRestoredPptTitle] = useState<string | null>(null);
   const [restoredTotalSlides, setRestoredTotalSlides] = useState<number | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const pptIdRef = useRef<string | null>(null);
   const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
   // 获取当前用户 ID（浏览器端，不走 API）
@@ -65,6 +66,7 @@ export default function PptPage() {
         isComplete?: boolean;
         pptTitle?: string;
         totalSlides?: number;
+        pptId?: string;
         timestamp: number;
       };
       if (Date.now() - data.timestamp > SEVEN_DAYS) {
@@ -75,12 +77,37 @@ export default function PptPage() {
       setFileName(data.fileName);
       setExtractedText(data.paperContent);
       setUploadStage("done");
-      setPptStatus("selecting");
       setRestoredScene(data.pptScene ?? null);
       setRestoredIsComplete(data.isComplete ?? false);
       setRestoredPptTitle(data.pptTitle ?? null);
       setRestoredTotalSlides(data.totalSlides ?? null);
-      setShowRestoreBanner(true);
+
+      // 如果有 pptId，从 Supabase 拉取完整幻灯片内容并直接恢复
+      if (data.pptId && data.isComplete) {
+        pptIdRef.current = data.pptId;
+        fetch(`/api/ppt/sessions?pptId=${encodeURIComponent(data.pptId)}`)
+          .then(r => r.json())
+          .then((res: { ppt?: { scene: string; ppt_data: unknown } | null }) => {
+            if (res.ppt?.ppt_data) {
+              setPptScene(res.ppt.scene as "defense" | "meeting");
+              setPptContent(res.ppt.ppt_data);
+              setPptStatus("done");
+              setUploadStage("done");
+              // 不显示 banner，直接展示结果
+            } else {
+              // 拉取失败，降级到 banner + 重新生成
+              setPptStatus("selecting");
+              setShowRestoreBanner(true);
+            }
+          })
+          .catch(() => {
+            setPptStatus("selecting");
+            setShowRestoreBanner(true);
+          });
+      } else {
+        setPptStatus("selecting");
+        setShowRestoreBanner(true);
+      }
     } catch { /* 静默 */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
@@ -98,6 +125,7 @@ export default function PptPage() {
         isComplete: pptStatus === "done",
         pptTitle: content?.title ?? null,
         totalSlides: content?.total_pages ?? null,
+        pptId: pptIdRef.current ?? null,
         timestamp: Date.now(),
       }));
     } catch { /* 静默 */ }
@@ -153,6 +181,7 @@ export default function PptPage() {
 
   function handleReset() {
     if (userId) try { localStorage.removeItem(`iyanhub_ppt_${userId}`); } catch { /* 静默 */ }
+    pptIdRef.current = null;
     setUploadStage("idle");
     setExtractedText("");
     setFileName("");
@@ -216,6 +245,18 @@ export default function PptPage() {
       if (result.error) throw new Error(result.error);
       setPptContent(result.pptContent);
       setPptStatus("done");
+
+      // 保存到 Supabase（fire-and-forget，失败不影响主流程）
+      fetch("/api/ppt/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName, scene, pptData: result.pptContent }),
+      })
+        .then(r => r.json())
+        .then((res: { id?: string }) => {
+          if (res.id) pptIdRef.current = res.id;
+        })
+        .catch(() => {});
     } catch (err) {
       setPptError(err instanceof Error ? err.message : "生成失败，请重试");
       setPptStatus("error");
