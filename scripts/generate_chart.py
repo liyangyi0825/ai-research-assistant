@@ -16,14 +16,11 @@ x_label = config.get('x_label', x_col)
 y_label = config.get('y_label', '')
 output_path = config['output_path']
 
-# 尝试加载中文字体（服务器上有 WenQuanYi 等）
-chinese_fonts = ['WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC',
-                 'SimHei', 'Microsoft YaHei', 'DejaVu Sans']
-available = {f.name for f in fm.fontManager.ttflist}
-chosen_font = next((f for f in chinese_fonts if f in available), 'DejaVu Sans')
+# 修复1：直接加载已知路径的中文字体
+fm.fontManager.addfont('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc')
+plt.rcParams['font.family'] = ['WenQuanYi Micro Hei', 'DejaVu Sans']
 
 plt.rcParams.update({
-    'font.family': chosen_font,
     'font.size': 12,
     'axes.linewidth': 1.5,
     'axes.labelsize': 14,
@@ -37,26 +34,47 @@ plt.rcParams.update({
     'savefig.bbox': 'tight',
 })
 
+# 修复2：X轴列名匹配 + 调试信息
+print(f"[debug] columns: {list(data.columns)}", file=sys.stderr)
+print(f"[debug] x_col: {x_col}", file=sys.stderr)
+
+if x_col not in data.columns:
+    print(f"[debug] x_col not found, fallback to first column", file=sys.stderr)
+    x_col = data.columns[0]
+
+print(f"[debug] x data: {data[x_col].tolist()[:5]}", file=sys.stderr)
+
+# X轴统一用位置索引绘图，字符串标签单独设置
+x_raw = data[x_col].fillna('').astype(str).tolist()
+x_pos = list(range(len(x_raw)))
+
 fig, ax = plt.subplots(figsize=(8, 6))
 colors = ['#1f77b4', '#d62728', '#2ca02c', '#ff7f0e', '#9467bd']
 markers = ['o', 's', '^', 'D', 'v']
 
 for i, y_col in enumerate(y_cols):
-    x = data[x_col]
     y = pd.to_numeric(data[y_col], errors='coerce')
     color = colors[i % len(colors)]
     marker = markers[i % len(markers)]
     if chart_type == 'line':
-        ax.plot(x, y, color=color, marker=marker, markevery=max(1, len(x)//20),
-                label=y_col)
+        ax.plot(x_pos, y, color=color, marker=marker,
+                markevery=max(1, len(x_pos) // 20), label=y_col)
     elif chart_type == 'scatter':
-        ax.scatter(x, y, color=color, marker=marker, label=y_col)
+        ax.scatter(x_pos, y, color=color, marker=marker, label=y_col)
     elif chart_type == 'bar':
         width = 0.8 / len(y_cols)
-        x_pos = np.arange(len(x))
-        ax.bar(x_pos + i * width, y, width=width, color=color, label=y_col)
-        ax.set_xticks(x_pos + width * (len(y_cols) - 1) / 2)
-        ax.set_xticklabels(x, rotation=45, ha='right')
+        ax.bar([p + i * width for p in x_pos], y, width=width, color=color, label=y_col)
+        if i == len(y_cols) - 1:
+            ax.set_xticks([p + width * (len(y_cols) - 1) / 2 for p in x_pos])
+            ax.set_xticklabels(x_raw, rotation=45, ha='right')
+
+# 折线图和散点图统一设置 X 轴刻度标签
+if chart_type in ('line', 'scatter'):
+    step = max(1, len(x_pos) // 24)  # 最多显示 24 个刻度，避免拥挤
+    shown_pos = x_pos[::step]
+    shown_labels = x_raw[::step]
+    ax.set_xticks(shown_pos)
+    ax.set_xticklabels(shown_labels, rotation=45, ha='right')
 
 ax.set_xlabel(x_label)
 ax.set_ylabel(y_label)
