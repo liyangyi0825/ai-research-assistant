@@ -88,6 +88,14 @@ function Contents({ s }: { s: ContentsSlide }) {
   const items = s.items || [];
   const cols = items.length > 6 ? 2 : 1;
   const half = Math.ceil(items.length / cols);
+  // 可用高度：560 - 100(header) - 20(bottom padding) = 440px，均匀分配
+  const availH = 440;
+  const itemH = 52;
+  const totalItemH = half * itemH;
+  const totalGap = availH - totalItemH;
+  // 顶部留白 + 间距均匀分布
+  const gapBetween = half > 1 ? (totalGap - 20) / (half - 1) : 0;
+  const topPad = half > 1 ? 110 : 100 + (availH - itemH) / 2;
   return (
     <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", left: 0, top: 0, width: 12, bottom: 0, background: C.NAVY }} />
@@ -99,9 +107,9 @@ function Contents({ s }: { s: ContentsSlide }) {
         const row  = i % half;
         const xBase = cols === 2 ? (col === 0 ? 50 : 530) : 80;
         const colW  = cols === 2 ? 440 : 880;
-        const yBase = 125 + row * 62;
+        const yBase = topPad + row * (itemH + gapBetween);
         return (
-          <div key={i} style={{ position: "absolute", left: xBase, top: yBase, width: colW, height: 46, display: "flex", alignItems: "center", gap: 12 }}>
+          <div key={i} style={{ position: "absolute", left: xBase, top: yBase, width: colW, height: itemH, display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.NAVY, color: C.WHITE, fontSize: f(11), fontWeight: 700,
               display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
               {i + 1}
@@ -120,13 +128,15 @@ function Section({ s }: { s: SectionSlide }) {
   return (
     <div style={{ position: "absolute", inset: 0, background: C.NAVY, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", right: -50, top: -50, width: 400, height: 400, background: C.NAVY_D }} />
-      <div style={{ position: "absolute", right: 0, top: 200, width: 350, height: 400, background: "#162E70" }} />
-      <div style={{ position: "absolute", left: 60, top: 100, color: "#2A4DA8", fontSize: f(80), fontWeight: 900,
+      <div style={{ position: "absolute", right: 0, top: 150, width: 350, height: 400, background: "#162E70" }} />
+      {/* 大数字居中偏上 */}
+      <div style={{ position: "absolute", left: 60, top: 130, color: "#2A4DA8", fontSize: f(80), fontWeight: 900,
         lineHeight: 1, fontFamily: "'Arial Black',Impact,sans-serif" }}>
         {s.number || "01"}
       </div>
-      <div style={{ position: "absolute", left: 60, top: 290, width: 200, height: 7, background: C.GOLD }} />
-      <div style={{ position: "absolute", left: 60, top: 310, width: 620, color: C.WHITE, fontSize: f(28), fontWeight: 700, lineHeight: 1.4 }}>
+      {/* 金线和标题置于页面垂直中央 */}
+      <div style={{ position: "absolute", left: 60, top: 248, width: 200, height: 7, background: C.GOLD }} />
+      <div style={{ position: "absolute", left: 60, top: 265, width: 620, color: C.WHITE, fontSize: f(28), fontWeight: 700, lineHeight: 1.4 }}>
         {s.title}
       </div>
     </div>
