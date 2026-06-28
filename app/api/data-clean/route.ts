@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model:       "deepseek-v4-pro",
-        max_tokens:  3000,
+        max_tokens:  8000,
         temperature: 0.1,
         messages: [{
           role: "user",
@@ -118,7 +118,8 @@ ${csvRows}
 
     const textBlock = data.content?.find((b: { type: string }) => b.type === "text");
     let raw: string = textBlock?.text ?? "";
-    // 防御：Claude 有时会加 ```json 代码块
+    console.log("[data-clean] raw:", raw.slice(0, 200));
+    // 防御：去掉 ```json 代码块 和 thinking 残留内容
     raw = raw.trim().replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "").trim();
 
     let result: unknown;
