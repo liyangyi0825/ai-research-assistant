@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
   const url = new URL(request.url);
   // 去掉 /api/anthropic-proxy 前缀，保留后面的路径（如 /v1/messages）
   const path = url.pathname.replace(/^\/api\/anthropic-proxy/, "");
-  const anthropicUrl = `https://api.anthropic.com${path}`;
+  const anthropicUrl = `https://api.deepseek.com/anthropic${path}`;
 
   // 转发请求头（只保留 Anthropic API 需要的）
   const forwardHeaders = new Headers();
