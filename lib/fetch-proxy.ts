@@ -16,15 +16,16 @@
  * - 开发/生产：若配置了 ANTHROPIC_API_BASE_URL，自动替换 Anthropic 端点
  * - 否则直接 fetch，不经过任何本地代理
  */
+// 默认指向 DeepSeek 兼容端点，可通过 ANTHROPIC_API_BASE_URL 覆盖
+const DEEPSEEK_BASE = "https://api.deepseek.com/anthropic";
+
 export async function fetchWithProxy(
   url: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  // 开发/生产都适用：若配置了自定义 API 地址（如 DeepSeek），替换 Anthropic 端点
-  const anthropicProxy = process.env.ANTHROPIC_API_BASE_URL;
-  if (anthropicProxy && url.startsWith("https://api.anthropic.com")) {
-    const proxyBase = anthropicProxy.replace(/\/$/, "");
-    url = url.replace("https://api.anthropic.com", proxyBase);
+  if (url.startsWith("https://api.anthropic.com")) {
+    const base = (process.env.ANTHROPIC_API_BASE_URL ?? DEEPSEEK_BASE).replace(/\/$/, "");
+    url = url.replace("https://api.anthropic.com", base);
   }
 
   return fetch(url, options);
