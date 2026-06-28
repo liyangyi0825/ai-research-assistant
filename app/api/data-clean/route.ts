@@ -51,6 +51,11 @@ export async function POST(req: NextRequest) {
           role: "user",
           content: `你是数据科学家，分析以下实验数据并制定清洗方案。
 
+请先根据数据的列名、数值范围和业务含义推断数据单位，不要假设数值必须在 0-100 范围内。
+如果数据是电力（MW/kW/GW）、温度（℃/K）、重量（kg/t）、距离（m/km）等物理量，合计或单值超过 100 是完全正常的。
+只有在列名明确包含"占比"、"率"、"%"、"百分比"等字样时，才将超过 100 视为可能的异常。
+在报告问题时，说明推断的数据单位和业务场景。
+
 数据概况：共 ${totalRows} 行，${headers.length} 列。样本（前 ${sample.length} 行）：
 
 ${csvHeader}
@@ -63,7 +68,7 @@ ${csvRows}
     { "original": "原始列名", "renamed": "规范列名（含单位，如 温度(℃)）", "type": "datetime|numeric|category|text" }
   ],
   "issues": [
-    "具体问题描述，含示例值或行数"
+    "具体问题描述，含示例值或行数（并说明推断的数据单位和业务场景）"
   ],
   "rules": [
     只使用以下 6 种规则类型（id 格式 r1/r2/r3...），每条一个对象：
@@ -71,7 +76,7 @@ ${csvRows}
     {"id":"r2","type":"rename_columns","description":"规范化所有列名"}
     {"id":"r3","type":"strip_unit","column":"重命名后的列名","unit":"℃","description":"去掉数字后的单位后缀"}
     {"id":"r4","type":"drop_missing","column":"重命名后的列名","description":"删除该列有缺失值的行（共N行）"}
-    {"id":"r5","type":"drop_outliers","column":"重命名后的列名","min":0,"max":100,"description":"删除超出范围的异常值"}
+    {"id":"r5","type":"drop_outliers","column":"重命名后的列名","min":最小合理值,"max":最大合理值,"description":"删除超出合理物理范围的异常值（范围应基于数据实际业务含义，而非固定0-100）"}
     {"id":"r6","type":"parse_number","column":"重命名后的列名","description":"将字符串列强制转为数字"}
   ],
   "charts": [
@@ -84,7 +89,8 @@ ${csvRows}
 - rules 和 charts 中引用的列名必须用 renamed 后的名称（非原始列名）
 - rename_columns 必须排在其他含 column 字段的规则之前
 - 数据良好则省略不需要的规则，至少包含 rename_columns
-- 不要使用 6 种之外的规则类型`,
+- 不要使用 6 种之外的规则类型
+- drop_outliers 的 min/max 必须基于该列的实际业务含义设定，禁止默认套用 0-100`,
         }],
       }),
     });
