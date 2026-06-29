@@ -61,14 +61,62 @@ async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
   }
 }
 
-// ── 每页状态 ───────────────────────────────────────────────────────────────
+// ── 每页状态（仅用于左侧 PDF 渲染和 OCR 阶段）──────────────────────────────
 type PageStatus = "pending" | "translating" | "done" | "error" | "empty";
 
 interface PageState {
-  canvasHeight: number; // CSS 像素高度，用于右侧对齐
-  text: string;         // PDF.js 提取的原文
-  translation: string;  // 流式翻译内容
+  canvasHeight: number;
+  text: string;
+  translation: string;
   status: PageStatus;
+}
+
+// ── 段落状态（右侧逐段翻译显示）──────────────────────────────────────────────
+type ParaStatus = "pending" | "translating" | "done" | "skipped";
+
+interface ParaState {
+  pageNum: number;
+  origText: string;
+  formulas: string[];
+  maskedText: string;
+  translation: string;
+  status: ParaStatus;
+}
+
+// 按双换行或句末换行切段落，保证每段不超过合理长度
+function splitIntoParagraphs(text: string): string[] {
+  const byDouble = text.split(/\n{2,}/).map(s => s.replace(/\n/g, " ").trim()).filter(s => s.length > 10);
+  if (byDouble.length > 1) return byDouble;
+
+  // 单换行回退：按句末 + 大写开头识别段落边界
+  const lines = text.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+  const result: string[] = [];
+  let cur = "";
+  for (const line of lines) {
+    if (cur && /[.!?]$/.test(cur) && /^[A-Z0-9]/.test(line)) {
+      result.push(cur.trim());
+      cur = line;
+    } else {
+      cur += (cur ? " " : "") + line;
+    }
+    if (cur.length > 600) { result.push(cur.trim()); cur = ""; }
+  }
+  if (cur.trim()) result.push(cur.trim());
+  return result.filter(s => s.length > 10);
+}
+
+// 超长段落按句子拆成 ≤maxLen 的块，每块单独请求，响应更快
+function splitLongPara(text: string, maxLen = 500): string[] {
+  if (text.length <= maxLen) return [text];
+  const result: string[] = [];
+  const sents = text.match(/[^.!?。！？]+[.!?。！？]+\s*/g) ?? [text];
+  let cur = "";
+  for (const s of sents) {
+    if (cur.length + s.length > maxLen && cur) { result.push(cur.trim()); cur = s; }
+    else { cur += s; }
+  }
+  if (cur.trim()) result.push(cur.trim());
+  return result;
 }
 
 // ── 翻译文本渲染（支持 KaTeX 数学公式 + 图表说明特殊样式）──────────────────
@@ -137,6 +185,7 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
   const [numPages, setNumPages]           = useState(0);
   const [renderedPages, setRenderedPages] = useState(0);
   const [pages, setPages]                 = useState<PageState[]>([]);
+  const [paras, setParas]                 = useState<ParaState[]>([]);
   const [transProgress, setTransProgress] = useState({ done: 0, total: 0 });
   const [ocrProgress, setOcrProgress]     = useState({ done: 0, total: 0 });
   const [phase, setPhase]                 = useState<"idle" | "rendering" | "ocr" | "translating" | "done">("idle");
@@ -155,6 +204,7 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
       if (!container) return;
       container.innerHTML = "";
       setPages([]);
+      setParas([]);
       setPhase("rendering");
       setGlobalError("");
 
@@ -299,112 +349,124 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
           return;
         }
 
-        // ── 阶段 1.5：应用预加载翻译（恢复会话时跳过已翻译页面）──────────────
-        const pageTranslations: string[] = new Array(initialPages.length).fill("");
-        if (initialTranslations && initialTranslations.length > 0) {
-          for (let i = 0; i < Math.min(initialPages.length, initialTranslations.length); i++) {
-            const pre = initialTranslations[i];
-            if (pre?.translation?.trim() && initialPages[i].status === "pending") {
-              initialPages[i].status = "done";
-              initialPages[i].translation = pre.translation;
-              pageTranslations[i] = pre.translation;
-            }
+        // ── 第二阶段：把所有页面文本拆成段落，逐段翻译 ─────────────────────────
+        const allParas: ParaState[] = [];
+        const pageTranslationsMap: Record<number, string> = {};
+
+        for (let i = 0; i < initialPages.length; i++) {
+          const pageText = initialPages[i].text;
+          if (!pageText.trim()) continue;
+
+          // 恢复会话：该页已有译文，整页作为一个"已完成"段落，不重复翻译
+          const preTranslation = initialTranslations?.[i]?.translation?.trim();
+          if (preTranslation) {
+            allParas.push({
+              pageNum: i + 1, origText: pageText, formulas: [], maskedText: pageText,
+              translation: preTranslation, status: "done",
+            });
+            pageTranslationsMap[i + 1] = preTranslation;
+            continue;
           }
-          setPages([...initialPages]);
+
+          for (const para of splitIntoParagraphs(pageText)) {
+            const { maskedText, formulas } = extractMathFormulas(para);
+            // 去掉占位符后剩余文本极少 → 全是公式，直接保留原文跳过翻译
+            const leftover = maskedText.replace(/⟨MATH_\d+⟩/g, "").trim();
+            const isFormulaOnly = leftover.length < 15;
+            allParas.push({
+              pageNum: i + 1, origText: para, formulas, maskedText,
+              translation: isFormulaOnly ? para : "",
+              status: isFormulaOnly ? "skipped" : "pending",
+            });
+          }
         }
 
-        // ── 第二阶段：翻译剩余未翻译页面 ─────────────────────────────────────
-        const translatableCount = initialPages.filter(p => p.status === "pending").length;
-        console.log("[translate-debug] totalChars:", totalChars, "| translatableCount:", translatableCount, "| initialTranslations:", initialTranslations?.length ?? "none", "| pages statuses:", initialPages.map(p => p.status).join(","));
-        console.log("[translate-debug] 第1页原文(前400字):\n", initialPages[0]?.text?.slice(0, 400) ?? "(空)");
-        console.log("[translate-debug] 第2页原文(前400字):\n", initialPages[1]?.text?.slice(0, 400) ?? "(空)");
-        setTransProgress({ done: 0, total: translatableCount });
+        setParas([...allParas]);
+        const pendingParas = allParas.filter(p => p.status === "pending");
+        setTransProgress({ done: 0, total: pendingParas.length });
         setPhase("translating");
 
         let translatedCount = 0;
         let isFirst = true;
 
-        for (let i = 0; i < initialPages.length; i++) {
+        for (let pi = 0; pi < allParas.length; pi++) {
           if (cancelled) break;
-          if (initialPages[i].status !== "pending") continue;
+          const para = allParas[pi];
 
-          setPages(prev => {
-            const next = [...prev];
-            next[i] = { ...next[i], status: "translating" };
-            return next;
-          });
+          if (para.status !== "pending") {
+            // 已跳过或已恢复的段落，直接累计到对应页
+            pageTranslationsMap[para.pageNum] =
+              (pageTranslationsMap[para.pageNum] ?? "") + para.translation + "\n\n";
+            continue;
+          }
+
+          // 标记为翻译中
+          allParas[pi] = { ...allParas[pi], status: "translating" };
+          setParas([...allParas]);
 
           try {
-            // 发送前提取公式替换为占位符，翻译完成后还原
-            const { maskedText, formulas } = extractMathFormulas(initialPages[i].text);
+            // 超长段落拆成 ≤500 字子块，每块单独请求，用户持续看到更新
+            const subChunks = splitLongPara(para.maskedText, 500);
+            let fullTranslation = "";
 
-            const res = await fetch("/api/translate-page", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                pageNum: i + 1,
-                text: maskedText,
-                isFirst,
-              }),
-              signal: AbortSignal.timeout(120000),
-            });
-
-            if (!res.ok) {
-              const data = await res.json().catch(() => ({}));
-              throw new Error((data as { error?: string }).error || "翻译失败");
-            }
-
-            isFirst = false;
-
-            // 本地变量追踪流式内容（同时更新 React state 用于显示）
-            let localText = "";
-            for await (const chunk of streamAnthropicSSE(res)) {
-              if (cancelled) break;
-              localText += chunk;
-              setPages(prev => {
-                const next = [...prev];
-                next[i] = { ...next[i], translation: next[i].translation + chunk };
-                return next;
+            for (const subChunk of subChunks) {
+              const res = await fetch("/api/translate-page", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pageNum: para.pageNum, text: subChunk, isFirst }),
+                signal: AbortSignal.timeout(60000),
               });
+              if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error((data as { error?: string }).error || "翻译失败");
+              }
+              isFirst = false;
+
+              let chunkText = "";
+              for await (const chunk of streamAnthropicSSE(res)) {
+                if (cancelled) break;
+                chunkText += chunk;
+                // 实时显示：流式阶段先显示含占位符的中间态
+                allParas[pi] = { ...allParas[pi], translation: fullTranslation + chunkText };
+                setParas([...allParas]);
+              }
+              // 子块完成后还原公式
+              fullTranslation += restoreMathFormulas(chunkText.trim(), para.formulas);
+              if (subChunks.length > 1) fullTranslation += " ";
             }
 
-            // 流结束后还原公式占位符，重新设置 translation 触发 KaTeX 重新渲染
-            localText = restoreMathFormulas(localText.trim(), formulas);
-            pageTranslations[i] = localText;
+            fullTranslation = fullTranslation.trim();
+            allParas[pi] = { ...allParas[pi], status: "done", translation: fullTranslation };
+            setParas([...allParas]);
 
-            setPages(prev => {
-              const next = [...prev];
-              next[i] = { ...next[i], status: "done", translation: localText };
-              return next;
-            });
+            pageTranslationsMap[para.pageNum] =
+              (pageTranslationsMap[para.pageNum] ?? "") + fullTranslation + "\n\n";
 
-            // 每页完成后通知父组件保存（await 保证顺序，避免 DB 写入竞争）
-            if (!cancelled && onPageTranslated) {
+            // 该段是本页最后一段时通知父组件保存
+            const isLastOfPage =
+              pi + 1 >= allParas.length || allParas[pi + 1].pageNum !== para.pageNum;
+            if (isLastOfPage && !cancelled && onPageTranslated) {
               await onPageTranslated(initialPages.map((p, idx) => ({
-                text:        p.text,
-                translation: pageTranslations[idx],
+                text: p.text,
+                translation: pageTranslationsMap[idx + 1] ?? "",
               })));
             }
+
+            translatedCount++;
+            setTransProgress({ done: translatedCount, total: pendingParas.length });
           } catch (e) {
-            console.error(`第 ${i + 1} 页翻译失败:`, e);
-            setPages(prev => {
-              const next = [...prev];
-              next[i] = { ...next[i], status: "error" };
-              return next;
-            });
+            console.error(`第 ${para.pageNum} 页段落翻译失败:`, e);
+            allParas[pi] = { ...allParas[pi], status: "done", translation: "【翻译失败，请刷新重试】" };
+            setParas([...allParas]);
             if (isFirst && e instanceof Error && e.message.includes("次数已用完")) {
               setGlobalError(e.message);
               break;
             }
           }
-
-          translatedCount++;
-          setTransProgress({ done: translatedCount, total: translatableCount });
         }
 
         if (!cancelled) {
           setPhase("done");
-          // 通知父组件翻译全部完成（用于标记 is_complete=true）
           if (onTranslationEnd) await onTranslationEnd();
         }
       } catch (err) {
@@ -569,70 +631,55 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
               className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-4"
             />
 
-            {/* 右：逐页翻译（模拟论文PDF样式） */}
+            {/* 右：逐段翻译（段落完成立即渲染） */}
             <div
               ref={rightRef}
-              className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-4"
+              className="w-1/2 overflow-y-auto overflow-x-hidden bg-gray-300 p-2"
             >
-              {pages.map((page, i) => (
-                <div
-                  key={i}
-                  style={{
-                    height: page.canvasHeight,
-                    marginBottom: 8,
-                    background: "#f5f5f5",
-                    borderLeft: "3px solid #d1d5db",
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
-                    overflow: "auto",
-                    padding: "20px 28px",
-                    fontFamily: '"Source Han Serif SC","Noto Serif SC","Songti SC",宋体,SimSun,serif',
-                    fontSize: "13px",
-                    lineHeight: "1.75",
-                    color: "#555",
-                    boxSizing: "border-box",
-                    display: "flex",
-                    flexDirection: "column",
-                  }}
-                >
-                  {/* 页码 */}
-                  <div style={{
-                    fontSize: "11px",
-                    color: "#9ca3af",
-                    fontFamily: "system-ui,sans-serif",
-                    borderBottom: "1px solid #f0f0f0",
-                    paddingBottom: "6px",
-                    marginBottom: "10px",
-                    flexShrink: 0,
-                  }}>
-                    第 {i + 1} 页
-                  </div>
-
-                  <div style={{ flex: 1, overflow: "auto" }}>
-                    {page.status === "pending" && <Skeleton />}
-
-                    {page.status === "translating" && (
-                      <div>
-                        <TranslationText text={page.translation} />
-                        <span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" />
+              {paras.length === 0 && phase !== "done" && (
+                <div className="p-4"><Skeleton /></div>
+              )}
+              {paras.map((para, idx) => {
+                const isFirstOfPage = idx === 0 || paras[idx - 1].pageNum !== para.pageNum;
+                return (
+                  <div key={idx}>
+                    {isFirstOfPage && (
+                      <div style={{
+                        fontSize: "11px", color: "#9ca3af",
+                        fontFamily: "system-ui,sans-serif",
+                        padding: "4px 10px",
+                        margin: idx > 0 ? "10px 0 4px" : "0 0 4px",
+                        background: "#e5e7eb", borderRadius: "4px",
+                      }}>
+                        第 {para.pageNum} 页
                       </div>
                     )}
-
-                    {page.status === "done" && <TranslationText text={page.translation} />}
-
-                    {page.status === "error" && (
-                      <span style={{ color: "#ef4444", fontSize: "12px", fontFamily: "system-ui" }}>
-                        第 {i + 1} 页翻译失败
-                      </span>
-                    )}
-
-                    {page.status === "empty" && (
-                      <span style={{ color: "#d1d5db", fontSize: "12px", fontFamily: "system-ui" }}>
-                        （此页无文字内容）
-                      </span>
-                    )}
+                    <div style={{
+                      marginBottom: 4,
+                      background: "#f5f5f5",
+                      borderLeft: "3px solid #d1d5db",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                      padding: "10px 16px",
+                      fontFamily: '"Source Han Serif SC","Noto Serif SC","Songti SC",宋体,SimSun,serif',
+                      fontSize: "13px", lineHeight: "1.75", color: "#555",
+                    }}>
+                      {para.status === "pending" && <Skeleton />}
+                      {para.status === "translating" && (
+                        <div>
+                          <TranslationText text={para.translation} />
+                          <span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" />
+                        </div>
+                      )}
+                      {para.status === "done" && <TranslationText text={para.translation} />}
+                      {para.status === "skipped" && (
+                        <span style={{ fontFamily: "monospace", fontSize: "12px", color: "#9ca3af" }}>
+                          {para.origText}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </>
         )}
