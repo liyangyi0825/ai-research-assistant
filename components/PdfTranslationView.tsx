@@ -7,6 +7,26 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 
+// ── 数学公式保护（防止翻译 API 破坏公式）────────────────────────────────────
+const MATH_PLACEHOLDER_RE = /⟨MATH_(\d+)⟩/g;
+
+function extractMathFormulas(text: string): { maskedText: string; formulas: string[] } {
+  const formulas: string[] = [];
+  const mathRe =
+    /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(?:\\[a-zA-Z]+(?:\{[^}]*\}|\[[^\]]*\])*(?:[_^]\{[^}]*\})*)+)/g;
+  const maskedText = text.replace(mathRe, (match) => {
+    if (/^\\[a-z]$/.test(match)) return match;
+    const idx = formulas.length;
+    formulas.push(match);
+    return `⟨MATH_${idx}⟩`;
+  });
+  return { maskedText, formulas };
+}
+
+function restoreMathFormulas(text: string, formulas: string[]): string {
+  return text.replace(MATH_PLACEHOLDER_RE, (_, idx) => formulas[parseInt(idx)] ?? _);
+}
+
 // ── SSE 流解析（复用 translate 页面的实现）────────────────────────────────
 async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
   const reader = response.body!.getReader();
@@ -315,12 +335,15 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
           });
 
           try {
+            // 发送前提取公式替换为占位符，翻译完成后还原
+            const { maskedText, formulas } = extractMathFormulas(initialPages[i].text);
+
             const res = await fetch("/api/translate-page", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 pageNum: i + 1,
-                text: initialPages[i].text,
+                text: maskedText,
                 isFirst,
               }),
               signal: AbortSignal.timeout(120000),
@@ -345,7 +368,8 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
               });
             }
 
-            localText = localText.trim();
+            // 流结束后还原公式占位符，重新设置 translation 触发 KaTeX 重新渲染
+            localText = restoreMathFormulas(localText.trim(), formulas);
             pageTranslations[i] = localText;
 
             setPages(prev => {

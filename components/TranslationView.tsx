@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
+import { TranslationText } from "@/components/PdfTranslationView";
 
 // ── SSE 流解析 ─────────────────────────────────────────────────────────────
 async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
@@ -37,6 +38,29 @@ async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
   }
 }
 
+// ── 数学公式保护（防止翻译 API 破坏公式）────────────────────────────────────
+// 占位符使用罕见 Unicode 角括号，避免与正文冲突
+const MATH_PLACEHOLDER_RE = /⟨MATH_(\d+)⟩/g;
+
+function extractMathFormulas(text: string): { maskedText: string; formulas: string[] } {
+  const formulas: string[] = [];
+  // 匹配顺序：$$..$$（多行）→ $..$ → \[..\] → \(..\) → 裸 LaTeX 命令块（含花括号或上下标）
+  const mathRe =
+    /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$|\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|(?:\\[a-zA-Z]+(?:\{[^}]*\}|\[[^\]]*\])*(?:[_^]\{[^}]*\})*)+)/g;
+  const maskedText = text.replace(mathRe, (match) => {
+    // 跳过不像公式的单词命令（如 \n \t）
+    if (/^\\[a-z]$/.test(match)) return match;
+    const idx = formulas.length;
+    formulas.push(match);
+    return `⟨MATH_${idx}⟩`;
+  });
+  return { maskedText, formulas };
+}
+
+function restoreMathFormulas(text: string, formulas: string[]): string {
+  return text.replace(MATH_PLACEHOLDER_RE, (_, idx) => formulas[parseInt(idx)] ?? _);
+}
+
 // ── 块类型 ─────────────────────────────────────────────────────────────────
 type ChunkType = "heading" | "paragraph" | "reference";
 interface Chunk { text: string; type: ChunkType; }
@@ -49,8 +73,8 @@ function isHeadingText(s: string): boolean {
   if (/^(abstract|keywords?|references?|bibliography|acknowledgements?|notation|appendix)\.?$/i.test(t)) return true;
   // 数字编号：1 Introduction / 2.1 Methods / 3.2.1 Analysis
   if (/^\d+(\.\d+)*[\s.]\s*[A-Z一-鿿]/.test(t) && t.length < 120) return true;
-  // 罗马数字：II. RELATED WORK
-  if (/^[IVX]+\.\s+[A-Z]/.test(t) && t.length < 120) return true;
+  // 罗马数字：II. RELATED WORK（[1IVX] 兼容 OCR 将大写 I 误识别为数字 1 的情况）
+  if (/^[1IVX]+\.\s+[A-Z]/.test(t) && t.length < 120) return true;
   // 单词全大写（INTRODUCTION / CONCLUSIONS 等）
   const words = t.split(/\s+/);
   if (words.length === 1 && /^[A-Z]{4,}$/.test(t)) return true;
@@ -204,7 +228,10 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
 
     // ── 翻译单批 ──────────────────────────────────────────────────────────
     async function translateBatch(batchIdxs: number[]): Promise<void> {
-      const texts = batchIdxs.map(i => allChunks[i].text);
+      // 发送前提取公式，替换为占位符，翻译完成后还原
+      const extracted = batchIdxs.map(i => extractMathFormulas(allChunks[i].text));
+      const texts = extracted.map(e => e.maskedText);
+
       const res = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -228,15 +255,20 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
           parts.forEach((part, apiIdx) => {
             const idx = batchIdxs[apiIdx];
             if (idx === undefined) return;
+            // 流式阶段先显示含占位符的中间状态，完成后还原
             next[idx] = apiIdx < parts.length - 1 ? part.trim() : part;
           });
           return next;
         });
       }
 
+      // 流结束后还原公式占位符
       setTranslations(prev => {
         const next = [...prev];
-        batchIdxs.forEach(i => { next[i] = (next[i] ?? "").trim(); });
+        batchIdxs.forEach((i, apiIdx) => {
+          const raw = (next[i] ?? "").trim();
+          next[i] = restoreMathFormulas(raw, extracted[apiIdx].formulas);
+        });
         return next;
       });
       setStreamingIdx(-1);
@@ -337,7 +369,7 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
                     </div>
                     <div className="px-4 py-3 font-bold text-gray-900 text-base leading-snug">
                       {isDone
-                        ? zh
+                        ? <TranslationText text={zh} />
                         : isActive
                         ? <>{zh}<span className="inline-block w-0.5 h-4 bg-amber-400 ml-0.5 align-middle animate-pulse" /></>
                         : <Skeleton />}
@@ -373,7 +405,7 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
                         <span className="hidden group-hover:block absolute top-2 right-2">
                           <CopyBtn text={zh} />
                         </span>
-                        {zh}
+                        <TranslationText text={zh} />
                       </>
                     ) : isActive ? (
                       <>{zh}<span className="inline-block w-0.5 h-3.5 bg-amber-400 ml-0.5 align-middle animate-pulse" /></>

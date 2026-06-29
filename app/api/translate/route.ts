@@ -35,6 +35,10 @@ export async function POST(req: NextRequest) {
 - 禁止合并文本块、禁止拆分文本块、禁止跳过文本块
 - 禁止输出原文、禁止解释、禁止加注释
 
+数学公式占位符规则（最高优先级）：
+- 文本块中可能含有 ⟨MATH_0⟩、⟨MATH_1⟩ 等格式的占位符，代表已提取的 LaTeX 公式
+- 必须将这些占位符原样复制到对应位置，不得翻译、修改或删除
+
 翻译规范：
 1. 章节标题保留原有编号，例如"1. Introduction"→"1. 引言"，"2.1 Methods"→"2.1 方法"
 2. 专业术语格式：中文（English），例如"界面钝化（interface passivation）"
