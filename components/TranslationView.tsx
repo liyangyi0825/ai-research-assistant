@@ -363,11 +363,14 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
               // ── 标题行 ──
               if (isHeading) {
                 return (
-                  <div key={i} className="grid grid-cols-1 md:grid-cols-2 bg-gray-50 border-l-4 border-l-blue-500 mt-1">
-                    <div className="px-4 py-3 md:border-r border-gray-200 font-bold text-gray-900 text-base leading-snug">
+                  <div key={i} className="grid grid-cols-1 md:grid-cols-2 border-l-4 border-l-blue-500 mt-2">
+                    <div className="px-4 py-3 md:border-r border-gray-200 font-bold text-gray-900 text-base leading-snug bg-gray-50">
                       {chunk.text}
                     </div>
-                    <div className="px-4 py-3 font-bold text-gray-900 text-base leading-snug">
+                    <div
+                      className="px-4 py-3 font-bold text-base leading-snug border-l-2 border-l-gray-300"
+                      style={{ background: "#f0f0f0", color: "#444" }}
+                    >
                       {isDone
                         ? <TranslationText text={zh} />
                         : isActive
@@ -385,7 +388,7 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
                     <div className="px-4 py-2 md:border-r border-gray-100 text-xs text-gray-500 bg-gray-50 leading-relaxed">
                       {chunk.text}
                     </div>
-                    <div className="px-4 py-2 text-xs text-gray-500 bg-white leading-relaxed">
+                    <div className="px-4 py-2 text-xs leading-relaxed border-l-2 border-l-gray-200" style={{ background: "#f5f5f5", color: "#777" }}>
                       {zh}
                     </div>
                   </div>
@@ -395,11 +398,14 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
               // ── 正文段落 ──
               return (
                 <div key={i} className="grid grid-cols-1 md:grid-cols-2">
-                  <div className="px-4 py-3 md:border-r border-gray-100 text-sm text-gray-700 bg-blue-50/30 leading-relaxed">
+                  <div className="px-4 py-4 md:border-r border-gray-100 text-sm text-gray-700 bg-blue-50/30 leading-loose">
                     <span className="text-blue-300 text-xs mr-2 select-none">{i + 1}</span>
                     {chunk.text}
                   </div>
-                  <div className="px-4 py-3 text-sm text-gray-800 bg-white leading-relaxed relative group">
+                  <div
+                    className="px-4 py-4 text-sm leading-loose relative group border-l-2 border-l-gray-300"
+                    style={{ background: "#f5f5f5", color: "#555" }}
+                  >
                     {isDone ? (
                       <>
                         <span className="hidden group-hover:block absolute top-2 right-2">

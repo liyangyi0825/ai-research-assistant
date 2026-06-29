@@ -81,27 +81,27 @@ export function TranslationText({ text }: { text: string }) {
       rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false, output: "htmlAndMathml" }]]}
       components={{
         p: ({ children }) => (
-          <p style={{ marginBottom: "0.55em", lineHeight: "1.65" }}>{children}</p>
+          <p style={{ marginBottom: "0.85em", lineHeight: "1.75" }}>{children}</p>
         ),
-        // 图表说明：AI 输出为 blockquote（> 图1：...），渲染为斜体灰色
+        // 图注：AI 输出为 blockquote（> 图1：...），紧贴图片、独立成块、与原文位置对齐
         blockquote: ({ children }) => (
           <blockquote style={{
-            margin: "0.9em 0",
-            padding: "3px 10px",
-            borderLeft: "2px solid #d1d5db",
+            margin: "1em 0",
+            padding: "5px 12px",
+            borderLeft: "3px solid #9ca3af",
             fontStyle: "italic",
-            color: "#666666",
+            color: "#555",
             fontSize: "12px",
-            lineHeight: "1.55",
-            background: "rgba(0,0,0,0.015)",
-            borderRadius: "0 3px 3px 0",
+            lineHeight: "1.65",
+            background: "#f0f0f0",
+            borderRadius: "0 4px 4px 0",
           }}>
             {children}
           </blockquote>
         ),
         // 行内代码用继承字体，避免等宽字体破坏排版
         code: ({ children }) => (
-          <code style={{ fontFamily: "inherit", background: "rgba(0,0,0,0.04)", padding: "0 2px", borderRadius: 2 }}>
+          <code style={{ fontFamily: "inherit", background: "rgba(0,0,0,0.06)", padding: "0 3px", borderRadius: 2 }}>
             {children}
           </code>
         ),
@@ -580,14 +580,15 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
                   style={{
                     height: page.canvasHeight,
                     marginBottom: 8,
-                    background: "#fff",
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+                    background: "#f5f5f5",
+                    borderLeft: "3px solid #d1d5db",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
                     overflow: "auto",
                     padding: "20px 28px",
                     fontFamily: '"Source Han Serif SC","Noto Serif SC","Songti SC",宋体,SimSun,serif',
                     fontSize: "13px",
-                    lineHeight: "1.65",
-                    color: "#1a1a1a",
+                    lineHeight: "1.75",
+                    color: "#555",
                     boxSizing: "border-box",
                     display: "flex",
                     flexDirection: "column",
