@@ -100,8 +100,12 @@ if title:
     ax.set_title(title, fontsize=15, fontweight='bold', pad=12)
 if len(y_cols) > 1:
     ax.legend(fontsize=9, loc='best', framealpha=0.8)
-ax.spines['top'].set_visible(False)
-ax.spines['right'].set_visible(False)
+ax.spines['top'].set_visible(True)
+ax.spines['right'].set_visible(True)
+ax.spines['top'].set_linewidth(1.5)
+ax.spines['right'].set_linewidth(1.5)
+ax.spines['bottom'].set_linewidth(1.5)
+ax.spines['left'].set_linewidth(1.5)
 plt.tight_layout()
 
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
