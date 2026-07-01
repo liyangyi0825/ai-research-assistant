@@ -378,8 +378,8 @@ function renderFigure(prs: PptxGenJS, s: FigureSlide) {
   const slide = prs.addSlide();
   addBg(slide, C.WHITE);
 
-  // 紫色顶栏（与内容页深蓝顶栏区分，一眼看出"这是图表页"）
-  slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 0.9, fill: { color: C.PURPLE } }));
+  // 深蓝顶栏（与预览组件保持一致）
+  slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 0.9, fill: { color: C.NAVY } }));
   slide.addText(s.title || "", opt({
     x: 0.3, y: 0, w: 9.4, h: 0.9,
     fontSize: 18, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
@@ -408,9 +408,9 @@ function renderFigure(prs: PptxGenJS, s: FigureSlide) {
     }));
   }
 
-  // 分析条：浅紫色背景 + 左侧紫色强调竖条
-  slide.addShape("rect", opt({ x: 0,    y: 4.15, w: W,    h: 1.475, fill: { color: "F5F0FF" } }));
-  slide.addShape("rect", opt({ x: 0,    y: 4.15, w: 0.12, h: 1.475, fill: { color: C.PURPLE } }));
+  // 分析条：浅蓝色背景 + 左侧深蓝强调竖条
+  slide.addShape("rect", opt({ x: 0,    y: 4.15, w: W,    h: 1.475, fill: { color: "EEF2FF" } }));
+  slide.addShape("rect", opt({ x: 0,    y: 4.15, w: 0.12, h: 1.475, fill: { color: C.NAVY } }));
   slide.addText(s.analysis || "", opt({
     x: 0.28, y: 4.2, w: 9.5, h: 1.375,
     fontSize: 13, color: C.TEXT, fontFace: "微软雅黑",

@@ -185,7 +185,7 @@ function ContentSplit({ s }: { s: ContentSlide }) {
       {/* 金色装饰线 */}
       <div style={{ position: "absolute", left: 28, top: 380, width: 150, height: 7, background: C.GOLD }} />
       {/* 右侧流式段落 */}
-      <div style={{ position: "absolute", left: 408, top: 20, right: 18, bottom: 14, overflow: "hidden",
+      <div style={{ position: "absolute", left: 408, top: 32, right: 18, bottom: 14, overflow: "hidden",
         display: "flex", flexDirection: "column", gap: 20 }}>
         {paras.map((para, i) => (
           <div key={i} style={{ color: C.TEXT, fontSize: f(14), lineHeight: 1.8, textAlign: "justify" }}>
@@ -217,7 +217,7 @@ function ContentHero({ s }: { s: ContentSlide }) {
         <div style={{ position: "absolute", left: 60, top: 110, right: 60, height: 270,
           display: "flex", alignItems: "center",
           color: C.NAVY, fontSize: f(22), fontWeight: 700, lineHeight: 1.5, overflow: "hidden" }}>
-          {paras[0]}
+          <RichText text={paras[0]} />
         </div>
       )}
       {/* 补充说明（小字） */}
@@ -226,7 +226,7 @@ function ContentHero({ s }: { s: ContentSlide }) {
           <div style={{ position: "absolute", left: 60, top: 390, right: 60, height: 2, background: C.GRAY }} />
           <div style={{ position: "absolute", left: 60, top: 398, right: 60, bottom: 20,
             color: "#445588", fontSize: f(14), lineHeight: 1.4, overflow: "hidden" }}>
-            {paras[1]}
+            <RichText text={paras[1]} />
           </div>
         </>
       )}
