@@ -83,40 +83,40 @@ interface ParaState {
   status: ParaStatus;
 }
 
-// 按双换行或句末换行切段落，保证每段不超过合理长度
+// 按语义块拆分段落：标题 / 自然段 / 图注各为一个翻译单元，禁止在段落内部按句子切分
 function splitIntoParagraphs(text: string): string[] {
-  const byDouble = text.split(/\n{2,}/).map(s => s.replace(/\n/g, " ").trim()).filter(s => s.length > 10);
-  if (byDouble.length > 1) return byDouble;
+  // ① 优先按空行（≥2 个换行）切——unpdf 最可靠的段落边界
+  const byBlank = text
+    .split(/\n{2,}/)
+    .map(b => b.replace(/\n/g, " ").trim())
+    .filter(b => b.length > 5);
+  if (byBlank.length > 1) return byBlank;
 
-  // 单换行回退：按句末 + 大写开头识别段落边界
+  // ② 全文只有单换行时（双栏 PDF 常见），仅在明确的语义边界处切段
   const lines = text.split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length <= 2) return [text.replace(/\n/g, " ").trim()];
+
+  const isSemanticBoundary = (line: string): boolean => {
+    if (line.length > 150) return false;
+    if (/^\d+(\.\d+)*[\s.]\s*\S/.test(line)) return true;          // 1. / 2.1 数字标题
+    if (/^[IVX]+\.\s+[A-Z]/.test(line)) return true;               // II. 罗马数字标题
+    if (/^(abstract|keywords?|references?|acknowledgements?|introduction|conclusion|discussion|methods?|results?)\.?$/i.test(line)) return true;
+    if (/^(figure|fig\.?|table)\s+\d+/i.test(line)) return true;   // 图注 / 表注
+    return false;
+  };
+
   const result: string[] = [];
   let cur = "";
   for (const line of lines) {
-    if (cur && /[.!?]$/.test(cur) && /^[A-Z0-9]/.test(line)) {
-      result.push(cur.trim());
+    if (isSemanticBoundary(line)) {
+      if (cur.trim()) result.push(cur.trim());
       cur = line;
     } else {
       cur += (cur ? " " : "") + line;
     }
-    if (cur.length > 600) { result.push(cur.trim()); cur = ""; }
   }
   if (cur.trim()) result.push(cur.trim());
-  return result.filter(s => s.length > 10);
-}
-
-// 超长段落按句子拆成 ≤maxLen 的块，每块单独请求，响应更快
-function splitLongPara(text: string, maxLen = 500): string[] {
-  if (text.length <= maxLen) return [text];
-  const result: string[] = [];
-  const sents = text.match(/[^.!?。！？]+[.!?。！？]+\s*/g) ?? [text];
-  let cur = "";
-  for (const s of sents) {
-    if (cur.length + s.length > maxLen && cur) { result.push(cur.trim()); cur = s; }
-    else { cur += s; }
-  }
-  if (cur.trim()) result.push(cur.trim());
-  return result;
+  return result.filter(s => s.length > 5);
 }
 
 // ── 翻译文本渲染（支持 KaTeX 数学公式 + 图表说明特殊样式）──────────────────
@@ -405,37 +405,29 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
           setParas([...allParas]);
 
           try {
-            // 超长段落拆成 ≤500 字子块，每块单独请求，用户持续看到更新
-            const subChunks = splitLongPara(para.maskedText, 500);
-            let fullTranslation = "";
+            // 每个语义段落作为一次完整 API 调用，不再二次拆分
+            const res = await fetch("/api/translate-page", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ pageNum: para.pageNum, text: para.maskedText, isFirst }),
+              signal: AbortSignal.timeout(90000),
+            });
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              throw new Error((data as { error?: string }).error || "翻译失败");
+            }
+            isFirst = false;
 
-            for (const subChunk of subChunks) {
-              const res = await fetch("/api/translate-page", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ pageNum: para.pageNum, text: subChunk, isFirst }),
-                signal: AbortSignal.timeout(60000),
-              });
-              if (!res.ok) {
-                const data = await res.json().catch(() => ({}));
-                throw new Error((data as { error?: string }).error || "翻译失败");
-              }
-              isFirst = false;
-
-              let chunkText = "";
-              for await (const chunk of streamAnthropicSSE(res)) {
-                if (cancelled) break;
-                chunkText += chunk;
-                // 实时显示：流式阶段先显示含占位符的中间态
-                allParas[pi] = { ...allParas[pi], translation: fullTranslation + chunkText };
-                setParas([...allParas]);
-              }
-              // 子块完成后还原公式
-              fullTranslation += restoreMathFormulas(chunkText.trim(), para.formulas);
-              if (subChunks.length > 1) fullTranslation += " ";
+            let rawText = "";
+            for await (const chunk of streamAnthropicSSE(res)) {
+              if (cancelled) break;
+              rawText += chunk;
+              allParas[pi] = { ...allParas[pi], translation: rawText };
+              setParas([...allParas]);
             }
 
-            fullTranslation = fullTranslation.trim();
+            // 流结束后还原公式占位符
+            const fullTranslation = restoreMathFormulas(rawText.trim(), para.formulas);
             allParas[pi] = { ...allParas[pi], status: "done", translation: fullTranslation };
             setParas([...allParas]);
 
