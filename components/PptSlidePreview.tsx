@@ -186,7 +186,7 @@ function ContentSplit({ s }: { s: ContentSlide }) {
       <div style={{ position: "absolute", left: 28, top: 380, width: 150, height: 7, background: C.GOLD }} />
       {/* 右侧流式段落 */}
       <div style={{ position: "absolute", left: 408, top: 32, right: 18, bottom: 14, overflow: "hidden",
-        display: "flex", flexDirection: "column", gap: 20 }}>
+        display: "flex", flexDirection: "column", gap: 28 }}>
         {paras.map((para, i) => (
           <div key={i} style={{ color: C.TEXT, fontSize: f(14), lineHeight: 1.8, textAlign: "justify" }}>
             <RichText text={para} />
@@ -358,7 +358,7 @@ function Figure({ s }: { s: FigureSlide }) {
       </div>
       {/* 图表占位框 */}
       <div style={{
-        position: "absolute", left: 50, top: 115, right: 50, height: 280,
+        position: "absolute", left: 50, top: 115, right: 50, height: 252,
         background: "#F5F5F5",
         border: "2px dashed #CCCCCC",
         display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
@@ -366,10 +366,18 @@ function Figure({ s }: { s: FigureSlide }) {
         <div style={{ color: "#AAAAAA", fontSize: f(16) }}>请在此插入图表</div>
         <div style={{ color: "#CCCCCC", fontSize: f(11) }}>{s.title}</div>
       </div>
+      {/* 图表说明（figure_desc）：占位框下方，分析区上方 */}
+      {s.figure_desc && (
+        <div style={{ position: "absolute", left: 50, top: 374, right: 50, height: 28,
+          color: "#666666", fontSize: f(10), fontStyle: "italic", lineHeight: 1.4,
+          overflow: "hidden", textAlign: "left" }}>
+          {s.figure_desc}
+        </div>
+      )}
       {/* 分隔线 */}
-      <div style={{ position: "absolute", left: 35, top: 405, right: 20, height: 2, background: C.GRAY }} />
+      <div style={{ position: "absolute", left: 35, top: 408, right: 20, height: 2, background: C.GRAY }} />
       {/* 分析内容 */}
-      <div style={{ position: "absolute", left: 35, top: 415, right: 20, bottom: 15,
+      <div style={{ position: "absolute", left: 35, top: 418, right: 20, bottom: 15,
         color: C.TEXT, fontSize: f(13), lineHeight: 1.6, overflow: "hidden" }}>
         {s.analysis}
       </div>

@@ -209,7 +209,7 @@ function _renderContentSplit(prs: PptxGenJS, s: ContentSlide) {
   const paras = (s.paragraphs || []).slice(0, 3);
   const n = paras.length;
   const contentH = H - 0.4;
-  const paraGap = 0.22;
+  const paraGap = 0.30;
   const paraH = (contentH - paraGap * Math.max(n - 1, 0)) / Math.max(n, 1);
   const fSize = 14;
 
@@ -321,39 +321,32 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
       }
     });
 
-    // 图片占位框（有 imageHint 时）
-    // 渲染顺序：① 灰底 → ② 建议文字 → ③ 操作提示 → ④ 透明 PNG（最后 = 最顶层）
+    // 图片占位框（有 imageHint 时）——纯文字说明，不叠透明 PNG
     if (HAS_IMG) {
       const imgX = cx + 0.1;
       const imgY = bodyY + bodyH + 0.1;
       const imgW = cardW - 0.2;
-      const imgH = CY + CH - imgY - 0.1;   // ≈ 2.46"
+      const imgH = CY + CH - imgY - 0.1;
 
-      // ① 灰色底板 + 虚线边框（视觉层）
+      // 灰色底板 + 虚线边框
       slide.addShape("rect", opt({
         x: imgX, y: imgY, w: imgW, h: imgH,
         fill: { color: "E8ECF0" },
         line: { color: "B0BEC5", dashType: "dash", w: 0.75 },
       }));
 
-      // ② 建议配图说明（视觉层）
-      slide.addText(`📷  ${card.imageHint || "建议插入配图"}`, opt({
-        x: imgX, y: imgY + 0.3, w: imgW, h: 0.55,
-        fontSize: 12, color: C.NAVY, fontFace: "微软雅黑",
-        align: "center", valign: "middle",
+      // 建议配图说明
+      slide.addText(`📷 建议配图：${card.imageHint || "请插入图片"}`, opt({
+        x: imgX, y: imgY + 0.25, w: imgW, h: 0.5,
+        fontSize: 11, color: C.NAVY, fontFace: "微软雅黑",
+        align: "center", valign: "middle", bold: true,
       }));
 
-      // ③ 操作提示（视觉层）
-      slide.addText("右键 → 更改图片，替换为您的配图", opt({
-        x: imgX, y: imgY + imgH - 0.5, w: imgW, h: 0.4,
-        fontSize: 10, color: "888888", fontFace: "微软雅黑",
+      // 操作提示
+      slide.addText("右键占位框 → 更改图片，替换为您的图片", opt({
+        x: imgX, y: imgY + imgH - 0.55, w: imgW, h: 0.45,
+        fontSize: 9.5, color: "777777", fontFace: "微软雅黑",
         align: "center", valign: "middle",
-      }));
-
-      // ④ 透明 PNG 叠放最顶层 — 使 PowerPoint 右键识别为图片对象
-      slide.addImage(opt({
-        data: `data:image/png;base64,${TRANSPARENT_PNG}`,
-        x: imgX, y: imgY, w: imgW, h: imgH,
       }));
     }
   });
@@ -385,34 +378,35 @@ function renderFigure(prs: PptxGenJS, s: FigureSlide) {
     fontSize: 18, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 
-  // 图片区（撑高到约 55% 幻灯片高度，用户可在 PPT 软件中直接拖入图片替换）
+  // 图片占位框（缩短高度，为 figure_desc 留出空间）
   slide.addShape("rect", opt({
-    x: 0.4, y: 0.98, w: 9.2, h: 3.1,
+    x: 0.4, y: 0.98, w: 9.2, h: 2.6,
     fill: { color: "F8F8F8" },
     line: { color: "CCCCCC", dashType: "dash", pt: 1 },
   }));
   slide.addText("请在此插入图表", opt({
-    x: 0.4, y: 2.1, w: 9.2, h: 0.55,
+    x: 0.4, y: 1.85, w: 9.2, h: 0.55,
     fontSize: 14, color: "BBBBBB", fontFace: "微软雅黑", align: "center",
   }));
   slide.addText("（在 PPT 中双击占位框 / 拖入图片文件）", opt({
-    x: 0.4, y: 2.68, w: 9.2, h: 0.38,
+    x: 0.4, y: 2.43, w: 9.2, h: 0.38,
     fontSize: 10, color: "CCCCCC", fontFace: "微软雅黑", align: "center",
   }));
-  // 图表说明：以斜体小字显示在占位框底部
+
+  // 图表说明（figure_desc）：占位框下方独立图注区域，斜体小字
   if (s.figure_desc) {
     slide.addText(s.figure_desc, opt({
-      x: 0.5, y: 3.6, w: 9.0, h: 0.42,
-      fontSize: 10, italic: true, color: "AAAAAA", fontFace: "微软雅黑",
-      align: "center", valign: "middle", wrap: true,
+      x: 0.4, y: 3.65, w: 9.2, h: 0.38,
+      fontSize: 10, italic: true, color: "666666", fontFace: "微软雅黑",
+      align: "left", valign: "top", wrap: true,
     }));
   }
 
   // 分析条：浅蓝色背景 + 左侧深蓝强调竖条
-  slide.addShape("rect", opt({ x: 0,    y: 4.15, w: W,    h: 1.475, fill: { color: "EEF2FF" } }));
-  slide.addShape("rect", opt({ x: 0,    y: 4.15, w: 0.12, h: 1.475, fill: { color: C.NAVY } }));
+  slide.addShape("rect", opt({ x: 0,    y: 4.1, w: W,    h: 1.525, fill: { color: "EEF2FF" } }));
+  slide.addShape("rect", opt({ x: 0,    y: 4.1, w: 0.12, h: 1.525, fill: { color: C.NAVY } }));
   slide.addText(s.analysis || "", opt({
-    x: 0.28, y: 4.2, w: 9.5, h: 1.375,
+    x: 0.28, y: 4.15, w: 9.5, h: 1.425,
     fontSize: 13, color: C.TEXT, fontFace: "微软雅黑",
     align: "left", valign: "top", wrap: true, lineSpacingMultiple: 1.4,
   }));
