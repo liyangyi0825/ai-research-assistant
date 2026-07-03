@@ -60,7 +60,7 @@ ${paragraphs.join("\n[PARA]\n")}`;
       },
       body: JSON.stringify({
         model: "deepseek-v4-pro",
-        max_tokens: 4000,
+        max_tokens: 8000,
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),

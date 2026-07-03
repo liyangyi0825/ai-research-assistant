@@ -87,7 +87,7 @@ comparison 类型字段：type, title, columns(heading/color/points数组), note
       },
       body: JSON.stringify({
         model: "deepseek-v4-pro",
-        max_tokens: 4000,
+        max_tokens: 8000,
         temperature: 0.3,
         messages: [{ role: "user", content: prompt }],
       }),
@@ -112,8 +112,17 @@ comparison 类型字段：type, title, columns(heading/color/points数组), note
     try {
       slide = JSON.parse(cleaned);
     } catch {
-      console.error("单页重生成 JSON 解析失败：", rawText.slice(0, 500));
-      return NextResponse.json({ error: "AI 输出格式异常，请重试" }, { status: 500 });
+      // 截断容错：找到最后一个完整字段后补全对象
+      console.error("单页重生成 JSON 首次解析失败：", rawText.slice(0, 500));
+      try {
+        const base = jsonStart !== -1 ? stripped.slice(jsonStart) : stripped;
+        const lastComma = base.lastIndexOf('",');
+        const truncated = lastComma > 0 ? base.slice(0, lastComma + 1) + '"notes":""}' : base;
+        slide = JSON.parse(truncated);
+        console.log("单页重生成 JSON 截断补全成功");
+      } catch {
+        return NextResponse.json({ error: "AI 输出格式异常，请重试" }, { status: 500 });
+      }
     }
 
     return NextResponse.json({ slide });

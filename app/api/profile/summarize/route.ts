@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model: "deepseek-v4-pro",
-        max_tokens: 600,
+        max_tokens: 8000,
         temperature: 0.3,
         messages: [{
           role: "user",

@@ -12,7 +12,9 @@
       "Bash(SSH_ASKPASS=/tmp/askpass.sh SSH_ASKPASS_REQUIRE=force ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ubuntu@49.232.49.120 'echo '\\\\''连接成功'\\\\''; uname -a; whoami')",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(npx tsc *)",
+      "Bash(git commit -m 'fix: 图表图片改用 API Route 提供，绕过 Next.js 静态文件服务问题 *)"
     ]
   }
 }

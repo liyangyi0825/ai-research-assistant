@@ -390,7 +390,7 @@ ${keyContent}`;
       },
       body: JSON.stringify({
         model: "deepseek-v4-pro",
-        max_tokens: 16000,
+        max_tokens: 32000,
         temperature: 0.3,
         stream: true,
         messages: [{ role: "user", content: prompt }],
@@ -446,7 +446,7 @@ ${keyContent}`;
           }
         }
 
-        // 解析 Claude 输出的 JSON（容错：去掉代码块标记，截取最外层 {} 范围）
+        // 解析 JSON（容错：去代码块标记 → 截取最外层{} → 尝试补全截断JSON）
         const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
         const jsonStart = stripped.indexOf("{");
         const jsonEnd   = stripped.lastIndexOf("}");
@@ -458,9 +458,22 @@ ${keyContent}`;
         try {
           pptContent = JSON.parse(cleaned);
         } catch {
-          console.error("PPT JSON 解析失败，输出前 800 字：", rawText.slice(0, 800));
-          await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
-          return;
+          // 截断容错：JSON 被截断时，找到最后一个完整的 slide 对象并补全结构
+          console.error("PPT JSON 首次解析失败，尝试截断补全，输出前 500 字：", rawText.slice(0, 500));
+          try {
+            const base = jsonStart !== -1 ? stripped.slice(jsonStart) : stripped;
+            // 找到最后一个完整的 slide（以 "}" 结尾的项），截断后补全数组和外层对象
+            const lastCompleteSlide = base.lastIndexOf("},\n");
+            const truncated = lastCompleteSlide > 0
+              ? base.slice(0, lastCompleteSlide + 1) + "\n]}"  // 补全 slides 数组和外层对象
+              : base;
+            pptContent = JSON.parse(truncated);
+            console.log("PPT JSON 截断补全成功，实际幻灯片数：", pptContent.slides?.length ?? 0);
+          } catch {
+            console.error("PPT JSON 补全失败，放弃解析，原始输出前 800 字：", rawText.slice(0, 800));
+            await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
+            return;
+          }
         }
 
         console.log("=== PPT生成内容 ===");

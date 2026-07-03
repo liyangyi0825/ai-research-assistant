@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
         },
         body: JSON.stringify({
           model: "deepseek-v4-pro",
-          max_tokens: 8000,
+          max_tokens: 16000,
           temperature: 0.5,
           stream: true,
           system: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。

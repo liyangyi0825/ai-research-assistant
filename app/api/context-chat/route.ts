@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
       },
       body: JSON.stringify({
         model: "deepseek-v4-pro",
-        max_tokens: 2000,
+        max_tokens: 8000,
         temperature: 0.5,
         stream: true,
         system: context.slice(0, 40000),
