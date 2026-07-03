@@ -30,6 +30,15 @@ function buildPrompt(
   }
 
   if (block === 3) {
+    const abbreviationGuide = `
+【缩写识别规则——最高优先级】
+- 用户输入如果是全大写字母组合（如 CDPR、CNN、LSTM、GAN），必须先判断这是一个专业领域缩写
+- 必须在学术文献中找到该缩写最常见的全称，例如 CDPR = Cable-Driven Parallel Robot（绳索驱动并联机器人）
+- 所有展开的关联概念必须与该缩写的真实含义强相关，不得基于字母本身随意联想
+- 如果一个缩写有多个领域的含义，优先选择工程/自然科学领域的解释，并在第一个概念中注明全称
+- 输出的第一个概念必须是该缩写的全称解释，格式为："XX（全称，缩写）——[定义]"
+  例如："绳索驱动并联机器人（Cable-Driven Parallel Robot，CDPR）——通过多根独立控制的柔索替代刚性连杆..."`;
+
     const conceptQualityGuide = `
 提取质量要求：
 - 只提取以下类型的专业概念：专业技术名词（如：缆索驱动并联机器人、运动解耦、逆运动学）、具体方法名称（如：RecurDyn仿真、多体动力学建模）、领域特定概念（如：冗余驱动、工作空间分析）、有学术引用价值的术语
@@ -41,6 +50,7 @@ function buildPrompt(
     // 没有论文时改用"AI 知识库模式"，直接基于训练知识生成关联概念
     if (papers.length === 0) {
       return `请根据你的学术知识，列出与「${concept}」密切相关的专业学术概念：
+${abbreviationGuide}
 ${conceptQualityGuide}
 - 按相关程度从高到低排列
 - 只输出列表，不要其他说明
@@ -60,6 +70,7 @@ ${conceptQualityGuide}
 ${abstracts}
 
 请从以上摘要中提取反复出现或密切相关的专业学术概念：
+${abbreviationGuide}
 ${conceptQualityGuide}
 - 按出现频率从高到低排列
 - 只列清单，不要其他解释`;
