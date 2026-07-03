@@ -580,7 +580,7 @@ export default function ConceptExplorerPage() {
                 {oldestStatus === "loading" && <Skeleton lines={2} />}
                 {oldestStatus === "done" && oldestPapers.length === 0 && (
                   <p className="text-xs text-gray-400 italic">
-                    未找到足够可信的起源文献，建议自行在知网 / Google Scholar 查证
+                    当前数据库未能检索到足够可信的起源文献，建议前往 Google Scholar 或知网自行查证。
                   </p>
                 )}
                 {oldestPapers.length > 0 && (
@@ -608,7 +608,7 @@ export default function ConceptExplorerPage() {
             )}
             {recentStatus === "done" && recentPapers.length === 0 && (
               <p className="text-sm text-gray-400 italic">
-                暂未找到相关论文，可以尝试输入英文名称搜索，或参考下方研究思路
+                暂未找到近期相关文献，可以尝试输入英文名称搜索，或参考下方研究思路
               </p>
             )}
             {recentPapers.length > 0 && (
