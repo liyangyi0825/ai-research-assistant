@@ -15,6 +15,7 @@ import MyProfilePage      from "@/app/my-profile/page";
 import MyNotesPage        from "@/app/my-notes/page";
 import HelpPage           from "@/app/help/page";
 import DataCleanPage      from "@/app/data-clean/page";
+import PolishPage         from "@/app/polish/page";
 
 // SPA 里所有功能 tab
 const SPA_TABS = [
@@ -29,6 +30,7 @@ const SPA_TABS = [
   { key: "my-notes",           Component: MyNotesPage },
   { key: "help",               Component: HelpPage },
   { key: "data-clean",         Component: DataCleanPage },
+  { key: "polish",             Component: PolishPage },
 ] as const;
 
 type TabKey = (typeof SPA_TABS)[number]["key"];
@@ -44,6 +46,7 @@ const PATH_TO_TAB: Record<string, TabKey> = {
   "/ppt":               "ppt",
   "/literature-review": "literature-review",
   "/data-clean":        "data-clean",
+  "/polish":            "polish",
   "/my-papers":         "my-papers",
   "/my-profile":        "my-profile",
   "/my-notes":          "my-notes",

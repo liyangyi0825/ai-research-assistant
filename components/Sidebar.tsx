@@ -16,6 +16,7 @@ const NAV_GROUPS = [
       { icon: "🎯", label: "论文转 PPT",   href: "/ppt" },
       { icon: "📚", label: "多篇综述对比", href: "/literature-review" },
       { icon: "🧹", label: "数据清洗",     href: "/data-clean" },
+      { icon: "✍️", label: "论文润色",     href: "/polish" },
     ],
   },
   {
@@ -37,6 +38,7 @@ const HREF_TO_TAB: Record<string, string> = {
   "/ppt":               "ppt",
   "/literature-review": "literature-review",
   "/data-clean":        "data-clean",
+  "/polish":            "polish",
   "/my-papers":         "my-papers",
   "/my-profile":        "my-profile",
   "/my-notes":          "my-notes",
