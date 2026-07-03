@@ -104,40 +104,6 @@ export interface PptContent {
   slides: Slide[];
 }
 
-// ── 两阶段生成辅助函数 ────────────────────────────────────────────────────────
-
-/** 非流式 AI 调用，返回文本 + token 用量 */
-async function callAISingle(
-  apiKey: string,
-  prompt: string,
-  maxTokens: number,
-): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
-  const res = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "deepseek-v4-pro",
-      max_tokens: maxTokens,
-      temperature: 0.1,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`AI HTTP ${res.status}: ${err.slice(0, 120)}`);
-  }
-  const data = await res.json();
-  return {
-    text: data.content?.[0]?.text ?? "",
-    inputTokens: data.usage?.input_tokens ?? 0,
-    outputTokens: data.usage?.output_tokens ?? 0,
-  };
-}
-
 /**
  * 补全被截断的 JSON 字符串（括号计数法）。
  * 能处理截断发生在字符串内部的情况（如 "paragrap 被截断）。
@@ -196,39 +162,6 @@ function parseRawJSON<T>(rawText: string): T {
   throw new Error("JSON 对象解析失败");
 }
 
-/** 解析 AI 输出的 JSON 数组（Pass2 专用），带截断容错 */
-function parseRawArray<T>(rawText: string): T[] {
-  // 去掉代码块标记
-  const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-  // 先尝试找 [...] 数组
-  const arrStart = stripped.indexOf("[");
-  const arrEnd   = stripped.lastIndexOf("]");
-  if (arrStart !== -1 && arrEnd > arrStart) {
-    const arrStr = stripped.slice(arrStart, arrEnd + 1);
-    try { return JSON.parse(arrStr) as T[]; } catch {}
-    // 截断容错：找最后一个完整对象后补 ]
-    const lastObj = arrStr.lastIndexOf("},");
-    if (lastObj > 0) {
-      try { return JSON.parse(arrStr.slice(0, lastObj + 1) + "]") as T[]; } catch {}
-    }
-    const lastObjEnd = arrStr.lastIndexOf("}");
-    if (lastObjEnd > 0) {
-      try { return JSON.parse(arrStr.slice(0, lastObjEnd + 1) + "]") as T[]; } catch {}
-    }
-  }
-  // 兜底：尝试解析为 {slides:[...]} 对象
-  const objStart = stripped.indexOf("{");
-  const objEnd   = stripped.lastIndexOf("}");
-  if (objStart !== -1 && objEnd > objStart) {
-    try {
-      const obj = JSON.parse(stripped.slice(objStart, objEnd + 1)) as { slides?: T[] };
-      if (Array.isArray(obj.slides)) return obj.slides;
-    } catch {}
-  }
-  throw new Error("JSON 数组解析失败");
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   try {
@@ -276,235 +209,180 @@ export async function POST(req: NextRequest) {
     const isDefense = scene === "defense";
     const today = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
 
-    // ── 第一阶段提示词：只生成骨架（无正文），保证 token 不截断 ──────────────
-    const skeletonPrompt = `你是一位专业的学术PPT设计专家。
+    const prompt = `【输出要求——最高优先级】
+输出必须是完整的合法 JSON，以 { 开头，以 } 结尾。
+如果内容太多导致无法在 token 限制内完成，优先保证 JSON 结构完整，减少每页的文字量，不要截断输出。
+只输出纯 JSON，不要代码块标记，不要任何说明文字。
 
-【任务——骨架阶段】根据论文生成完整的PPT骨架，只输出纯 JSON，不要代码块，不要说明文字。
-
-⚠️ 这是两阶段生成的第一阶段，正文内容由第二阶段填充。骨架阶段的强制约束：
-- content 页：只填 type、layout、title，paragraphs 必须写 []，notes 必须写 ""
-- figure 页：只填 type、title，figure_desc 写 ""，analysis 写 ""，notes 写 ""
-- cover / contents / section / ending：填写完整内容（字段本来就很短）
-- stats / table / comparison：填写完整数据（字段本来就很短）
-
-【一致性要求——最高优先级，违反视为严重错误】
-- 必须按照论文的实际章节结构生成，章节标题直接从论文提取原文，不得自行概括或改写
-- 严格按照论文从头到尾的顺序生成，不得跳过任何章节，不得合并或拆分章节
-- 论文中每一个实验、每一组数据、每一个结论都必须体现在对应页面中，不得遗漏
-- 每次生成同一篇论文，章节结构和页面顺序必须保持一致，不得因随机性导致结构变化
+【任务】将以下论文内容转化为高质量的PPT结构化大纲。
 
 【场景】${isDefense ? "毕业/学位答辩（正式学术风格）" : "组会/进展汇报（简洁风格）"}
 
-【页数要求（根据论文复杂程度自行判断，不要固定页数）】
-- 简单论文（方法单一、结果较少）：12-15 页
-- 普通论文（包含多个实验和对比）：15-20 页
-- 复杂论文（多组实验、多维度对比）：20-25 页
+【一致性要求——违反视为严重错误】
+- 必须按照论文的实际章节结构生成，章节标题直接从论文提取原文，不得自行概括或改写
+- 严格按照论文从头到尾的顺序生成，不得跳过任何章节
+- 每次生成同一篇论文，章节结构和页面顺序必须保持一致
+
+【页数与字数限制——必须严格遵守，这是控制输出长度的关键】
+- slides 数组总页数：不超过 20 页
+- 每个 paragraphs 段落：不超过 80 字（约 2-3 句话）
+- notes 字段：不超过 20 字
+- figure_desc 字段：不超过 50 字
+- analysis 字段：不超过 50 字
+- card.points 每条：不超过 20 字
 ${isDefense
-  ? "答辩版结构：封面→目录→章节过渡页→内容页→结尾页"
-  : "组会版结构：封面→目录→内容页→结尾页（省略章节过渡页）"
+  ? "- 结构：封面→目录→章节过渡页→内容页→结尾页"
+  : "- 结构：封面→目录→内容页→结尾页（省略章节过渡页）"
 }
 
-【layout 选择规则（每个 content 页必须认真判断，⛔ 禁止全部输出 standard）】
+【layout 选择（每个 content 页必须判断，⛔ 禁止全部 standard）】
 - hero：全文最关键单一数据/结论，最多 2 页
-- split：研究发现/实验结论，content 总数 ÷ 3 向上取整，至少 2 页
-- card：内容分 2-3 个并列子主题时用（card 版式 paragraphs 填 []，需有 cards 数组）
+- split：研究发现/实验结论，至少 2 页
+- card：内容分 2-3 个并列子主题时用，需有 cards 数组，paragraphs 填 []
 - standard：研究背景/文献综述/叙述性内容
 
-【cover 字段提取规则（必须从论文正文仔细查找）】
-- 作者姓名：① 标题页作者署名 → ② 摘要前作者列表 → ③ 页眉/页脚署名
-- 导师姓名：① 致谢中"感谢XXX教授/导师" → ② 通讯作者（*标注）
-- 找不到的字段留空字符串 ""，绝对不要写"XXX"、"某某"等占位符
-- author 格式："汇报人：[第一作者姓名]\\n指导教师：[导师姓名职称]"（找不到留空）
+【paragraphs 格式】
+- standard/split：1-2 个段落，每段不超过 80 字，流畅陈述性文字，含数值+因果
+- hero：paragraphs[0] 为核心结论（20-40字含数值），paragraphs[1] 可选补充说明
+- 段落里用 [[双方括号]] 标记最关键 1-2 个词/数值，每段最多 2 处
+- ⛔ 禁止 bullet point（"•"）出现在 paragraphs 里
 
-【骨架 JSON 输出格式】
-{"title":"论文标题","scene":"defense","total_pages":N,"slides":[
-  {"type":"cover","title":"...","subtitle":"...","author":"...","date":"${today}"},
-  {"type":"contents","items":["一、研究背景","二、研究方法","..."]},
-  {"type":"section","number":"01","title":"章节标题"},
-  {"type":"content","layout":"standard","title":"页面标题","paragraphs":[],"notes":""},
-  {"type":"content","layout":"card","title":"研究方法","paragraphs":[],"cards":[{"heading":"① 材料制备","points":["• 关键步骤1","• 关键步骤2"]}],"flow":true,"notes":""},
-  {"type":"figure","title":"图1：标题","figure_desc":"","analysis":"","notes":""},
-  {"type":"stats","title":"...","stats":[{"value":"4200","unit":"mAh/g","label":"硅理论比容量","color":"1B3A8C"}],"notes":"口语备注"},
-  {"type":"table","title":"...","headers":["样品","参数"],"rows":[["A","值1"]],"notes":"口语备注"},
-  {"type":"comparison","title":"...","columns":[{"heading":"方案A","color":"1B6B3A","points":["• 要点1"]}],"notes":"口语备注"},
+【cover 字段提取规则】
+- 从论文正文提取作者和导师，找不到留空字符串 ""，不要写"XXX"等占位符
+- author 格式："汇报人：[姓名]\\n指导教师：[导师姓名职称]"
+
+【JSON 格式示例】
+{"title":"论文标题","scene":"${scene}","total_pages":N,"slides":[
+  {"type":"cover","title":"...","subtitle":"...","author":"汇报人：xxx\\n指导教师：xxx","date":"${today}"},
+  {"type":"contents","items":["一、研究背景","二、研究方法","三、实验结果","四、结论"]},
+  {"type":"section","number":"01","title":"研究背景"},
+  {"type":"content","layout":"standard","title":"研究背景","paragraphs":["硅基负极材料理论比容量高达[[4200 mAh/g]]，是石墨的11倍，但体积膨胀达300%导致循环性能差。"],"notes":"引出研究动机"},
+  {"type":"content","layout":"hero","title":"核心发现","paragraphs":["低固含量样品500次循环后容量保持率高达[[89%]]。","对比高固含量样品仅61%，差距显著，证明固含量是关键参数。"],"notes":"本文最重要结论"},
+  {"type":"content","layout":"split","title":"实验结果分析","paragraphs":["XRD与SEM表征证实高固含量导致颗粒团聚至[[5μm]]以上，是性能下降根本原因。"],"notes":"承接方法页"},
+  {"type":"content","layout":"card","title":"研究方法","paragraphs":[],"cards":[{"heading":"① 材料制备","points":["• 固含量30/60/100mg/mL","• 喷雾干燥造粒"]},{"heading":"② 结构表征","points":["• SEM/XRD形貌分析","• BET比表面积测定"]}],"flow":true,"notes":"三步流程"},
+  {"type":"figure","title":"图1：循环性能对比","figure_desc":"展示三种固含量样品500次循环的容量保持率变化曲线。","analysis":"低固含量89%远优于高固含量61%，团聚是主因。","notes":"核心数据图"},
+  {"type":"stats","title":"关键性能参数","stats":[{"value":"89%","unit":"容量保持率","label":"低固含量样品","color":"1B6B3A"},{"value":"61%","unit":"容量保持率","label":"高固含量样品","color":"8B1A1A"}],"notes":"直观对比"},
   {"type":"ending"}
 ]}
-
-⚠️ content 页的 paragraphs 必须是 []，notes 必须是 ""（第二阶段填充）
-⚠️ card 版式需要填写 cards 数组（cards 字段很短，直接在骨架里写完整）
-⚠️ stats/table/comparison 需要填写完整数据（这些字段本来就很短）
 
 【论文内容】
 ${keyContent}`;
 
-    // ── 构建填充阶段提示词（用于第二阶段逐批填充正文）─────────────────────────
-    const buildFillPrompt = (
-      batchSlides: Slide[],
-      allSlides: Slide[],
-      batchStartIdx: number,
-    ): string => {
-      const totalPages = allSlides.length;
-      const slidesSummary = allSlides
-        .map((s, i) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const layout = (s as any).layout ? ` [${(s as any).layout}]` : "";
-          return `  第${i + 1}页: ${s.type}${layout} - ${(s as any).title ?? ""}`;
-        })
-        .join("\n");
-      const prevIdx = batchStartIdx - 1;
-      const nextIdx = batchStartIdx + batchSlides.length;
-      const prevSlide = prevIdx >= 0 ? allSlides[prevIdx] : null;
-      const nextSlide = nextIdx < totalPages ? allSlides[nextIdx] : null;
+    // ── SSE 流式调用 AI，边生成边发心跳保活 Nginx 连接 ───────────────────────
+    const claudeRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "deepseek-v4-pro",
+        max_tokens: 12000,
+        temperature: 0.1,
+        stream: true,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
 
-      return `你是专业的学术PPT内容撰写专家。这是两阶段生成的第二阶段：请为以下 ${batchSlides.length} 页幻灯片填充详细正文内容。
+    if (!claudeRes.ok) {
+      const err = await claudeRes.text();
+      console.error("PPT API 错误:", claudeRes.status, err.slice(0, 300));
+      return NextResponse.json({ error: `AI 生成失败（HTTP ${claudeRes.status}）` }, { status: 500 });
+    }
 
-【输出格式——最高优先级，违反即报错】
-只输出一个 JSON 数组，从 [ 开始，到 ] 结束，数组包含 ${batchSlides.length} 个幻灯片对象，顺序与输入骨架一致。
-禁止在数组前后输出任何说明文字、标题、注释或代码块标记（\`\`\`）。
-正确示例（${batchSlides.length} 页）：[{...第1页...},{...第2页...}${batchSlides.length > 2 ? ",{...第3页...}" : ""}]
-
-【整篇PPT结构（共 ${totalPages} 页，仅供参考）】
-${slidesSummary}
-
-${prevSlide ? `【上一页内容（衔接参考）】\n${JSON.stringify(prevSlide, null, 2)}\n` : ""}
-${nextSlide ? `【下一页内容（衔接参考）】\n${JSON.stringify(nextSlide, null, 2)}\n` : ""}
-
-【需要填充正文的页面骨架】
-${JSON.stringify(batchSlides, null, 2)}
-
-【内容格式要求——最高优先级，违反视为错误输出】
-
-★ paragraphs 字段（standard / split 版式）：
-  - 1-2 个完整段落字符串，每段 3-5 句话，每段不少于 80 字
-  - 段落是流畅陈述性文字，不加"•"符号，不分条罗列
-  - 每段必须包含：核心观点 + 支撑数据 + 因果说明，三者缺一不可
-  ⛔ 禁止 bullet point 格式（"• 某某"）出现在 paragraphs 里
-  ⛔ 禁止空洞表述"本研究具有重要意义"——必须附具体数值和因果
-
-★ hero 版式 paragraphs：
-  - paragraphs[0]：大字显示的核心陈述，1句话，20-40字，必须含具体数值
-  - paragraphs[1]（可选）：1-2句补充说明，解释意义或对比基准
-
-★ card 版式：paragraphs 保持 []；cards 数组已在骨架中，无需更改——只填 notes 字段即可
-
-★ figure 类型：
-  - figure_desc（2-3句）：描述图表展示了什么数据，横纵轴含义，趋势或分布
-  - analysis（2-3句）：从图表得出的核心结论，含具体数值、机理解释和意义
-
-★ 关键词高亮（[[双方括号]]）：
-  - 在 paragraphs 里把最关键的 1-2 个词/数值用 [[双方括号]] 标记（渲染为红色加粗）
-  - 每段最多 2-3 处；禁止用于 title、notes、heading 字段
-
-★ notes 字段：口语说明"上页讲了什么 → 这页讲什么 → 引出下页什么"，一句话即可
-
-【跨页逻辑连贯性】
-- 参考上下页内容，确保这批页面的开头自然承接上一页，结尾自然引出下一页
-- 同一概念首次出现时详述，后续页直接引用不要重复解释
-
-【论文内容（从中提取真实数据，数字要精确）】
-${keyContent}`;
-    };
-
-    // ── 建立 SSE 响应，用心跳保活 Nginx 连接 ─────────────────────────────────
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
 
     void (async () => {
-      let totalInput = 0, totalOutput = 0;
-
-      // 每 8 秒发一次心跳，防止 Nginx proxy_read_timeout 断开
-      const heartbeat = setInterval(async () => {
-        try { await writer.write(encoder.encode(": k\n\n")); } catch {}
-      }, 8000);
+      let rawText = "";
+      let sseBuffer = "";
+      let inputTokens = 0, outputTokens = 0;
 
       try {
-        // ── 第一阶段：生成骨架 ─────────────────────────────────────────────────
-        console.log("[PPT Pass1] 开始生成骨架...");
-        const { text: skeletonText, inputTokens: in1, outputTokens: out1 } =
-          await callAISingle(apiKey, skeletonPrompt, 12000);
-        totalInput += in1; totalOutput += out1;
-        console.log(`[PPT Pass1] 完成 | 输入 tokens: ${in1}, 输出 tokens: ${out1}`);
+        const reader = claudeRes.body!.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        console.log(`[PPT Pass1] 骨架原始输出前 500 字: ${skeletonText.slice(0, 500)}`);
-        const skeleton = parseRawJSON<PptContent>(skeletonText);
-        if (!skeleton.slides?.length) throw new Error("骨架解析失败或 slides 为空");
-        console.log(`[PPT Pass1] 骨架页数: ${skeleton.slides.length}`);
+          await writer.write(encoder.encode(": k\n\n")); // 心跳，重置 Nginx 超时
 
-        // 强制清空正文字段——不依赖 AI 遵守指令，确保 Pass2 能完整填充
-        skeleton.slides.forEach(slide => {
-          if (slide.type === "content") {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const s = slide as any;
-            s.paragraphs = [];
-            s.notes = "";
-            // card 版式保留 cards（这是结构性数据），但清空 notes
-          } else if (slide.type === "figure") {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const s = slide as any;
-            s.figure_desc = "";
-            s.analysis = "";
-            s.notes = "";
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const raw = line.slice(6).trim();
+            if (!raw || raw === "[DONE]") continue;
+            try {
+              const evt = JSON.parse(raw);
+              if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+                rawText += evt.delta.text ?? "";
+              } else if (evt.type === "message_start" && evt.message?.usage) {
+                inputTokens = evt.message.usage.input_tokens ?? 0;
+              } else if (evt.type === "message_delta" && evt.usage) {
+                outputTokens = evt.usage.output_tokens ?? 0;
+              }
+            } catch { /* 跳过无法解析的行 */ }
           }
-        });
-
-        // ── 第二阶段：逐批填充正文（每批 3 页）──────────────────────────────────
-        const BATCH = 3;
-        const fillTargets = skeleton.slides
-          .map((s, i) => (["content", "figure"].includes(s.type) ? i : -1))
-          .filter(i => i >= 0);
-
-        console.log(`[PPT Pass2] 需填充页数: ${fillTargets.length}，分 ${Math.ceil(fillTargets.length / BATCH)} 批`);
-
-        for (let b = 0; b < fillTargets.length; b += BATCH) {
-          const batchIndices = fillTargets.slice(b, b + BATCH);
-          const batchSlides  = batchIndices.map(i => skeleton.slides[i]);
-          const fillPrompt   = buildFillPrompt(batchSlides, skeleton.slides, batchIndices[0]);
-
-          await writer.write(encoder.encode(": k\n\n")); // 填充批次间发心跳
-
-          const batchNum = Math.floor(b / BATCH) + 1;
-          console.log(`[PPT Pass2 batch ${batchNum}] 填充页索引: [${batchIndices.join(",")}]`);
-
-          const { text: fillText, inputTokens: in2, outputTokens: out2 } =
-            await callAISingle(apiKey, fillPrompt, 8000);
-          totalInput += in2; totalOutput += out2;
-          console.log(`[PPT Pass2 batch ${batchNum}] 完成 | 输入 tokens: ${in2}, 输出 tokens: ${out2}`);
-          console.log(`[PPT Pass2 batch ${batchNum}] 原始输出前 300 字: ${fillText.slice(0, 300)}`);
-
-          const filledSlides = parseRawArray<Slide>(fillText);
-          batchIndices.forEach((slideIdx, batchPos) => {
-            const filled = filledSlides[batchPos];
-            if (filled) {
-              skeleton.slides[slideIdx] = { ...skeleton.slides[slideIdx], ...filled };
-            }
-          });
         }
 
-        console.log(`[PPT 总计] 输入 tokens: ${totalInput}, 输出 tokens: ${totalOutput}`);
+        console.log(`[PPT] 输入 tokens: ${inputTokens}, 输出 tokens: ${outputTokens}`);
+        console.log(`[PPT] 原始输出前 300 字: ${rawText.slice(0, 300)}`);
+
+        // JSON 解析（三级容错）
+        let pptContent: PptContent;
+        try {
+          pptContent = parseRawJSON<PptContent>(rawText);
+        } catch {
+          // 截断容错：找到最后一个完整 slide 后补全结构
+          console.error("[PPT] JSON 解析失败，尝试截断补全");
+          const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+          const base = stripped.startsWith("{") ? stripped : '{"slides": ' + stripped;
+          const lastSlide = base.lastIndexOf("},");
+          if (lastSlide > 0) {
+            try {
+              pptContent = JSON.parse(base.slice(0, lastSlide + 1) + "]}") as PptContent;
+              console.log("[PPT] 截断补全成功，实际页数:", pptContent.slides?.length ?? 0);
+            } catch {
+              console.error("[PPT] 截断补全失败，原始输出前 500 字:", rawText.slice(0, 500));
+              await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
+              return;
+            }
+          } else {
+            await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
+            return;
+          }
+        }
+
+        if (!pptContent.slides?.length) {
+          await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出内容为空，请重试" })}\n\n`));
+          return;
+        }
+
         console.log("[ppt-layout-debug] 各页 layout 汇总：");
-        skeleton.slides.forEach((slide, i) => {
+        pptContent.slides.forEach((slide, i) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const layoutVal = (slide as any).layout ?? "(无)";
-          console.log(`  [${i + 1}] type=${slide.type}  layout=${layoutVal}`);
+          console.log(`  [${i + 1}] type=${slide.type}  layout=${(slide as any).layout ?? "(无)"}`);
         });
 
-        // 记录用量
         if (userId) {
           insertUsageRecord({
             userId, actionType: "ppt_generate",
-            tokensInput: totalInput, tokensOutput: totalOutput,
+            tokensInput: inputTokens, tokensOutput: outputTokens,
           }).catch(() => {});
         }
 
-        await writer.write(encoder.encode(`data: ${JSON.stringify({ pptContent: skeleton })}\n\n`));
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ pptContent })}\n\n`));
 
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error("PPT 两阶段生成异常:", msg);
+        console.error("PPT 生成异常:", msg);
         await writer.write(encoder.encode(`data: ${JSON.stringify({ error: `请求失败：${msg.slice(0, 120)}` })}\n\n`));
       } finally {
-        clearInterval(heartbeat);
         writer.close().catch(() => {});
       }
     })();
