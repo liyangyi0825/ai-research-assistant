@@ -211,7 +211,7 @@ export async function POST(req: NextRequest) {
 
     const prompt = `【输出要求——最高优先级】
 输出必须是完整的合法 JSON，以 { 开头，以 } 结尾。
-如果内容太多导致无法在 token 限制内完成，优先保证 JSON 结构完整，减少每页的文字量，不要截断输出。
+如果内容太多导致无法在 token 限制内完成，优先保证 JSON 结构完整，可以减少幻灯片总页数，但每页内容必须完整，不要截断输出。
 只输出纯 JSON，不要代码块标记，不要任何说明文字。
 
 【任务】将以下论文内容转化为高质量的PPT结构化大纲。
@@ -224,22 +224,25 @@ export async function POST(req: NextRequest) {
 - 每次生成同一篇论文，章节结构和页面顺序必须保持一致
 
 【页数与字数限制——必须严格遵守，这是控制输出长度的关键】
-- slides 数组总页数：不超过 20 页
-- 每个 paragraphs 段落：不超过 80 字（约 2-3 句话）
+- slides 数组总页数：不超过 18 页
+- 每个 paragraphs 段落：50-120 字（约 2-3 句话），⛔ 禁止空数组 [] 或空字符串
 - notes 字段：不超过 20 字
-- figure_desc 字段：不超过 50 字
-- analysis 字段：不超过 50 字
-- card.points 每条：不超过 20 字
+- figure_desc 字段：不超过 60 字
+- analysis 字段：不超过 60 字
+- card.points 每条：不超过 25 字
+- ⛔ type=content 的 standard/split/hero 页面，paragraphs 至少要有 1 个非空段落
 ${isDefense
   ? "- 结构：封面→目录→章节过渡页→内容页→结尾页"
   : "- 结构：封面→目录→内容页→结尾页（省略章节过渡页）"
 }
 
 【layout 选择（每个 content 页必须判断，⛔ 禁止全部 standard）】
+- layout 只有 4 种合法值："standard" | "split" | "hero" | "card"，⛔ 不要用 "figure"（那是 type 字段，不是 layout）
 - hero：全文最关键单一数据/结论，最多 2 页
 - split：研究发现/实验结论，至少 2 页
 - card：内容分 2-3 个并列子主题时用，需有 cards 数组，paragraphs 填 []
 - standard：研究背景/文献综述/叙述性内容
+- 图表类内容用 type="figure"（独立类型，不是 content+layout=figure）
 
 【paragraphs 格式】
 - standard/split：1-2 个段落，每段不超过 80 字，流畅陈述性文字，含数值+因果
@@ -366,7 +369,9 @@ ${keyContent}`;
         console.log("[ppt-layout-debug] 各页 layout 汇总：");
         pptContent.slides.forEach((slide, i) => {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          console.log(`  [${i + 1}] type=${slide.type}  layout=${(slide as any).layout ?? "(无)"}`);
+          const s = slide as any;
+          const paraPreview = Array.isArray(s.paragraphs) ? `paragraphs[${s.paragraphs.length}]="${String(s.paragraphs[0] ?? "").slice(0, 40)}"` : "no-paragraphs";
+          console.log(`  [${i + 1}] type=${slide.type}  layout=${s.layout ?? "(无)"}  ${paraPreview}`);
         });
 
         if (userId) {
