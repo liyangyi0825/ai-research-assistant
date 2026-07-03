@@ -138,7 +138,7 @@ async function callAISingle(
   };
 }
 
-/** 解析 AI 输出的 JSON，带截断容错 */
+/** 解析 AI 输出的 JSON 对象，带截断容错 */
 function parseRawJSON<T>(rawText: string): T {
   const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
   const s = stripped.indexOf("{");
@@ -147,14 +147,45 @@ function parseRawJSON<T>(rawText: string): T {
   try {
     return JSON.parse(cleaned) as T;
   } catch {
-    // 截断容错：找最后一个完整的 } 尝试补全
     const base = s !== -1 ? stripped.slice(s) : stripped;
     const lastClose = base.lastIndexOf("}");
     if (lastClose > 0) {
       try { return JSON.parse(base.slice(0, lastClose + 1)) as T; } catch {}
     }
-    throw new Error("JSON 解析失败");
+    throw new Error("JSON 对象解析失败");
   }
+}
+
+/** 解析 AI 输出的 JSON 数组（Pass2 专用），带截断容错 */
+function parseRawArray<T>(rawText: string): T[] {
+  // 去掉代码块标记
+  const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+  // 先尝试找 [...] 数组
+  const arrStart = stripped.indexOf("[");
+  const arrEnd   = stripped.lastIndexOf("]");
+  if (arrStart !== -1 && arrEnd > arrStart) {
+    const arrStr = stripped.slice(arrStart, arrEnd + 1);
+    try { return JSON.parse(arrStr) as T[]; } catch {}
+    // 截断容错：找最后一个完整对象后补 ]
+    const lastObj = arrStr.lastIndexOf("},");
+    if (lastObj > 0) {
+      try { return JSON.parse(arrStr.slice(0, lastObj + 1) + "]") as T[]; } catch {}
+    }
+    const lastObjEnd = arrStr.lastIndexOf("}");
+    if (lastObjEnd > 0) {
+      try { return JSON.parse(arrStr.slice(0, lastObjEnd + 1) + "]") as T[]; } catch {}
+    }
+  }
+  // 兜底：尝试解析为 {slides:[...]} 对象
+  const objStart = stripped.indexOf("{");
+  const objEnd   = stripped.lastIndexOf("}");
+  if (objStart !== -1 && objEnd > objStart) {
+    try {
+      const obj = JSON.parse(stripped.slice(objStart, objEnd + 1)) as { slides?: T[] };
+      if (Array.isArray(obj.slides)) return obj.slides;
+    } catch {}
+  }
+  throw new Error("JSON 数组解析失败");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -287,7 +318,10 @@ ${keyContent}`;
 
       return `你是专业的学术PPT内容撰写专家。这是两阶段生成的第二阶段：请为以下 ${batchSlides.length} 页幻灯片填充详细正文内容。
 
-【任务】只输出纯 JSON，格式为 {"slides":[...]}，包含这 ${batchSlides.length} 页的完整内容，顺序与输入一致，不要代码块，不要说明文字。
+【输出格式——最高优先级，违反即报错】
+只输出一个 JSON 数组，从 [ 开始，到 ] 结束，数组包含 ${batchSlides.length} 个幻灯片对象，顺序与输入骨架一致。
+禁止在数组前后输出任何说明文字、标题、注释或代码块标记（\`\`\`）。
+正确示例（${batchSlides.length} 页）：[{...第1页...},{...第2页...}${batchSlides.length > 2 ? ",{...第3页...}" : ""}]
 
 【整篇PPT结构（共 ${totalPages} 页，仅供参考）】
 ${slidesSummary}
@@ -352,6 +386,7 @@ ${keyContent}`;
         totalInput += in1; totalOutput += out1;
         console.log(`[PPT Pass1] 完成 | 输入 tokens: ${in1}, 输出 tokens: ${out1}`);
 
+        console.log(`[PPT Pass1] 骨架原始输出前 500 字: ${skeletonText.slice(0, 500)}`);
         const skeleton = parseRawJSON<PptContent>(skeletonText);
         if (!skeleton.slides?.length) throw new Error("骨架解析失败或 slides 为空");
         console.log(`[PPT Pass1] 骨架页数: ${skeleton.slides.length}`);
@@ -378,10 +413,11 @@ ${keyContent}`;
             await callAISingle(apiKey, fillPrompt, 8000);
           totalInput += in2; totalOutput += out2;
           console.log(`[PPT Pass2 batch ${batchNum}] 完成 | 输入 tokens: ${in2}, 输出 tokens: ${out2}`);
+          console.log(`[PPT Pass2 batch ${batchNum}] 原始输出前 300 字: ${fillText.slice(0, 300)}`);
 
-          const fillResult = parseRawJSON<{ slides: Slide[] }>(fillText);
+          const filledSlides = parseRawArray<Slide>(fillText);
           batchIndices.forEach((slideIdx, batchPos) => {
-            const filled = fillResult.slides?.[batchPos];
+            const filled = filledSlides[batchPos];
             if (filled) {
               skeleton.slides[slideIdx] = { ...skeleton.slides[slideIdx], ...filled };
             }
