@@ -94,9 +94,9 @@ description：一句话中文，说明该组合检索的方向
 
     // 清除可能的 markdown 代码块
     const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-    let parsed: unknown;
+    let parsed: { combinations: KeywordCombination[] };
     try {
-      parsed = JSON.parse(cleaned);
+      parsed = JSON.parse(cleaned) as { combinations: KeywordCombination[] };
     } catch {
       console.error("[keywords] JSON 解析失败，raw text:", text.slice(0, 300));
       // 截断容错
@@ -104,7 +104,7 @@ description：一句话中文，说明该组合检索的方向
         const jsonStart = cleaned.indexOf("{");
         const jsonEnd = cleaned.lastIndexOf("}");
         const trimmed = jsonStart !== -1 && jsonEnd > jsonStart ? cleaned.slice(jsonStart, jsonEnd + 1) : cleaned;
-        parsed = JSON.parse(trimmed);
+        parsed = JSON.parse(trimmed) as { combinations: KeywordCombination[] };
       } catch {
         return NextResponse.json({ error: "AI 返回格式异常，请重试" }, { status: 500 });
       }
