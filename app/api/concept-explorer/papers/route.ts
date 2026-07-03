@@ -1,7 +1,7 @@
 ﻿// 后端接口：从学术数据库搜索概念相关论文
 // 路径：POST /api/concept-explorer/papers
 // 中文概念自动翻译成英文再搜索
-// - oldest（最早论文）：OpenAlex API，按发表年份升序
+// - oldest（起源论文）：Semantic Scholar API，按发表年份升序，1990年后 + 学科过滤 + 引用/摘要质量过滤
 // - recent（最新进展）：Semantic Scholar API，按引用数降序
 
 import { NextRequest, NextResponse } from "next/server";
@@ -32,6 +32,61 @@ const SS_HEADERS = { "User-Agent": "AI-Research-Assistant/1.0 (mailto:admin@iyan
 
 function hasChinese(text: string): boolean {
   return /[一-鿿]/.test(text);
+}
+
+// Semantic Scholar fieldsOfStudy 参数的合法取值（用于校验 AI 的判断结果，避免传入非法值导致查询报错）
+const ORIGIN_FIELDS_OF_STUDY = [
+  "Computer Science", "Medicine", "Chemistry", "Biology", "Materials Science", "Physics",
+  "Geology", "Psychology", "Art", "History", "Geography", "Sociology", "Business",
+  "Political Science", "Economics", "Philosophy", "Mathematics", "Engineering",
+  "Environmental Science", "Agricultural and Food Sciences", "Education", "Law", "Linguistics",
+];
+
+// 起源论文检索前，先让 AI 给出最准确的英文学术检索词 + 所属学科（用于 Semantic Scholar 的 fieldsOfStudy 过滤）
+async function getOriginSearchQuery(
+  concept: string,
+  apiKey: string,
+): Promise<{ term: string; fieldOfStudy: string | null }> {
+  try {
+    const res = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "deepseek-v4-pro",
+        max_tokens: 150,
+        temperature: 0.1,
+        messages: [{
+          role: "user",
+          content: `你是学术检索专家。用户想查找学术概念「${concept}」的起源论文。
+
+请给出：
+1. term：这个概念最准确的英文学术检索词（2-6个单词，用学术圈真实使用的术语，不要生硬直译）
+2. fieldOfStudy：该概念最相关的学科领域，只能从以下列表中选一个（实在无法判断就填 null）：
+${ORIGIN_FIELDS_OF_STUDY.join("、")}
+
+只输出纯 JSON，不要代码块，不要任何解释：
+{"term":"...","fieldOfStudy":"..."}`,
+        }],
+      }),
+    });
+    const data = await res.json();
+    const textBlock = data.content?.find((b: { type: string }) => b.type === "text");
+    const text = (textBlock?.text ?? "").trim();
+    const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+    const parsed = JSON.parse(cleaned) as { term?: string; fieldOfStudy?: string | null };
+    const term = parsed.term?.trim() || concept;
+    const fieldOfStudy = parsed.fieldOfStudy && ORIGIN_FIELDS_OF_STUDY.includes(parsed.fieldOfStudy)
+      ? parsed.fieldOfStudy
+      : null;
+    return { term, fieldOfStudy };
+  } catch (e) {
+    console.warn("[concept-papers] 起源检索词生成失败，退回原始概念:", e);
+    return { term: concept, fieldOfStudy: null };
+  }
 }
 
 async function translateToEnglish(concept: string, apiKey: string): Promise<string> {
@@ -133,24 +188,57 @@ export async function POST(req: NextRequest) {
 
     const currentYear = new Date().getFullYear();
 
-    // ── oldest：OpenAlex，按发表年份升序 ────────────────────────────────────
+    // ── oldest：Semantic Scholar，1990年后 + 学科过滤，按年份升序，再做引用/摘要质量过滤 ──
     if (type === "oldest") {
-      const q = encodeURIComponent(searchTerm);
-      const url = `${OA_BASE}?search=${q}&sort=publication_year:asc&per-page=3&select=${OA_FIELDS}`;
-      console.log("[concept-papers] oldest URL:", url);
-      const res = await fetchWithProxy(url, { headers: OA_HEADERS });
-      console.log("[concept-papers] oldest 状态:", res.status);
-      if (!res.ok) {
-        const errText = await res.text();
-        console.error("[concept-papers] OpenAlex oldest 错误:", res.status, errText.slice(0, 200));
-        return NextResponse.json({ papers: [], searchTerm });
+      const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
+      const { term: originTerm, fieldOfStudy } = apiKey
+        ? await getOriginSearchQuery(rawConcept, apiKey)
+        : { term: searchTerm, fieldOfStudy: null as string | null };
+      console.log("[concept-papers] 起源检索词:", originTerm, "学科:", fieldOfStudy);
+
+      const q = encodeURIComponent(originTerm);
+      const fieldParam = fieldOfStudy ? `&fieldsOfStudy=${encodeURIComponent(fieldOfStudy)}` : "";
+      const url = `${SS_BASE}?query=${q}&fields=${SS_FIELDS}&limit=20&year=1990-${currentYear}&sort=publicationDate:asc${fieldParam}`;
+      console.log("[concept-papers] oldest SS URL:", url);
+
+      let rawPapers: Paper[] = [];
+      try {
+        const res = await fetchWithProxy(url, { headers: SS_HEADERS });
+        console.log("[concept-papers] oldest SS 状态:", res.status);
+        if (res.ok) {
+          const data = await res.json();
+          rawPapers = (data.data ?? []).map(toSSPaper);
+        } else {
+          const errText = await res.text();
+          console.error("[concept-papers] Semantic Scholar oldest 错误:", res.status, errText.slice(0, 200));
+        }
+      } catch (e) {
+        console.warn("[concept-papers] Semantic Scholar oldest 异常:", e);
       }
-      const data = await res.json();
-      const papers: Paper[] = (data.results ?? [])
-        .map(toOAPaper)
-        .filter((p: Paper) => p.year !== null);
-      console.log("[concept-papers] oldest API 返回论文数:", papers.length);
-      return NextResponse.json({ papers, searchTerm });
+
+      // 质量过滤：引用数 > 20、摘要完整、摘要中出现检索词（粗略相关性验证）
+      const keywords: string[] = originTerm
+        .toLowerCase()
+        .split(/\s+/)
+        .filter((w: string) => w.length > 2 && !["and", "the", "for", "with", "from"].includes(w));
+      const papers = rawPapers
+        .filter((p: Paper) =>
+          p.year !== null &&
+          p.citationCount > 20 &&
+          !!p.abstract &&
+          (keywords.length === 0 || keywords.some((k: string) => p.abstract!.toLowerCase().includes(k)))
+        )
+        .sort((a: Paper, b: Paper) => (a.year ?? 0) - (b.year ?? 0))
+        .slice(0, 3);
+
+      console.log("[concept-papers] oldest 质量过滤后论文数:", papers.length, "/", rawPapers.length);
+
+      // 过滤后不足 2 篇视为证据不足，不展示低质量结果，也不让 AI 编造
+      if (papers.length < 2) {
+        return NextResponse.json({ papers: [], searchTerm: originTerm, insufficientEvidence: true });
+      }
+
+      return NextResponse.json({ papers, searchTerm: originTerm });
     }
 
     // ── recent：优先 Semantic Scholar，失败自动切换到 OpenAlex ───────────────

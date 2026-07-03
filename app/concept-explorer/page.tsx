@@ -580,7 +580,7 @@ export default function ConceptExplorerPage() {
                 {oldestStatus === "loading" && <Skeleton lines={2} />}
                 {oldestStatus === "done" && oldestPapers.length === 0 && (
                   <p className="text-xs text-gray-400 italic">
-                    未找到数据库结果，以下为 AI 知识库内容，请自行在知网验证
+                    未找到足够可信的起源文献，建议自行在知网 / Google Scholar 查证
                   </p>
                 )}
                 {oldestPapers.length > 0 && (
