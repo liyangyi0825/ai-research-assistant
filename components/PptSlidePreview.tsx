@@ -567,10 +567,20 @@ const TYPE_BADGE: Record<string, { bg: string; label: string }> = {
 
 // ── 主组件 ────────────────────────────────────────────────────────────────────
 export function PptSlidePreview({ pptContent }: { pptContent: PptContent }) {
-  const [idx, setIdx]   = useState(0);
-  const [scale, setScale] = useState(0.5);
-  const containerRef    = useRef<HTMLDivElement>(null);
-  const thumbRef        = useRef<HTMLDivElement>(null);
+  const [idx, setIdx]       = useState(0);
+  const [scale, setScale]   = useState(0.5);
+  const containerRef        = useRef<HTMLDivElement>(null);
+  const thumbRef            = useRef<HTMLDivElement>(null);
+
+  // 可变 slides 状态（支持单页替换）
+  const [slides, setSlides] = useState<Slide[]>(pptContent.slides || []);
+  useEffect(() => { setSlides(pptContent.slides || []); }, [pptContent]);
+
+  // 单页重生成状态
+  const [editOpen,     setEditOpen]     = useState(false);
+  const [instruction,  setInstruction]  = useState("");
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenError,   setRegenError]   = useState<string | null>(null);
 
   // 响应式缩放：容器宽度 / 内部 1000px
   useEffect(() => {
@@ -585,12 +595,40 @@ export function PptSlidePreview({ pptContent }: { pptContent: PptContent }) {
     return () => ro.disconnect();
   }, []);
 
-  const slides = pptContent.slides || [];
-  const total  = slides.length;
-  const slide  = slides[idx];
+  const total = slides.length;
+  const slide = slides[idx];
 
-  const prev = useCallback(() => setIdx(i => Math.max(0, i - 1)), []);
-  const next = useCallback(() => setIdx(i => Math.min(total - 1, i + 1)), [total]);
+  const prev = useCallback(() => { setIdx(i => Math.max(0, i - 1)); setEditOpen(false); setRegenError(null); }, []);
+  const next = useCallback(() => { setIdx(i => Math.min(total - 1, i + 1)); setEditOpen(false); setRegenError(null); }, [total]);
+
+  // 单页重新生成
+  const handleRegenerate = useCallback(async () => {
+    if (!instruction.trim() || regenerating) return;
+    setRegenerating(true);
+    setRegenError(null);
+    try {
+      const res = await fetch("/api/ppt/regenerate-slide", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          currentSlide: slides[idx],
+          prevSlide:    idx > 0 ? slides[idx - 1] : null,
+          nextSlide:    idx < slides.length - 1 ? slides[idx + 1] : null,
+          userInstruction: instruction,
+          scene: pptContent.scene ?? "defense",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || "生成失败");
+      setSlides(prev => prev.map((s, i) => i === idx ? data.slide : s));
+      setEditOpen(false);
+      setInstruction("");
+    } catch (e) {
+      setRegenError(e instanceof Error ? e.message : "生成失败，请重试");
+    } finally {
+      setRegenerating(false);
+    }
+  }, [instruction, regenerating, slides, idx, pptContent.scene]);
 
   // 切换页时让缩略图滚入可视区
   useEffect(() => {
@@ -623,6 +661,16 @@ export function PptSlidePreview({ pptContent }: { pptContent: PptContent }) {
           <div style={{ width: 1000, height: 562.5, transform: `scale(${scale})`, transformOrigin: "top left" }}>
             {slide && renderSlide(slide)}
           </div>
+          {/* 重新生成时显示半透明遮罩 */}
+          {regenerating && (
+            <div style={{
+              position: "absolute", inset: 0, background: "rgba(255,255,255,0.75)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              borderRadius: 10, zIndex: 10,
+            }}>
+              <span className="text-sm text-gray-500 animate-pulse">✨ AI 生成中…</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -656,6 +704,50 @@ export function PptSlidePreview({ pptContent }: { pptContent: PptContent }) {
         >
           下一页 →
         </button>
+      </div>
+
+      {/* ── 单页修改面板 ── */}
+      <div className="mt-2">
+        {!editOpen ? (
+          <button
+            onClick={() => { setEditOpen(true); setRegenError(null); }}
+            className="w-full py-1.5 text-sm rounded-lg border border-dashed border-gray-300 text-gray-500 hover:border-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors"
+          >
+            ✏️ 修改这一页
+          </button>
+        ) : (
+          <div className="border border-indigo-200 rounded-xl p-3 bg-indigo-50 space-y-2">
+            <textarea
+              value={instruction}
+              onChange={e => setInstruction(e.target.value)}
+              placeholder="告诉 AI 你想怎么改这一页，例如：加一张示意图、改成左图右文版式、把这页拆成两页…"
+              rows={2}
+              className="w-full text-sm rounded-lg border border-indigo-200 bg-white px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-400 placeholder-gray-400"
+              onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleRegenerate(); }}
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleRegenerate}
+                disabled={regenerating || !instruction.trim()}
+                className="flex-1 py-1.5 text-sm rounded-lg bg-indigo-600 text-white font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {regenerating ? "AI 生成中…" : "重新生成"}
+              </button>
+              <button
+                onClick={() => { setEditOpen(false); setInstruction(""); setRegenError(null); }}
+                disabled={regenerating}
+                className="px-4 py-1.5 text-sm rounded-lg border border-gray-200 bg-white hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              >
+                取消
+              </button>
+            </div>
+            {regenError && (
+              <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                ⚠️ {regenError}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── 缩略图条 ── */}
