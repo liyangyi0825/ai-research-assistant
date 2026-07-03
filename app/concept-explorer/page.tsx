@@ -397,11 +397,7 @@ export default function ConceptExplorerPage() {
 
     // ── 区块 1 + 2：并行启动 ────────────────────────────────────────────────
 
-    // 区块 1：AI 溯源（流式）—— 直接传 term，不用 currentConcept state
-    setOriginAIStatus("loading");
-    const block1Promise = streamBlock(term, 1, [], setOriginAI, setOriginAIStatus, originTextRef);
-
-    // 区块 1：最早论文（非流式）
+    // 区块 1：最早论文（非流式）—— 先查真实数据，再喂给 AI 溯源，AI 不再自己瞎猜论文
     setOldestStatus("loading");
     const oldestPromise = fetchPapers(term, "oldest").then(papers => {
       setOldestPapers(papers);
@@ -412,7 +408,7 @@ export default function ConceptExplorerPage() {
       return [] as Paper[];
     });
 
-    // 区块 2：近期论文（非流式）
+    // 区块 2：近期论文（非流式，与区块 1 并行）
     setRecentStatus("loading");
     const recentPromise = fetchPapers(term, "recent").then(papers => {
       setRecentPapers(papers);
@@ -423,13 +419,17 @@ export default function ConceptExplorerPage() {
       return [] as Paper[];
     });
 
+    // 区块 1：AI 溯源（流式）—— 等最早论文查回来后，把真实论文传给 AI 做分析
+    setOriginAIStatus("loading");
+    const oldestPapersData = await oldestPromise;
+    const block1Promise = streamBlock(term, 1, oldestPapersData, setOriginAI, setOriginAIStatus, originTextRef);
+
     // ── 区块 3：等区块 2 论文回来后开始 ─────────────────────────────────────
     const recentPapersData = await recentPromise;
     await streamBlock(term, 3, recentPapersData, setConceptsAI, setConceptsStatus, conceptsTextRef);
 
     // ── 区块 4：等区块 1 AI + 区块 3 都完成后开始 ────────────────────────────
     await block1Promise;
-    await oldestPromise;
     await streamBlock(term, 4, recentPapersData, setIdeasAI, setIdeasStatus, { current: "" });
 
     setIsExploring(false);
