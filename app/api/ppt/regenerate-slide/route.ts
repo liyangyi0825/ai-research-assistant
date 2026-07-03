@@ -88,7 +88,7 @@ comparison 类型字段：type, title, columns(heading/color/points数组), note
       body: JSON.stringify({
         model: "deepseek-v4-pro",
         max_tokens: 8000,
-        temperature: 0.3,
+        temperature: 0.1,
         messages: [{ role: "user", content: prompt }],
       }),
     });

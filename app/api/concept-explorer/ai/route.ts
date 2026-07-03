@@ -140,7 +140,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: "deepseek-v4-pro",
         max_tokens: maxTokens,
-        temperature: 0.3,
+        temperature: 0.1,
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),

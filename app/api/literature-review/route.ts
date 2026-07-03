@@ -66,7 +66,7 @@ ${paperList}
       body: JSON.stringify({
         model: "deepseek-v4-pro",
         max_tokens: 16000,
-        temperature: 0.3,
+        temperature: 0.1,
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),

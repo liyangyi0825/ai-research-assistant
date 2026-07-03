@@ -152,6 +152,12 @@ export async function POST(req: NextRequest) {
 
     const prompt = `你是一位专业的学术PPT设计专家，擅长从论文中提取核心数据并设计内容详实的幻灯片。
 
+【一致性要求——最高优先级，违反视为严重错误】
+- 必须按照论文的实际章节结构生成，章节标题直接从论文提取原文，不得自行概括或改写
+- 严格按照论文从头到尾的顺序生成，不得跳过任何章节，不得合并或拆分章节
+- 论文中每一个实验、每一组数据、每一个结论都必须体现在对应页面中，不得遗漏
+- 每次生成同一篇论文，章节结构和页面顺序必须保持一致，不得因随机性导致结构变化
+
 【任务】将以下论文内容转化为高质量的PPT结构化大纲，只输出纯 JSON，不要代码块，不要任何说明文字。
 
 【场景】${isDefense ? "毕业/学位答辩（正式学术风格）" : "组会/进展汇报（简洁风格）"}
@@ -391,7 +397,7 @@ ${keyContent}`;
       body: JSON.stringify({
         model: "deepseek-v4-pro",
         max_tokens: 32000,
-        temperature: 0.3,
+        temperature: 0.1,
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),

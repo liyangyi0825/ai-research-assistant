@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: "deepseek-v4-pro",
         max_tokens: 8000,
-        temperature: 0.3,
+        temperature: 0.1,
         messages: [{
           role: "user",
           content: `根据以下学生的回答，整理出他的研究档案。只输出纯 JSON，不要代码块，不要任何解释。

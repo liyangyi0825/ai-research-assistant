@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model: "deepseek-v4-pro",
         max_tokens: 8000,
-        temperature: 0.3,
+        temperature: 0.1,
         messages: [
           {
             role: "user",
@@ -94,7 +94,21 @@ description：一句话中文，说明该组合检索的方向
 
     // 清除可能的 markdown 代码块
     const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-    const parsed = JSON.parse(cleaned);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch {
+      console.error("[keywords] JSON 解析失败，raw text:", text.slice(0, 300));
+      // 截断容错
+      try {
+        const jsonStart = cleaned.indexOf("{");
+        const jsonEnd = cleaned.lastIndexOf("}");
+        const trimmed = jsonStart !== -1 && jsonEnd > jsonStart ? cleaned.slice(jsonStart, jsonEnd + 1) : cleaned;
+        parsed = JSON.parse(trimmed);
+      } catch {
+        return NextResponse.json({ error: "AI 返回格式异常，请重试" }, { status: 500 });
+      }
+    }
 
     // 写入 usage 记录
     if (userId) {

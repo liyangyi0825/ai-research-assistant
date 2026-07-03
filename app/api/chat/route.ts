@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({
           model: "deepseek-v4-pro",
           max_tokens: 16000,
-          temperature: 0.5,
+          temperature: 0.3,
           stream: true,
           system: `你是一个学术论文助手。用户上传了一篇论文，你的任务是根据论文内容回答用户的问题。
 请用中文回答，回答要准确、简洁，并直接基于论文内容。如果论文中没有相关信息，请如实说明。
