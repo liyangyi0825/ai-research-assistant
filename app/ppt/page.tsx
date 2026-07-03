@@ -426,7 +426,7 @@ export default function PptPage() {
                         <div className="text-2xl mb-2">🎓</div>
                         <div className="font-semibold text-gray-800 text-sm mb-1">毕业 / 学位答辩</div>
                         <div className="text-xs text-gray-500 leading-relaxed">
-                          正式学术风格，深蓝色调<br />AI 自动决定页数（通常 15–20 页）
+                          正式学术风格，深蓝色调<br />AI 自动决定页数（通常 10–13 页）
                         </div>
                         <div className="mt-2 text-xs text-blue-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">点击选择 →</div>
                       </button>
@@ -437,7 +437,7 @@ export default function PptPage() {
                         <div className="text-2xl mb-2">📊</div>
                         <div className="font-semibold text-gray-800 text-sm mb-1">组会 / 进展汇报</div>
                         <div className="text-xs text-gray-500 leading-relaxed">
-                          简洁汇报风格，清爽简约<br />AI 自动决定页数（通常 8–12 页）
+                          简洁汇报风格，清爽简约<br />AI 自动决定页数（通常 7–10 页）
                         </div>
                         <div className="mt-2 text-xs text-green-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">点击选择 →</div>
                       </button>

@@ -224,7 +224,7 @@ export async function POST(req: NextRequest) {
 - 每次生成同一篇论文，章节结构和页面顺序必须保持一致
 
 【页数与字数限制——必须严格遵守，这是控制输出长度的关键】
-- slides 数组总页数：不超过 18 页
+- slides 数组总页数：不超过 13 页（这是硬性上限，避免输出被截断）
 - 每个 paragraphs 段落：50-120 字（约 2-3 句话），⛔ 禁止空数组 [] 或空字符串
 - notes 字段：不超过 20 字
 - figure_desc 字段：不超过 60 字
@@ -281,7 +281,7 @@ ${keyContent}`;
       },
       body: JSON.stringify({
         model: "deepseek-v4-pro",
-        max_tokens: 12000,
+        max_tokens: 16000,
         temperature: 0.1,
         stream: true,
         messages: [{ role: "user", content: prompt }],
