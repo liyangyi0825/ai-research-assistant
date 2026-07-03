@@ -173,9 +173,13 @@ function closeTruncatedJSON(raw: string): string {
 /** 解析 AI 输出的 JSON 对象，带截断容错 */
 function parseRawJSON<T>(rawText: string): T {
   const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-  const s = stripped.indexOf("{");
+  // 如果 AI 漏掉最外层 {，自动补上
+  const fixedJson = stripped.trimStart().startsWith("{")
+    ? stripped
+    : '{"slides": ' + stripped + "}";
+  const s = fixedJson.indexOf("{");
   if (s === -1) throw new Error("JSON 对象解析失败：找不到 {");
-  const base = stripped.slice(s);
+  const base = fixedJson.slice(s);
 
   // 1. 直接解析
   const e = base.lastIndexOf("}");
