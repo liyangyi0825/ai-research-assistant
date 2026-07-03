@@ -16,6 +16,8 @@ export interface Paper {
   abstract: string | null;
   citationCount: number;
   doi: string | null;
+  url: string | null;
+  relevanceSummary?: string;
 }
 
 // ── OpenAlex（用于 oldest）────────────────────────────────────────────────────
@@ -25,7 +27,7 @@ const OA_HEADERS = { "User-Agent": "AI-Research-Assistant/1.0 (mailto:admin@iyan
 
 // ── Semantic Scholar（用于 recent）───────────────────────────────────────────
 const SS_BASE    = "https://api.semanticscholar.org/graph/v1/paper/search";
-const SS_FIELDS  = "title,authors,year,abstract,citationCount,externalIds";
+const SS_FIELDS  = "title,authors,year,abstract,citationCount,externalIds,url";
 const SS_HEADERS = { "User-Agent": "AI-Research-Assistant/1.0 (mailto:admin@iyanhub.com)" };
 
 function hasChinese(text: string): boolean {
@@ -75,6 +77,7 @@ function reconstructAbstract(invertedIndex: Record<string, number[]> | null): st
 function toOAPaper(p: any): Paper {
   const authorships: { author: { display_name: string } }[] = p.authorships ?? [];
   const names = authorships.map(a => a.author?.display_name).filter(Boolean);
+  const doi = p.doi ? p.doi.replace("https://doi.org/", "") : null;
   return {
     paperId:       p.id ?? "",
     title:         p.title ?? "无标题",
@@ -82,13 +85,15 @@ function toOAPaper(p: any): Paper {
     year:          p.publication_year ?? null,
     abstract:      reconstructAbstract(p.abstract_inverted_index),
     citationCount: p.cited_by_count ?? 0,
-    doi:           p.doi ? p.doi.replace("https://doi.org/", "") : null,
+    doi,
+    url:           doi ? `https://doi.org/${doi}` : (p.id ?? null),
   };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function toSSPaper(p: any): Paper {
   const names: string[] = (p.authors ?? []).map((a: { name: string }) => a.name).filter(Boolean);
+  const doi = p.externalIds?.DOI ?? null;
   return {
     paperId:       p.paperId ?? "",
     title:         p.title ?? "无标题",
@@ -96,7 +101,8 @@ function toSSPaper(p: any): Paper {
     year:          p.year ?? null,
     abstract:      p.abstract ?? null,
     citationCount: p.citationCount ?? 0,
-    doi:           p.externalIds?.DOI ?? null,
+    doi,
+    url:           doi ? `https://doi.org/${doi}` : (p.url ?? null),
   };
 }
 

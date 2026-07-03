@@ -17,6 +17,8 @@ interface Paper {
   abstract: string | null;
   citationCount: number;
   doi: string | null;
+  url: string | null;
+  relevanceSummary?: string;
 }
 
 type Status = "idle" | "loading" | "done" | "error";
@@ -107,7 +109,17 @@ function PaperCard({ paper, index }: { paper: Paper; index: number }) {
       <div className="flex items-start gap-2 mb-1.5">
         <span className="shrink-0 text-xs font-bold text-gray-400 mt-0.5">#{index + 1}</span>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-gray-800 leading-snug">{paper.title}</p>
+          {paper.url ? (
+            <a
+              href={paper.url}
+              target="_blank" rel="noopener noreferrer"
+              className="text-sm font-medium text-gray-800 leading-snug hover:text-blue-600 hover:underline"
+            >
+              {paper.title}
+            </a>
+          ) : (
+            <p className="text-sm font-medium text-gray-800 leading-snug">{paper.title}</p>
+          )}
           <p className="text-xs text-gray-500 mt-0.5">
             {paper.authors}
             {paper.year && <span className="ml-2 text-gray-400">{paper.year}</span>}
@@ -120,6 +132,11 @@ function PaperCard({ paper, index }: { paper: Paper; index: number }) {
       {paper.abstract && (
         <p className="text-xs text-gray-500 ml-5 mb-2 leading-relaxed line-clamp-2">
           {paper.abstract.slice(0, 120)}…
+        </p>
+      )}
+      {paper.relevanceSummary && (
+        <p className="text-[11px] text-gray-400 ml-5 mb-2 leading-relaxed">
+          🔗 {paper.relevanceSummary}
         </p>
       )}
       <div className="flex flex-wrap gap-1.5 ml-5">
@@ -299,6 +316,23 @@ export default function ConceptExplorerPage() {
     return data.papers ?? [];
   }
 
+  // 给一批真实论文各配一句 AI 生成的关联说明（非流式，失败时原样返回不影响论文展示）
+  async function fetchRelevanceSummaries(term: string, papers: Paper[]): Promise<Paper[]> {
+    try {
+      const res = await fetch("/api/concept-explorer/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ concept: term, block: 2, papers }),
+      });
+      if (!res.ok) return papers;
+      const data = await res.json();
+      const summaries: string[] = data.summaries ?? [];
+      return papers.map((p, i) => ({ ...p, relevanceSummary: summaries[i] || undefined }));
+    } catch {
+      return papers;
+    }
+  }
+
   async function streamBlock(
     term: string,
     block: number,
@@ -413,6 +447,10 @@ export default function ConceptExplorerPage() {
     const recentPromise = fetchPapers(term, "recent").then(papers => {
       setRecentPapers(papers);
       setRecentStatus("done");
+      // 论文卡片先展示，AI 一句话关联说明单独异步补上，不阻塞后续区块
+      if (papers.length > 0) {
+        fetchRelevanceSummaries(term, papers).then(setRecentPapers);
+      }
       return papers;
     }).catch(() => {
       setRecentStatus("error");

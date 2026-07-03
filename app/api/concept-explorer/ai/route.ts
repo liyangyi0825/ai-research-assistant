@@ -120,6 +120,28 @@ ${originText.slice(0, 500) || "（暂无）"}
   return "";
 }
 
+// 区块 2：为每篇真实论文生成一句话关联说明（非流式，返回结构化 JSON）
+function buildRelevancePrompt(concept: string, papers: Paper[]): string {
+  const list = papers
+    .map((p, i) =>
+      `[${i + 1}] 标题：${p.title}（${p.year ?? "年份未知"}）\n摘要：${(p.abstract ?? "无摘要").slice(0, 300)}`
+    )
+    .join("\n\n");
+
+  return `研究概念：「${concept}」
+
+以下是与该概念相关的 ${papers.length} 篇真实论文：
+
+${list}
+
+请针对每一篇论文，用一句话（不超过30字）说明它与「${concept}」的具体关联。
+只能基于论文的真实标题和摘要来写，不得编造论文标题、作者或摘要之外的内容。
+
+只输出纯 JSON，不要代码块，不要任何解释：
+{"summaries":["第1篇的关联说明","第2篇的关联说明"]}
+数组顺序必须与上面的论文编号一一对应，长度必须等于 ${papers.length}。`;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
@@ -138,8 +160,60 @@ export async function POST(req: NextRequest) {
 
     const { concept, block, papers = [], originText = "", conceptsText = "" } = await req.json();
 
-    if (!concept?.trim() || ![1, 3, 4].includes(block)) {
+    if (!concept?.trim() || ![1, 2, 3, 4].includes(block)) {
       return NextResponse.json({ error: "参数错误" }, { status: 400 });
+    }
+
+    // 区块 2：批量生成论文关联说明，非流式，直接返回 JSON
+    if (block === 2) {
+      if (!Array.isArray(papers) || papers.length === 0) {
+        return NextResponse.json({ summaries: [] });
+      }
+
+      const relevanceRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "deepseek-v4-pro",
+          max_tokens: 2000,
+          temperature: 0.1,
+          messages: [{ role: "user", content: buildRelevancePrompt(concept.trim(), papers) }],
+        }),
+      });
+
+      if (!relevanceRes.ok) {
+        const err = await relevanceRes.text();
+        console.error("Claude API 错误:", err);
+        return NextResponse.json({ error: "AI 分析失败，请重试" }, { status: 500 });
+      }
+
+      const relevanceData = await relevanceRes.json();
+      const relevanceTextBlock = relevanceData.content?.find((b: { type: string }) => b.type === "text");
+      const relevanceText: string = relevanceTextBlock?.text ?? "";
+      const cleanedRelevance = relevanceText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+
+      let summaries: string[] = [];
+      try {
+        const parsedRelevance = JSON.parse(cleanedRelevance) as { summaries?: string[] };
+        summaries = Array.isArray(parsedRelevance.summaries) ? parsedRelevance.summaries : [];
+      } catch {
+        console.error("[concept-ai] 区块2 JSON 解析失败:", relevanceText.slice(0, 300));
+      }
+
+      if (userId) {
+        insertUsageRecord({
+          userId,
+          actionType: "concept_explore",
+          tokensInput: relevanceData.usage?.input_tokens ?? 0,
+          tokensOutput: relevanceData.usage?.output_tokens ?? 0,
+        }).catch(() => {});
+      }
+
+      return NextResponse.json({ summaries });
     }
 
     const prompt = buildPrompt(block, concept.trim(), papers, originText, conceptsText);
