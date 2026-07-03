@@ -371,7 +371,10 @@ ${keyContent}`;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const s = slide as any;
           const paraPreview = Array.isArray(s.paragraphs) ? `paragraphs[${s.paragraphs.length}]="${String(s.paragraphs[0] ?? "").slice(0, 40)}"` : "no-paragraphs";
-          console.log(`  [${i + 1}] type=${slide.type}  layout=${s.layout ?? "(无)"}  ${paraPreview}`);
+          const cardPreview = Array.isArray(s.cards)
+            ? `  cards[${s.cards.length}]=${s.cards.map((c: any) => `{h:"${c.heading ?? ""}",pts:${Array.isArray(c.points) ? c.points.length : 0}}`).join(",")}`
+            : "";
+          console.log(`  [${i + 1}] type=${slide.type}  layout=${s.layout ?? "(无)"}  ${paraPreview}${cardPreview}`);
         });
 
         if (userId) {
