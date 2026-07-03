@@ -138,22 +138,58 @@ async function callAISingle(
   };
 }
 
+/**
+ * 补全被截断的 JSON 字符串（括号计数法）。
+ * 能处理截断发生在字符串内部的情况（如 "paragrap 被截断）。
+ */
+function closeTruncatedJSON(raw: string): string {
+  let inString = false, escape = false;
+  let braces = 0, brackets = 0;
+  let lastValidPos = -1; // 最后一个完整 JSON value 结束位置
+
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (escape) { escape = false; continue; }
+    if (c === "\\") { escape = true; continue; }
+    if (c === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (c === "{") braces++;
+    else if (c === "}") { braces--; if (braces === 0) lastValidPos = i; }
+    else if (c === "[") brackets++;
+    else if (c === "]") brackets--;
+  }
+
+  // 如果截断在字符串内：先关闭字符串，再补括号
+  let result = inString ? raw + '"' : raw;
+  // 补 ] 再补 }（顺序：先内层数组，再外层对象）
+  for (let i = 0; i < brackets; i++) result += "]";
+  for (let i = 0; i < braces; i++) result += "}";
+  return result;
+}
+
 /** 解析 AI 输出的 JSON 对象，带截断容错 */
 function parseRawJSON<T>(rawText: string): T {
   const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
   const s = stripped.indexOf("{");
-  const e = stripped.lastIndexOf("}");
-  const cleaned = s !== -1 && e > s ? stripped.slice(s, e + 1) : stripped;
-  try {
-    return JSON.parse(cleaned) as T;
-  } catch {
-    const base = s !== -1 ? stripped.slice(s) : stripped;
-    const lastClose = base.lastIndexOf("}");
-    if (lastClose > 0) {
-      try { return JSON.parse(base.slice(0, lastClose + 1)) as T; } catch {}
-    }
-    throw new Error("JSON 对象解析失败");
+  if (s === -1) throw new Error("JSON 对象解析失败：找不到 {");
+  const base = stripped.slice(s);
+
+  // 1. 直接解析
+  const e = base.lastIndexOf("}");
+  if (e > 0) {
+    try { return JSON.parse(base.slice(0, e + 1)) as T; } catch {}
   }
+  // 2. 括号计数法补全后解析
+  try { return JSON.parse(closeTruncatedJSON(base)) as T; } catch {}
+  // 3. 找最后一个完整对象（找最后的 "},"）
+  const lastComma = base.lastIndexOf("},");
+  if (lastComma > 0) {
+    try { return JSON.parse(base.slice(0, lastComma + 1) + "]}") as T; } catch {}
+  }
+  throw new Error("JSON 对象解析失败");
 }
 
 /** 解析 AI 输出的 JSON 数组（Pass2 专用），带截断容错 */
@@ -390,6 +426,23 @@ ${keyContent}`;
         const skeleton = parseRawJSON<PptContent>(skeletonText);
         if (!skeleton.slides?.length) throw new Error("骨架解析失败或 slides 为空");
         console.log(`[PPT Pass1] 骨架页数: ${skeleton.slides.length}`);
+
+        // 强制清空正文字段——不依赖 AI 遵守指令，确保 Pass2 能完整填充
+        skeleton.slides.forEach(slide => {
+          if (slide.type === "content") {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const s = slide as any;
+            s.paragraphs = [];
+            s.notes = "";
+            // card 版式保留 cards（这是结构性数据），但清空 notes
+          } else if (slide.type === "figure") {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const s = slide as any;
+            s.figure_desc = "";
+            s.analysis = "";
+            s.notes = "";
+          }
+        });
 
         // ── 第二阶段：逐批填充正文（每批 3 页）──────────────────────────────────
         const BATCH = 3;
