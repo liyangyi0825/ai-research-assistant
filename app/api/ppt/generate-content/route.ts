@@ -244,9 +244,9 @@ ${isDefense
 - standard：研究背景/文献综述/叙述性内容
 - 图表类内容用 type="figure"（独立类型，不是 content+layout=figure）
 
-【paragraphs 格式】
-- standard/split：1-2 个段落，每段不超过 80 字，流畅陈述性文字，含数值+因果
-- hero：paragraphs[0] 为核心结论（20-40字含数值），paragraphs[1] 可选补充说明
+【paragraphs 格式——必须填满内容，⛔ 不要偷懒只写一句话】
+- standard/split：必须写 2 个段落（不是1个！），每段 50-120 字，流畅陈述性文字，含数值+因果
+- hero：paragraphs[0] 为核心结论（40-80字含数值），paragraphs[1] 必须填写补充说明/意义（不是可选，50-100字），⛔ 不要留空
 - 段落里用 [[双方括号]] 标记最关键 1-2 个词/数值，每段最多 2 处
 - ⛔ 禁止 bullet point（"•"）出现在 paragraphs 里
 
@@ -259,9 +259,9 @@ ${isDefense
   {"type":"cover","title":"...","subtitle":"...","author":"汇报人：xxx\\n指导教师：xxx","date":"${today}"},
   {"type":"contents","items":["一、研究背景","二、研究方法","三、实验结果","四、结论"]},
   {"type":"section","number":"01","title":"研究背景"},
-  {"type":"content","layout":"standard","title":"研究背景","paragraphs":["硅基负极材料理论比容量高达[[4200 mAh/g]]，是石墨的11倍，但体积膨胀达300%导致循环性能差。"],"notes":"引出研究动机"},
-  {"type":"content","layout":"hero","title":"核心发现","paragraphs":["低固含量样品500次循环后容量保持率高达[[89%]]。","对比高固含量样品仅61%，差距显著，证明固含量是关键参数。"],"notes":"本文最重要结论"},
-  {"type":"content","layout":"split","title":"实验结果分析","paragraphs":["XRD与SEM表征证实高固含量导致颗粒团聚至[[5μm]]以上，是性能下降根本原因。"],"notes":"承接方法页"},
+  {"type":"content","layout":"standard","title":"研究背景","paragraphs":["硅基负极材料理论比容量高达[[4200 mAh/g]]，是石墨的11倍，是提升锂电池能量密度的理想选择。","但硅在嵌脱锂过程中体积膨胀达[[300%]]，导致颗粒粉化、电极结构崩塌，循环性能急剧下降。"],"notes":"引出研究动机"},
+  {"type":"content","layout":"hero","title":"核心发现","paragraphs":["低固含量样品经500次循环后容量保持率高达[[89%]]，远超高固含量样品的61%。","这一差距证明固含量是决定颗粒分散性与循环稳定性的关键工艺参数，为材料优化提供了明确方向。"],"notes":"本文最重要结论"},
+  {"type":"content","layout":"split","title":"实验结果分析","paragraphs":["XRD与SEM表征证实高固含量条件下硅颗粒团聚至[[5μm]]以上，比表面积显著降低。","团聚导致锂离子传输路径变长、局部应力集中，是造成电极性能下降的根本原因。"],"notes":"承接方法页"},
   {"type":"content","layout":"card","title":"研究方法","paragraphs":[],"cards":[{"heading":"① 材料制备","points":["• 固含量30/60/100mg/mL","• 喷雾干燥造粒"]},{"heading":"② 结构表征","points":["• SEM/XRD形貌分析","• BET比表面积测定"]}],"flow":true,"notes":"三步流程"},
   {"type":"figure","title":"图1：循环性能对比","figure_desc":"展示三种固含量样品500次循环的容量保持率变化曲线。","analysis":"低固含量89%远优于高固含量61%，团聚是主因。","notes":"核心数据图"},
   {"type":"stats","title":"关键性能参数","stats":[{"value":"89%","unit":"容量保持率","label":"低固含量样品","color":"1B6B3A"},{"value":"61%","unit":"容量保持率","label":"高固含量样品","color":"8B1A1A"}],"notes":"直观对比"},

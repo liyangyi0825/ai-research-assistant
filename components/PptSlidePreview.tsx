@@ -35,14 +35,15 @@ const f = (pt: number) => pt * 100 / 72;
 function RichText({ text }: { text: string }) {
   const segs = parseHighlights(text);
   if (segs.length === 1 && !segs[0].highlight) return <>{text}</>;
+  // 包一层 span：避免被外层 flex 容器把每个片段拆成独立的 flex item 导致断行错乱
   return (
-    <>
+    <span>
       {segs.map((seg, i) =>
         seg.highlight
           ? <span key={i} style={{ color: "#CC2200", fontWeight: 700 }}>{seg.text}</span>
           : <span key={i}>{seg.text}</span>
       )}
-    </>
+    </span>
   );
 }
 
