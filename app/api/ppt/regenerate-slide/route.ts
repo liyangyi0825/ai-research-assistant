@@ -59,6 +59,7 @@ ${nextSlide ? `【下一页内容（参考，保持逻辑连贯）】\n${JSON.st
   - flow:true = 有先后顺序（加 ①②③），flow:false = 并列关系
 
 ★ figure 类型：figure_desc（图表描述，2-3句）和 analysis（机理分析，2-3句）都要详细
+  - chart_data（可选）：当前页原本有 chart_data 时，修改内容需保留/同步更新其中数值，⛔ 不要凭空编造新数字；原本没有就不要新增
 
 ★ notes 字段：口语说明"承接上页什么内容"和"引出下页什么内容"
 
@@ -66,7 +67,7 @@ ${nextSlide ? `【下一页内容（参考，保持逻辑连贯）】\n${JSON.st
 cover / contents / section / content / figure / stats / table / comparison / ending
 
 content 类型字段：type, layout, title, paragraphs, cards(可选), flow(可选), notes
-figure 类型字段：type, title, figure_desc, analysis, notes
+figure 类型字段：type, title, figure_desc, analysis, notes, chart_data(可选)
 stats 类型字段：type, title, stats(value/unit/label/color数组), notes
 table 类型字段：type, title, headers, rows, notes
 comparison 类型字段：type, title, columns(heading/color/points数组), notes

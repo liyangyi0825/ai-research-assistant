@@ -378,20 +378,50 @@ function renderFigure(prs: PptxGenJS, s: FigureSlide) {
     fontSize: 18, bold: true, color: C.WHITE, fontFace: "微软雅黑", valign: "middle",
   }));
 
-  // 图片占位框（缩短高度，为 figure_desc 留出空间）
-  slide.addShape("rect", opt({
-    x: 0.4, y: 0.98, w: 9.2, h: 2.6,
-    fill: { color: "F8F8F8" },
-    line: { color: "CCCCCC", dashType: "dash", pt: 1 },
-  }));
-  slide.addText("请在此插入图表", opt({
-    x: 0.4, y: 1.85, w: 9.2, h: 0.55,
-    fontSize: 14, color: "BBBBBB", fontFace: "微软雅黑", align: "center",
-  }));
-  slide.addText("（在 PPT 中双击占位框 / 拖入图片文件）", opt({
-    x: 0.4, y: 2.43, w: 9.2, h: 0.38,
-    fontSize: 10, color: "CCCCCC", fontFace: "微软雅黑", align: "center",
-  }));
+  // 有 chart_data 时画真实图表；否则退回占位框
+  const cd = s.chart_data;
+  const validChart = cd
+    && Array.isArray(cd.categories) && cd.categories.length >= 2
+    && Array.isArray(cd.series) && cd.series.length >= 1
+    && cd.series.every(sr => Array.isArray(sr.values) && sr.values.length === cd.categories.length);
+
+  if (validChart && cd) {
+    const chartColors = [C.NAVY, C.GOLD, C.RED, C.GREEN, C.PURPLE];
+    const chartType = cd.chart_type === "bar" ? "bar" : "line";
+    const chartData = cd.series.map(sr => ({
+      name: sr.name,
+      labels: cd.categories,
+      values: sr.values,
+    }));
+    slide.addChart(chartType, chartData, opt({
+      x: 0.4, y: 0.98, w: 9.2, h: 2.6,
+      chartColors,
+      showLegend: cd.series.length > 1,
+      legendPos: "b",
+      showTitle: false,
+      catAxisLabelColor: "666666",
+      valAxisLabelColor: "666666",
+      valAxisTitle: cd.y_label || "",
+      showValAxisTitle: !!cd.y_label,
+      lineSize: chartType === "line" ? 2.5 : undefined,
+      lineDataSymbol: chartType === "line" ? "circle" : undefined,
+      dataLabelColor: "666666",
+    }));
+  } else {
+    slide.addShape("rect", opt({
+      x: 0.4, y: 0.98, w: 9.2, h: 2.6,
+      fill: { color: "F8F8F8" },
+      line: { color: "CCCCCC", dashType: "dash", pt: 1 },
+    }));
+    slide.addText("请在此插入图表", opt({
+      x: 0.4, y: 1.85, w: 9.2, h: 0.55,
+      fontSize: 14, color: "BBBBBB", fontFace: "微软雅黑", align: "center",
+    }));
+    slide.addText("（在 PPT 中双击占位框 / 拖入图片文件）", opt({
+      x: 0.4, y: 2.43, w: 9.2, h: 0.38,
+      fontSize: 10, color: "CCCCCC", fontFace: "微软雅黑", align: "center",
+    }));
+  }
 
   // 图表说明（figure_desc）：占位框下方独立图注区域，斜体小字
   if (s.figure_desc) {

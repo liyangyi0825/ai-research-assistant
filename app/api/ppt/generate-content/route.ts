@@ -44,6 +44,16 @@ export interface FigureSlide {
   figure_desc: string;  // 图表展示内容（含具体数值）
   analysis: string;     // 从图表得出的结论（含具体数值和意义）
   notes: string;
+  /** 可选：论文中能提取到具体数值时，生成真实图表；提取不到就留空，渲染时退回占位框 */
+  chart_data?: {
+    chart_type: "line" | "bar";
+    categories: string[];       // 横轴标签，如 ["100","200","300","400","500次"]
+    series: Array<{
+      name: string;             // 系列名，如 "30 mg/mL"
+      values: number[];         // 与 categories 等长的数值
+    }>;
+    y_label?: string;           // 纵轴单位说明，如 "容量保持率(%)"
+  };
 }
 
 export interface EndingSlide {
@@ -244,6 +254,12 @@ ${isDefense
 - standard：研究背景/文献综述/叙述性内容
 - 图表类内容用 type="figure"（独立类型，不是 content+layout=figure）
 
+【figure 类型的 chart_data——能提取到具体数值就必须填】
+- 论文正文/图表描述中如果能找到具体数值序列（如不同循环次数下的容量、不同倍率下的容量、不同样品的数值对比），提取到 chart_data 里，程序会画出真实图表，不再是占位框
+- chart_type：随时间/次数变化的趋势用 "line"，几个类别间的数值对比用 "bar"
+- categories 和每个 series.values 长度必须一致，values 是纯数字（不带单位）
+- 找不到足够具体数值时，chart_data 留空（不要编造数字），渲染时会退回占位框
+
 【paragraphs 格式——必须填满内容，⛔ 不要偷懒只写一句话】
 - standard/split：必须写 2 个段落（不是1个！），每段 50-120 字，流畅陈述性文字，含数值+因果
 - hero：paragraphs[0] 为核心结论（40-80字含数值），paragraphs[1] 必须填写补充说明/意义（不是可选，50-100字），⛔ 不要留空
@@ -263,7 +279,7 @@ ${isDefense
   {"type":"content","layout":"hero","title":"核心发现","paragraphs":["低固含量样品经500次循环后容量保持率高达[[89%]]，远超高固含量样品的61%。","这一差距证明固含量是决定颗粒分散性与循环稳定性的关键工艺参数，为材料优化提供了明确方向。"],"notes":"本文最重要结论"},
   {"type":"content","layout":"split","title":"实验结果分析","paragraphs":["XRD与SEM表征证实高固含量条件下硅颗粒团聚至[[5μm]]以上，比表面积显著降低。","团聚导致锂离子传输路径变长、局部应力集中，是造成电极性能下降的根本原因。"],"notes":"承接方法页"},
   {"type":"content","layout":"card","title":"研究方法","paragraphs":[],"cards":[{"heading":"① 材料制备","points":["• 固含量30/60/100mg/mL","• 喷雾干燥造粒"]},{"heading":"② 结构表征","points":["• SEM/XRD形貌分析","• BET比表面积测定"]}],"flow":true,"notes":"三步流程"},
-  {"type":"figure","title":"图1：循环性能对比","figure_desc":"展示三种固含量样品500次循环的容量保持率变化曲线。","analysis":"低固含量89%远优于高固含量61%，团聚是主因。","notes":"核心数据图"},
+  {"type":"figure","title":"图1：循环性能对比","figure_desc":"展示三种固含量样品500次循环的容量保持率变化曲线。","analysis":"低固含量89%远优于高固含量61%，团聚是主因。","notes":"核心数据图","chart_data":{"chart_type":"line","categories":["100","200","300","400","500次"],"series":[{"name":"30 mg/mL","values":[98,95,93,91,89]},{"name":"100 mg/mL","values":[90,80,72,66,61]}],"y_label":"容量保持率(%)"}},
   {"type":"stats","title":"关键性能参数","stats":[{"value":"89%","unit":"容量保持率","label":"低固含量样品","color":"1B6B3A"},{"value":"61%","unit":"容量保持率","label":"高固含量样品","color":"8B1A1A"}],"notes":"直观对比"},
   {"type":"ending"}
 ]}
