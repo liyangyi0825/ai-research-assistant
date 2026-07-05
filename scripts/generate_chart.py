@@ -32,6 +32,8 @@ plt.rcParams.update({
     'figure.dpi': 300,
     'savefig.dpi': 300,
     'savefig.bbox': 'tight',
+    'xtick.direction': 'in',
+    'ytick.direction': 'in',
 })
 
 # 修复2：X轴列名匹配 + 调试信息
@@ -106,6 +108,8 @@ ax.spines['top'].set_linewidth(1.5)
 ax.spines['right'].set_linewidth(1.5)
 ax.spines['bottom'].set_linewidth(1.5)
 ax.spines['left'].set_linewidth(1.5)
+# 学术论文风格：刻度线朝内，四周边框都显示刻度
+ax.tick_params(axis='both', which='both', direction='in', top=True, right=True)
 plt.tight_layout()
 
 os.makedirs(os.path.dirname(output_path), exist_ok=True)
