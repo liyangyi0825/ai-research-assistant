@@ -281,6 +281,7 @@ ${isDefense
 - hero：paragraphs[0] 为核心结论（80-150字含数值），paragraphs[1] 必须填写补充说明/意义（不是可选，80-150字），⛔ 不要留空
 - 段落里用 [[双方括号]] 标记最关键 1-2 个词/数值，每段最多 2 处
 - ⛔ 禁止 bullet point（"•"）出现在 paragraphs 里
+- ⛔ 所有字符串字段内绝对不能出现英文直引号 " 或反斜杠 \，需要引用/强调术语时改用「」，否则会破坏 JSON 格式导致解析失败
 
 【cover 字段提取规则】
 - 从论文正文提取作者和导师，找不到留空字符串 ""，不要写"XXX"等占位符
@@ -335,6 +336,7 @@ ${keyContent}`;
       let rawText = "";
       let sseBuffer = "";
       let inputTokens = 0, outputTokens = 0;
+      let stopReason = "";
 
       try {
         const reader = claudeRes.body!.getReader();
@@ -358,14 +360,15 @@ ${keyContent}`;
                 rawText += evt.delta.text ?? "";
               } else if (evt.type === "message_start" && evt.message?.usage) {
                 inputTokens = evt.message.usage.input_tokens ?? 0;
-              } else if (evt.type === "message_delta" && evt.usage) {
-                outputTokens = evt.usage.output_tokens ?? 0;
+              } else if (evt.type === "message_delta") {
+                if (evt.usage) outputTokens = evt.usage.output_tokens ?? 0;
+                if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
               }
             } catch { /* 跳过无法解析的行 */ }
           }
         }
 
-        console.log(`[PPT] 输入 tokens: ${inputTokens}, 输出 tokens: ${outputTokens}`);
+        console.log(`[PPT] 输入 tokens: ${inputTokens}, 输出 tokens: ${outputTokens}, stop_reason: ${stopReason || "(未知)"}, 输出总长度: ${rawText.length}`);
         console.log(`[PPT] 原始输出前 300 字: ${rawText.slice(0, 300)}`);
 
         // JSON 解析（三级容错）
@@ -384,6 +387,7 @@ ${keyContent}`;
               console.log("[PPT] 截断补全成功，实际页数:", pptContent.slides?.length ?? 0);
             } catch {
               console.error("[PPT] 截断补全失败，原始输出前 500 字:", rawText.slice(0, 500));
+              console.error("[PPT] 原始输出末尾 500 字:", rawText.slice(-500));
               await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
               return;
             }
