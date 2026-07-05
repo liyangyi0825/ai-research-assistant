@@ -195,10 +195,10 @@ export async function POST(req: NextRequest) {
     if (!["defense", "meeting"].includes(scene)) return NextResponse.json({ error: "场景参数错误" }, { status: 400 });
 
     const extractKeyContent = (content: string): string => {
-      const abstractMatch   = content.match(/abstract[\s\S]{0,3000}/i);
-      const methodsMatch    = content.match(/methods?[\s\S]{0,3000}/i);
-      const resultsMatch    = content.match(/results?[\s\S]{0,4000}/i);
-      const conclusionMatch = content.match(/conclusion[\s\S]{0,3000}/i);
+      const abstractMatch   = content.match(/abstract[\s\S]{0,5000}/i);
+      const methodsMatch    = content.match(/methods?[\s\S]{0,4000}/i);
+      const resultsMatch    = content.match(/results?[\s\S]{0,6000}/i);
+      const conclusionMatch = content.match(/conclusion[\s\S]{0,4000}/i);
       const figureMatches   = content.match(/(?:figure|table|图|表)\s*\d+[\s\S]{0,300}/gi)
         ?.slice(0, 10).join("\n") ?? "";
 
