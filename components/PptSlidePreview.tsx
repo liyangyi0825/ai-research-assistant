@@ -1,29 +1,31 @@
 "use client";
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useContext, useMemo, createContext } from "react";
 import { parseHighlights } from "@/lib/pptRuns";
+import { PPT_TEMPLATES, DEFAULT_TEMPLATE, type TemplateId, type PptColorPalette } from "@/lib/pptTemplates";
 import type {
   PptContent, Slide,
   CoverSlide, ContentsSlide, SectionSlide, ContentSlide,
   StatsSlide, TableSlide, ComparisonSlide, FigureSlide,
 } from "@/app/api/ppt/generate-content/route";
 
-// ── 颜色常量（与 generate-file 路由保持一致）────────────────────────────────
-const C = {
-  NAVY:   "#1B3A8C",
-  NAVY_D: "#0F2361",
-  GOLD:   "#C8A44A",
-  WHITE:  "#FFFFFF",
-  LIGHT:  "#F0F4FF",
-  GRAY:   "#E0E4EE",
-  TEXT:   "#1A1A2E",
-  RED:    "#8B1A1A",
-  ORANGE: "#B8600A",
-  GREEN:  "#1B6B3A",
-  PURPLE: "#5B1A7A",
-};
-const CARD_COLORS = [C.NAVY, C.RED, C.GREEN, C.ORANGE, C.PURPLE];
-const hex = (c?: string) => {
-  if (!c) return C.NAVY;
+// ── 模板配色（颜色定义统一在 lib/pptTemplates.ts，与 generate-file 路由共用）──────
+type CssPalette = Record<Exclude<keyof PptColorPalette, "CARD_HEADS">, string> & { CARD_HEADS: [string, string, string] };
+
+function toCssPalette(templateId?: TemplateId): CssPalette {
+  const p = PPT_TEMPLATES[templateId ?? DEFAULT_TEMPLATE] ?? PPT_TEMPLATES[DEFAULT_TEMPLATE];
+  const h = (v: string) => `#${v}`;
+  return {
+    NAVY: h(p.NAVY), NAVY_D: h(p.NAVY_D), GOLD: h(p.GOLD),
+    BG: h(p.BG), SOFT_BG: h(p.SOFT_BG), LIGHT: h(p.LIGHT), GRAY: h(p.GRAY), TEXT: h(p.TEXT), WHITE: h(p.WHITE),
+    RED: h(p.RED), ORANGE: h(p.ORANGE), GREEN: h(p.GREEN), PURPLE: h(p.PURPLE),
+    CARD_HEADS: p.CARD_HEADS.map(h) as [string, string, string],
+  };
+}
+
+const TemplateColorContext = createContext<CssPalette>(toCssPalette(DEFAULT_TEMPLATE));
+
+const hex = (c?: string, fallback = "#1B3A8C") => {
+  if (!c) return fallback;
   return c.startsWith("#") ? c : `#${c}`;
 };
 
@@ -50,6 +52,7 @@ function RichText({ text }: { text: string }) {
 // ── 幻灯片渲染组件 ────────────────────────────────────────────────────────────
 
 function Cover({ s }: { s: CoverSlide }) {
+  const C = useContext(TemplateColorContext);
   const lines = (s.author || "").replace(/\\n/g, "\n").split("\n");
   return (
     <div style={{ position: "absolute", inset: 0, background: C.NAVY_D, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
@@ -86,6 +89,7 @@ function Cover({ s }: { s: CoverSlide }) {
 }
 
 function Contents({ s }: { s: ContentsSlide }) {
+  const C = useContext(TemplateColorContext);
   const items = s.items || [];
   const cols = items.length > 6 ? 2 : 1;
   const half = Math.ceil(items.length / cols);
@@ -98,7 +102,7 @@ function Contents({ s }: { s: ContentsSlide }) {
   const gapBetween = half > 1 ? (totalGap - 20) / (half - 1) : 0;
   const topPad = half > 1 ? 110 : 100 + (availH - itemH) / 2;
   return (
-    <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+    <div style={{ position: "absolute", inset: 0, background: C.BG, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", left: 0, top: 0, width: 12, bottom: 0, background: C.NAVY }} />
       <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
       <div style={{ position: "absolute", left: 35, top: 0, height: 100, display: "flex", alignItems: "center",
@@ -126,6 +130,7 @@ function Contents({ s }: { s: ContentsSlide }) {
 }
 
 function Section({ s }: { s: SectionSlide }) {
+  const C = useContext(TemplateColorContext);
   return (
     <div style={{ position: "absolute", inset: 0, background: C.NAVY, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", right: -50, top: -50, width: 400, height: 400, background: C.NAVY_D }} />
@@ -145,9 +150,10 @@ function Section({ s }: { s: SectionSlide }) {
 }
 
 function ContentStandard({ s }: { s: ContentSlide }) {
+  const C = useContext(TemplateColorContext);
   const paras = (s.paragraphs || []).slice(0, 3);
   return (
-    <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+    <div style={{ position: "absolute", inset: 0, background: C.BG, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
       <div style={{ position: "absolute", left: 0, top: 0, width: 12, bottom: 0, background: C.GOLD }} />
       <div style={{ position: "absolute", left: 35, top: 0, right: 20, height: 100, display: "flex", alignItems: "center",
@@ -168,13 +174,14 @@ function ContentStandard({ s }: { s: ContentSlide }) {
 }
 
 function ContentSplit({ s }: { s: ContentSlide }) {
+  const C = useContext(TemplateColorContext);
   const paras = (s.paragraphs || []).slice(0, 3);
   return (
     <div style={{ position: "absolute", inset: 0, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       {/* 左侧深蓝面板 */}
       <div style={{ position: "absolute", left: 0, top: 0, width: 380, bottom: 0, background: C.NAVY }} />
-      {/* 右侧白色区域 */}
-      <div style={{ position: "absolute", left: 380, top: 0, right: 0, bottom: 0, background: C.WHITE }} />
+      {/* 右侧背景区域 */}
+      <div style={{ position: "absolute", left: 380, top: 0, right: 0, bottom: 0, background: C.BG }} />
       {/* 右侧顶部细线 */}
       <div style={{ position: "absolute", left: 380, top: 0, right: 0, height: 7, background: C.NAVY_D }} />
       {/* 左侧标题 */}
@@ -199,6 +206,7 @@ function ContentSplit({ s }: { s: ContentSlide }) {
 }
 
 function ContentHero({ s }: { s: ContentSlide }) {
+  const C = useContext(TemplateColorContext);
   const paras = (s.paragraphs || []).slice(0, 2);
   return (
     <div style={{ position: "absolute", inset: 0, background: C.LIGHT, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
@@ -236,7 +244,8 @@ function ContentHero({ s }: { s: ContentSlide }) {
 }
 
 function ContentCard({ s }: { s: ContentSlide }) {
-  const CARD_HEAD_COLORS = ["#1B3A8C", "#224A9A", "#2D60B0"];
+  const C = useContext(TemplateColorContext);
+  const CARD_HEAD_COLORS = C.CARD_HEADS;
   const cards = (s.cards || []).slice(0, 3);
   const n = Math.max(cards.length, 1);
   const MARGIN = 28;
@@ -247,7 +256,7 @@ function ContentCard({ s }: { s: ContentSlide }) {
   const cardW  = (1000 - 2 * MARGIN - GAP * (n - 1)) / n;
 
   return (
-    <div style={{ position: "absolute", inset: 0, background: C.WHITE,
+    <div style={{ position: "absolute", inset: 0, background: C.BG,
       fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       {/* 页面顶部深蓝标题栏 */}
       <div style={{ position: "absolute", left: 0, top: 0, right: 0, height: 85, background: C.NAVY }} />
@@ -273,7 +282,7 @@ function ContentCard({ s }: { s: ContentSlide }) {
         const imgH    = CH - HEAD_H - bodyH - 25;
         return (
           <div key={i} style={{ position: "absolute", left: cx, top: CY, width: cardW, height: CH,
-            background: "#F8FAFC", border: "0.5px solid #DDE4ED", overflow: "hidden" }}>
+            background: C.SOFT_BG, border: `0.5px solid ${C.GRAY}`, overflow: "hidden" }}>
             {/* 深色标题栏 */}
             <div style={{ position: "absolute", left: 0, top: 0, right: 0, height: HEAD_H, background: hc }} />
             <div style={{ position: "absolute", left: 12, top: 0, right: 12, height: HEAD_H,
@@ -349,8 +358,9 @@ function Content({ s }: { s: ContentSlide }) {
 }
 
 function Figure({ s }: { s: FigureSlide }) {
+  const C = useContext(TemplateColorContext);
   return (
-    <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+    <div style={{ position: "absolute", inset: 0, background: C.BG, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
       <div style={{ position: "absolute", left: 0, top: 0, width: 12, bottom: 0, background: C.GOLD }} />
       <div style={{ position: "absolute", left: 35, top: 0, right: 20, height: 100, display: "flex", alignItems: "center",
@@ -387,6 +397,8 @@ function Figure({ s }: { s: FigureSlide }) {
 }
 
 function Stats({ s }: { s: StatsSlide }) {
+  const C = useContext(TemplateColorContext);
+  const CARD_COLORS = [C.NAVY, C.RED, C.GREEN, C.ORANGE, C.PURPLE];
   const stats = (s.stats || []).slice(0, 4);
   const n = stats.length;
   const cardW   = n >= 4 ? 210 : n === 3 ? 280 : n === 2 ? 400 : 600;
@@ -426,6 +438,7 @@ function Stats({ s }: { s: StatsSlide }) {
 }
 
 function Table({ s }: { s: TableSlide }) {
+  const C = useContext(TemplateColorContext);
   const headers = s.headers || [];
   const rows    = (s.rows || []).slice(0, 8);
   const colN    = headers.length;
@@ -437,7 +450,7 @@ function Table({ s }: { s: TableSlide }) {
   const maxRows = rows.length;
   const rowH    = Math.min(50, 430 / (maxRows + 1));
   return (
-    <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+    <div style={{ position: "absolute", inset: 0, background: C.BG, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
       <div style={{ position: "absolute", left: 0, top: 0, width: 12, bottom: 0, background: C.GOLD }} />
       <div style={{ position: "absolute", left: 35, top: 0, right: 20, height: 100, display: "flex", alignItems: "center",
@@ -458,7 +471,7 @@ function Table({ s }: { s: TableSlide }) {
       {rows.map((row, ri) => (
         <div key={ri} style={{ position: "absolute", left: xStart, top: yStart + rowH * (ri + 1), width: tableW, height: rowH, display: "flex" }}>
           {row.map((cell, ci) => (
-            <div key={ci} style={{ width: colW, height: rowH, background: ri % 2 === 0 ? "#EEF2FF" : C.WHITE,
+            <div key={ci} style={{ width: colW, height: rowH, background: ri % 2 === 0 ? C.SOFT_BG : C.BG,
               border: `1px solid ${C.GRAY}`, boxSizing: "border-box",
               display: "flex", alignItems: "center", justifyContent: "center",
               color: C.TEXT, fontSize: f(12), padding: "0 4px", textAlign: "center" }}>
@@ -472,6 +485,8 @@ function Table({ s }: { s: TableSlide }) {
 }
 
 function Comparison({ s }: { s: ComparisonSlide }) {
+  const C = useContext(TemplateColorContext);
+  const CARD_COLORS = [C.NAVY, C.RED, C.GREEN, C.ORANGE, C.PURPLE];
   const cols  = (s.columns || []).slice(0, 3);
   const n     = cols.length;
   if (!n) return null;
@@ -481,7 +496,7 @@ function Comparison({ s }: { s: ComparisonSlide }) {
   const yBase = 115;
   const cardH = 562.5 - yBase - 20;
   return (
-    <div style={{ position: "absolute", inset: 0, background: C.WHITE, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
+    <div style={{ position: "absolute", inset: 0, background: C.BG, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", inset: "0 0 auto 0", height: 100, background: C.NAVY }} />
       <div style={{ position: "absolute", left: 0, top: 0, width: 12, bottom: 0, background: C.GOLD }} />
       <div style={{ position: "absolute", left: 35, top: 0, right: 20, height: 100, display: "flex", alignItems: "center",
@@ -497,7 +512,7 @@ function Comparison({ s }: { s: ComparisonSlide }) {
         const pEndY   = cardH - 15;
         const pSpacing = ptsN > 1 ? (pEndY - pStartY) / (ptsN - 1) : 0;
         return (
-          <div key={i} style={{ position: "absolute", left: cx, top: yBase, width: colW, height: cardH, background: "#F5F7FF", borderRadius: 8, overflow: "hidden" }}>
+          <div key={i} style={{ position: "absolute", left: cx, top: yBase, width: colW, height: cardH, background: C.SOFT_BG, borderRadius: 8, overflow: "hidden" }}>
             {/* 顶部彩色标题条 */}
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 55, background: color,
               display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -523,6 +538,7 @@ function Comparison({ s }: { s: ComparisonSlide }) {
 }
 
 function Ending() {
+  const C = useContext(TemplateColorContext);
   return (
     <div style={{ position: "absolute", inset: 0, background: C.NAVY_D, fontFamily: "'Microsoft YaHei','PingFang SC',sans-serif", overflow: "hidden" }}>
       <div style={{ position: "absolute", right: 0, top: 0, width: 250, bottom: 0, background: C.NAVY }} />
@@ -567,11 +583,12 @@ const TYPE_BADGE: Record<string, { bg: string; label: string }> = {
 };
 
 // ── 主组件 ────────────────────────────────────────────────────────────────────
-export function PptSlidePreview({ pptContent, paperContent }: { pptContent: PptContent; paperContent?: string }) {
+export function PptSlidePreview({ pptContent, paperContent, templateId }: { pptContent: PptContent; paperContent?: string; templateId?: TemplateId }) {
   const [idx, setIdx]       = useState(0);
   const [scale, setScale]   = useState(0.5);
   const containerRef        = useRef<HTMLDivElement>(null);
   const thumbRef            = useRef<HTMLDivElement>(null);
+  const C                   = useMemo(() => toCssPalette(templateId), [templateId]);
 
   // 可变 slides 状态（支持单页替换）
   const [slides, setSlides] = useState<Slide[]>(pptContent.slides || []);
@@ -649,6 +666,7 @@ export function PptSlidePreview({ pptContent, paperContent }: { pptContent: PptC
   const badge = slide ? (TYPE_BADGE[slide.type] ?? { bg: "#374151", label: slide.type }) : null;
 
   return (
+    <TemplateColorContext.Provider value={C}>
     <div className="select-none" onKeyDown={handleKey} tabIndex={0} style={{ outline: "none" }}>
       {/* ── 主幻灯片视图 ── */}
       <div
@@ -769,7 +787,7 @@ export function PptSlidePreview({ pptContent, paperContent }: { pptContent: PptC
               className="flex-shrink-0 flex flex-col items-center justify-center gap-1 rounded transition-all"
               style={{
                 width: 56, height: 32,
-                background: isDark ? C.NAVY_D : "#F0F4FF",
+                background: isDark ? C.NAVY_D : C.LIGHT,
                 border: `2px solid ${i === idx ? b.bg : "transparent"}`,
                 boxShadow: i === idx ? `0 0 0 1px ${b.bg}` : "none",
                 opacity: i === idx ? 1 : 0.7,
@@ -802,5 +820,6 @@ export function PptSlidePreview({ pptContent, paperContent }: { pptContent: PptC
         })}
       </div>
     </div>
+    </TemplateColorContext.Provider>
   );
 }

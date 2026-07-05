@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type PptxGenJS from "pptxgenjs";
 import { parseHighlights } from "@/lib/pptRuns";
+import { resolveTemplate, type PptColorPalette } from "@/lib/pptTemplates";
 import type {
   PptContent,
   Slide,
@@ -19,22 +20,7 @@ import type {
   FigureSlide,
 } from "@/app/api/ppt/generate-content/route";
 
-// ── 颜色常量 ─────────────────────────────────────────────────────────────────
-const C = {
-  NAVY:   "1B3A8C",
-  NAVY_D: "0F2361",
-  GOLD:   "C8A44A",
-  WHITE:  "FFFFFF",
-  LIGHT:  "F0F4FF",
-  GRAY:   "E0E4EE",
-  TEXT:   "1A1A2E",
-  RED:    "8B1A1A",
-  ORANGE: "B8600A",
-  GREEN:  "1B6B3A",
-  PURPLE: "5B1A7A",
-};
-
-const CARD_COLORS = [C.NAVY, C.RED, C.GREEN, C.ORANGE, C.PURPLE];
+// 颜色配置改为按模板解析（见 lib/pptTemplates.ts），下方各 render 函数通过参数 C 接收配色
 
 // 1×1 透明 PNG（base64）— 必须叠放在形状/文字图层之上（最后渲染），
 // 使 PowerPoint 右键时识别为图片对象并显示"更改图片"选项
@@ -67,7 +53,7 @@ function addBg(slide: PptxGenJS.Slide, color: string) {
 
 // ── 各类型渲染 ────────────────────────────────────────────────────────────────
 
-function renderCover(prs: PptxGenJS, s: CoverSlide) {
+function renderCover(prs: PptxGenJS, s: CoverSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: H, fill: { color: C.NAVY_D } }));
   slide.addShape("rect", opt({ x: 7.5, y: 0, w: 2.5, h: H, fill: { color: C.NAVY }, line: { color: C.NAVY } }));
@@ -100,9 +86,9 @@ function renderCover(prs: PptxGenJS, s: CoverSlide) {
   }));
 }
 
-function renderContents(prs: PptxGenJS, s: ContentsSlide) {
+function renderContents(prs: PptxGenJS, s: ContentsSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
-  addBg(slide, C.WHITE);
+  addBg(slide, C.BG);
   slide.addShape("rect", opt({ x: 0, y: 0, w: 0.12, h: H, fill: { color: C.NAVY } }));
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
   slide.addText("目 录", opt({
@@ -137,7 +123,7 @@ function renderContents(prs: PptxGenJS, s: ContentsSlide) {
   });
 }
 
-function renderSection(prs: PptxGenJS, s: SectionSlide) {
+function renderSection(prs: PptxGenJS, s: SectionSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: H, fill: { color: C.NAVY } }));
   slide.addShape("rect", opt({ x: 6.5, y: -0.5, w: 4.0, h: 4.0, fill: { color: C.NAVY_D }, line: { color: C.NAVY_D } }));
@@ -154,18 +140,18 @@ function renderSection(prs: PptxGenJS, s: SectionSlide) {
   }));
 }
 
-function renderContent(prs: PptxGenJS, s: ContentSlide) {
+function renderContent(prs: PptxGenJS, s: ContentSlide, C: PptColorPalette) {
   const layout = s.layout ?? "standard";
   console.log(`[ppt-render-debug] content页 "${s.title?.slice(0, 20)}"  layout字段=${s.layout ?? "(未定义)"}  → 走 ${layout}`);
-  if (layout === "split") return _renderContentSplit(prs, s);
-  if (layout === "hero")  return _renderContentHero(prs, s);
-  if (layout === "card")  return _renderContentCard(prs, s);
-  return _renderContentStandard(prs, s);
+  if (layout === "split") return _renderContentSplit(prs, s, C);
+  if (layout === "hero")  return _renderContentHero(prs, s, C);
+  if (layout === "card")  return _renderContentCard(prs, s, C);
+  return _renderContentStandard(prs, s, C);
 }
 
-function _renderContentStandard(prs: PptxGenJS, s: ContentSlide) {
+function _renderContentStandard(prs: PptxGenJS, s: ContentSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
-  addBg(slide, C.WHITE);
+  addBg(slide, C.BG);
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
   slide.addShape("rect", opt({ x: 0, y: 0, w: 0.12, h: H, fill: { color: C.GOLD } }));
   slide.addText(s.title || "", opt({
@@ -190,10 +176,10 @@ function _renderContentStandard(prs: PptxGenJS, s: ContentSlide) {
 }
 
 // layout="split"：左侧深色面板展示标题，右侧白色区域展示内容段落
-function _renderContentSplit(prs: PptxGenJS, s: ContentSlide) {
+function _renderContentSplit(prs: PptxGenJS, s: ContentSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
-  slide.addShape("rect", opt({ x: 0,   y: 0, w: 3.8, h: H, fill: { color: C.NAVY  } }));
-  slide.addShape("rect", opt({ x: 3.8, y: 0, w: 6.2, h: H, fill: { color: C.WHITE } }));
+  slide.addShape("rect", opt({ x: 0,   y: 0, w: 3.8, h: H, fill: { color: C.NAVY } }));
+  slide.addShape("rect", opt({ x: 3.8, y: 0, w: 6.2, h: H, fill: { color: C.BG   } }));
   // 右侧顶部细线，视觉统一感
   slide.addShape("rect", opt({ x: 3.8, y: 0, w: 6.2, h: 0.07, fill: { color: C.NAVY_D } }));
 
@@ -223,7 +209,7 @@ function _renderContentSplit(prs: PptxGenJS, s: ContentSlide) {
 }
 
 // layout="hero"：浅色背景，大字突出唯一关键数据点，仅用于全文最重要的 1-2 页
-function _renderContentHero(prs: PptxGenJS, s: ContentSlide) {
+function _renderContentHero(prs: PptxGenJS, s: ContentSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
   addBg(slide, C.LIGHT);
   slide.addShape("rect", opt({ x: 0, y: 0,        w: W, h: 0.10, fill: { color: C.NAVY } }));
@@ -258,9 +244,9 @@ function _renderContentHero(prs: PptxGenJS, s: ContentSlide) {
 }
 
 // layout="card"：深色标题栏卡片，2-3 个并列主题横向排列
-function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
+function _renderContentCard(prs: PptxGenJS, s: ContentSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
-  addBg(slide, C.WHITE);
+  addBg(slide, C.BG);
 
   // 页面顶部深蓝标题栏（与 standard 一致）
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 0.85, fill: { color: C.NAVY } }));
@@ -271,7 +257,7 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
   }));
 
   // 卡片区域坐标
-  const CARD_HEAD_COLORS = ["1B3A8C", "224A9A", "2D60B0"];
+  const CARD_HEAD_COLORS = C.CARD_HEADS;
   const cards = (s.cards || []).slice(0, 3);
   const n = Math.max(cards.length, 1);
   const MARGIN = 0.28;
@@ -287,7 +273,7 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
 
     // 卡片底板（浅灰蓝底 + 细边框）
     slide.addShape("rect", opt({ x: cx, y: CY, w: cardW, h: CH,
-      fill: { color: "F8FAFC" }, line: { color: "DDE4ED", w: 0.5 } }));
+      fill: { color: C.SOFT_BG }, line: { color: C.GRAY, w: 0.5 } }));
 
     // 深色标题栏
     const hc = CARD_HEAD_COLORS[i] ?? CARD_HEAD_COLORS[CARD_HEAD_COLORS.length - 1];
@@ -367,9 +353,9 @@ function _renderContentCard(prs: PptxGenJS, s: ContentSlide) {
   }
 }
 
-function renderFigure(prs: PptxGenJS, s: FigureSlide) {
+function renderFigure(prs: PptxGenJS, s: FigureSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
-  addBg(slide, C.WHITE);
+  addBg(slide, C.BG);
 
   // 深蓝顶栏（与预览组件保持一致）
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 0.9, fill: { color: C.NAVY } }));
@@ -432,8 +418,8 @@ function renderFigure(prs: PptxGenJS, s: FigureSlide) {
     }));
   }
 
-  // 分析条：浅蓝色背景 + 左侧深蓝强调竖条
-  slide.addShape("rect", opt({ x: 0,    y: 4.1, w: W,    h: 1.525, fill: { color: "EEF2FF" } }));
+  // 分析条：浅色背景 + 左侧深色强调竖条
+  slide.addShape("rect", opt({ x: 0,    y: 4.1, w: W,    h: 1.525, fill: { color: C.SOFT_BG } }));
   slide.addShape("rect", opt({ x: 0,    y: 4.1, w: 0.12, h: 1.525, fill: { color: C.NAVY } }));
   slide.addText(s.analysis || "", opt({
     x: 0.28, y: 4.15, w: 9.5, h: 1.425,
@@ -442,9 +428,10 @@ function renderFigure(prs: PptxGenJS, s: FigureSlide) {
   }));
 }
 
-function renderStats(prs: PptxGenJS, s: StatsSlide) {
+function renderStats(prs: PptxGenJS, s: StatsSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
   addBg(slide, C.LIGHT);
+  const CARD_COLORS = [C.NAVY, C.RED, C.GREEN, C.ORANGE, C.PURPLE];
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
   slide.addShape("rect", opt({ x: 0, y: 0, w: 0.12, h: H, fill: { color: C.GOLD } }));
   slide.addText(s.title || "", opt({
@@ -485,9 +472,9 @@ function renderStats(prs: PptxGenJS, s: StatsSlide) {
   });
 }
 
-function renderTable(prs: PptxGenJS, s: TableSlide) {
+function renderTable(prs: PptxGenJS, s: TableSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
-  addBg(slide, C.WHITE);
+  addBg(slide, C.BG);
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
   // 表格页不加左侧金条——表格自身行列结构已有足够视觉分区，金条反而增加噪音
   slide.addText(s.title || "", opt({
@@ -524,7 +511,7 @@ function renderTable(prs: PptxGenJS, s: TableSlide) {
     row.map(cell => ({
       text: cell,
       options: opt({
-        color: C.TEXT, fill: { color: ri % 2 === 0 ? "EEF2FF" : C.WHITE },
+        color: C.TEXT, fill: { color: ri % 2 === 0 ? C.SOFT_BG : C.BG },
         fontSize: 12, fontFace: "微软雅黑", align: "center", valign: "middle",
         border: [
           { type: "solid", color: C.GRAY, pt: 1 },
@@ -544,9 +531,10 @@ function renderTable(prs: PptxGenJS, s: TableSlide) {
   });
 }
 
-function renderComparison(prs: PptxGenJS, s: ComparisonSlide) {
+function renderComparison(prs: PptxGenJS, s: ComparisonSlide, C: PptColorPalette) {
   const slide = prs.addSlide();
-  addBg(slide, C.WHITE);
+  addBg(slide, C.BG);
+  const CARD_COLORS = [C.NAVY, C.RED, C.GREEN, C.ORANGE, C.PURPLE];
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: 1.0, fill: { color: C.NAVY } }));
   slide.addShape("rect", opt({ x: 0, y: 0, w: 0.12, h: H, fill: { color: C.GOLD } }));
   slide.addText(s.title || "", opt({
@@ -567,7 +555,7 @@ function renderComparison(prs: PptxGenJS, s: ComparisonSlide) {
     const cx    = xBase + i * (colW + gap);
     const color = col.color || CARD_COLORS[i % CARD_COLORS.length];
 
-    slide.addShape("rect", opt({ x: cx, y: yBase, w: colW, h: cardH, fill: { color: "F5F7FF" }, rectRadius: 0.08 }));
+    slide.addShape("rect", opt({ x: cx, y: yBase, w: colW, h: cardH, fill: { color: C.SOFT_BG }, rectRadius: 0.08 }));
     slide.addShape("rect", opt({ x: cx, y: yBase, w: colW, h: 0.55, fill: { color }, rectRadius: 0.08 }));
     slide.addShape("rect", opt({ x: cx, y: yBase + 0.35, w: colW, h: 0.2, fill: { color } }));
 
@@ -594,7 +582,7 @@ function renderComparison(prs: PptxGenJS, s: ComparisonSlide) {
   });
 }
 
-function renderEnding(prs: PptxGenJS) {
+function renderEnding(prs: PptxGenJS, C: PptColorPalette) {
   const slide = prs.addSlide();
   slide.addShape("rect", opt({ x: 0, y: 0, w: W, h: H, fill: { color: C.NAVY_D } }));
   slide.addShape("rect", opt({ x: 7.5, y: 0, w: 2.5, h: H, fill: { color: C.NAVY } }));
@@ -612,10 +600,11 @@ function renderEnding(prs: PptxGenJS) {
 // ── 主入口 ───────────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
-    const { pptContent } = (await req.json()) as { pptContent: PptContent };
+    const { pptContent, templateId } = (await req.json()) as { pptContent: PptContent; templateId?: string };
     if (!pptContent?.slides?.length) {
       return NextResponse.json({ error: "PPT 内容为空" }, { status: 400 });
     }
+    const C = resolveTemplate(templateId);
 
     const PptxGenJsModule = await import("pptxgenjs");
     const PptxGenJsCtor = PptxGenJsModule.default;
@@ -625,15 +614,15 @@ export async function POST(req: NextRequest) {
 
     for (const slide of pptContent.slides as Slide[]) {
       switch (slide.type) {
-        case "cover":      renderCover(prs, slide);      break;
-        case "contents":   renderContents(prs, slide);   break;
-        case "section":    renderSection(prs, slide);    break;
-        case "content":    renderContent(prs, slide);    break;
-        case "figure":     renderFigure(prs, slide);     break;
-        case "stats":      renderStats(prs, slide);      break;
-        case "table":      renderTable(prs, slide);      break;
-        case "comparison": renderComparison(prs, slide); break;
-        case "ending":     renderEnding(prs);            break;
+        case "cover":      renderCover(prs, slide, C);      break;
+        case "contents":   renderContents(prs, slide, C);   break;
+        case "section":    renderSection(prs, slide, C);    break;
+        case "content":    renderContent(prs, slide, C);    break;
+        case "figure":     renderFigure(prs, slide, C);     break;
+        case "stats":      renderStats(prs, slide, C);      break;
+        case "table":      renderTable(prs, slide, C);      break;
+        case "comparison": renderComparison(prs, slide, C); break;
+        case "ending":     renderEnding(prs, C);            break;
       }
     }
 

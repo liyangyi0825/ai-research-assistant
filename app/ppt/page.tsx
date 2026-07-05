@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { PptSlidePreview } from "@/components/PptSlidePreview";
 import { Header } from "@/components/Header";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
+import { PPT_TEMPLATES, TEMPLATE_LIST, DEFAULT_TEMPLATE, type TemplateId } from "@/lib/pptTemplates";
 
 function DotLoader() {
   return (
@@ -31,6 +32,7 @@ export default function PptPage() {
   // PPT 生成
   const [pptStatus, setPptStatus] = useState<PptStatus>("idle");
   const [pptScene, setPptScene] = useState<"defense" | "meeting" | null>(null);
+  const [templateId, setTemplateId] = useState<TemplateId>(DEFAULT_TEMPLATE);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [pptContent, setPptContent] = useState<any>(null);
   const [pptError, setPptError] = useState("");
@@ -270,7 +272,7 @@ export default function PptPage() {
       const res = await fetch("/api/ppt/generate-file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pptContent }),
+        body: JSON.stringify({ pptContent, templateId }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -416,6 +418,36 @@ export default function PptPage() {
                 </div>
 
                 <div className="p-4 sm:p-6 space-y-4">
+                  {/* 模板选择 */}
+                  {pptStatus === "selecting" && (
+                    <div>
+                      <p className="text-sm font-medium text-gray-700 mb-2">选择视觉模板</p>
+                      <div className="grid grid-cols-3 gap-3">
+                        {TEMPLATE_LIST.map(t => {
+                          const p = PPT_TEMPLATES[t.id];
+                          const selected = templateId === t.id;
+                          return (
+                            <button
+                              key={t.id}
+                              onClick={() => setTemplateId(t.id)}
+                              className={`text-left p-2 rounded-xl border-2 transition-all ${selected ? "border-indigo-500 bg-indigo-50" : "border-gray-200 hover:border-indigo-300"}`}
+                            >
+                              <div
+                                className="w-full rounded-md overflow-hidden mb-2"
+                                style={{ height: 48, background: `#${p.BG}`, position: "relative" }}
+                              >
+                                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 16, background: `#${p.NAVY}` }} />
+                                <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: `#${p.GOLD}` }} />
+                              </div>
+                              <div className="text-xs font-semibold text-gray-700">{t.name}</div>
+                              <div className="text-[11px] text-gray-400 leading-snug">{t.desc}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {/* 场景选择 */}
                   {pptStatus === "selecting" && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -473,7 +505,7 @@ export default function PptPage() {
                         </Button>
                       </div>
 
-                      <PptSlidePreview pptContent={pptContent} paperContent={extractedText} />
+                      <PptSlidePreview pptContent={pptContent} paperContent={extractedText} templateId={templateId} />
 
                       <Button
                         onClick={handlePptDownload}
