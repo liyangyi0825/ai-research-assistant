@@ -21,16 +21,17 @@ export async function GET() {
 }
 
 export async function DELETE(req: NextRequest) {
-  const { id } = await req.json();
+  const { id, all } = await req.json();
   const supabase = await getSupabaseAuthClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
 
-  const { error } = await supabase
-    .from("search_history")
-    .delete()
-    .eq("id", id)
-    .eq("user_id", user.id);
+  if (!all && !id) return NextResponse.json({ error: "缺少参数" }, { status: 400 });
+
+  let query = supabase.from("search_history").delete().eq("user_id", user.id);
+  if (!all) query = query.eq("id", id);
+
+  const { error } = await query;
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });

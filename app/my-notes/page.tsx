@@ -268,6 +268,8 @@ export default function MyNotesPage() {
   const [history,        setHistory]        = useState<HistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [deleting,       setDeleting]       = useState<string | null>(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearing,         setClearing]         = useState(false);
 
   // 并行加载两份数据
   useEffect(() => {
@@ -293,6 +295,21 @@ export default function MyNotesPage() {
       setHistory(prev => prev.filter(h => h.id !== id));
     } finally {
       setDeleting(null);
+    }
+  }
+
+  async function handleClearHistory() {
+    setClearing(true);
+    try {
+      await fetch("/api/search-history", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+      setHistory([]);
+    } finally {
+      setClearing(false);
+      setShowClearConfirm(false);
     }
   }
 
@@ -396,12 +413,22 @@ export default function MyNotesPage() {
                 关键词矩阵和概念探索器的历史记录，点击可重新搜索
               </p>
 
-              {/* 类型统计 */}
+              {/* 类型统计 + 清空按钮 */}
               {history.length > 0 && (
-                <div className="flex gap-2 text-xs text-gray-400">
-                  <span>🔍 关键词矩阵 {kwCount} 条</span>
-                  <span>·</span>
-                  <span>🧭 概念探索 {ceCount} 条</span>
+                <div className="flex items-center justify-between">
+                  <div className="flex gap-2 text-xs text-gray-400">
+                    <span>🔍 关键词矩阵 {kwCount} 条</span>
+                    <span>·</span>
+                    <span>🧭 概念探索 {ceCount} 条</span>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="h-7 text-xs px-3"
+                    onClick={() => setShowClearConfirm(true)}
+                  >
+                    清空搜索历史
+                  </Button>
                 </div>
               )}
 
@@ -473,6 +500,37 @@ export default function MyNotesPage() {
 
         </div>
       </main>
+
+      {/* 清空搜索历史 - 确认弹窗 */}
+      {showClearConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40"
+          onClick={(e) => { if (e.target === e.currentTarget && !clearing) setShowClearConfirm(false); }}
+        >
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6">
+            <h2 className="font-semibold text-gray-800 mb-2">清空搜索历史</h2>
+            <p className="text-sm text-gray-500 mb-6">确定要清空所有搜索历史吗？此操作不可撤销。</p>
+            <div className="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowClearConfirm(false)}
+                disabled={clearing}
+              >
+                取消
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={handleClearHistory}
+                disabled={clearing}
+              >
+                {clearing ? "清空中…" : "确认清空"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
