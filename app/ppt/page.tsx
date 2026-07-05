@@ -46,6 +46,14 @@ export default function PptPage() {
   const [outlineDragIndex, setOutlineDragIndex] = useState<number | null>(null);
   const [outlineEditingIndex, setOutlineEditingIndex] = useState<number | null>(null);
   const [outlineNoteIndex, setOutlineNoteIndex] = useState<number | null>(null);
+
+  // 分批生成正文（第二步：按大纲每 4 页一批依次生成，避免截断）
+  const BATCH_SIZE = 4;
+  const [outlineBatches, setOutlineBatches] = useState<SlideOutlineItem[][]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [batchSlides, setBatchSlides] = useState<(any[] | null)[]>([]);
+  const [batchErrors, setBatchErrors] = useState<(string | null)[]>([]);
+  const [currentBatchIndex, setCurrentBatchIndex] = useState<number | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [pptContent, setPptContent] = useState<any>(null);
   const [pptError, setPptError] = useState("");
@@ -210,6 +218,10 @@ export default function PptPage() {
     setOutlineDragIndex(null);
     setOutlineEditingIndex(null);
     setOutlineNoteIndex(null);
+    setOutlineBatches([]);
+    setBatchSlides([]);
+    setBatchErrors([]);
+    setCurrentBatchIndex(null);
     setShowRestoreBanner(false);
     setRestoredScene(null);
     setRestoredIsComplete(false);
@@ -262,69 +274,98 @@ export default function PptPage() {
     setOutlineDragIndex(null);
   }
 
-  async function handlePptGenerate(scene: "defense" | "meeting") {
-    setPptScene(scene);
-    setPptStatus("loading");
+  function chunkOutline(items: SlideOutlineItem[]): SlideOutlineItem[][] {
+    const batches: SlideOutlineItem[][] = [];
+    for (let i = 0; i < items.length; i += BATCH_SIZE) batches.push(items.slice(i, i + BATCH_SIZE));
+    return batches;
+  }
+
+  // 依次生成从 startIndex 开始的各批，某一批失败就停下（已生成的批次保留在 results 里），等待用户点重试
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function runBatchesFrom(
+    startIndex: number,
+    batches: SlideOutlineItem[][],
+    fullOutline: SlideOutlineItem[],
+    scene: "defense" | "meeting",
+    resultsSoFar: (any[] | null)[],
+  ) {
+    const results = [...resultsSoFar];
+
+    for (let i = startIndex; i < batches.length; i++) {
+      setCurrentBatchIndex(i);
+      setBatchErrors(prev => prev.map((e, idx) => idx === i ? null : e));
+      try {
+        const outlineSlides = batches[i];
+        const userNotes = outlineSlides
+          .filter(s => s.note?.trim())
+          .map(s => `《${s.title}》：${s.note}`)
+          .join("；");
+
+        const res = await fetch("/api/ppt/generate-section", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            paperContent: extractedText,
+            outlineSlides,
+            allOutline: fullOutline,
+            scene,
+            templateId,
+            userNotes: userNotes || undefined,
+            batchIndex: i,
+          }),
+        });
+        const data = await res.json() as { slides?: unknown[]; error?: string };
+        if (!res.ok || data.error) throw new Error(data.error || `服务器错误（${res.status}）`);
+
+        results[i] = data.slides ?? [];
+        setBatchSlides(prev => prev.map((s, idx) => idx === i ? results[i] : s));
+      } catch (err) {
+        setBatchErrors(prev => prev.map((e, idx) => idx === i ? (err instanceof Error ? err.message : "生成失败，请重试") : e));
+        setCurrentBatchIndex(null);
+        return; // 停在失败的这一批，不继续后面的批次
+      }
+    }
+
+    setCurrentBatchIndex(null);
+
+    // 全部批次完成，合并成完整 pptContent
+    const slides = results.flat();
+    const content = {
+      title: fullOutline.find(s => s.type === "cover")?.title ?? fileName.replace(/\.pdf$/i, ""),
+      scene,
+      total_pages: slides.length,
+      slides,
+    };
+    setPptContent(content);
+    setPptStatus("done");
+
+    // 保存到 Supabase（fire-and-forget，失败不影响主流程）
+    fetch("/api/ppt/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName, scene, pptData: content }),
+    })
+      .then(r => r.json())
+      .then((res: { id?: string }) => { if (res.id) pptIdRef.current = res.id; })
+      .catch(() => {});
+  }
+
+  function handleGenerateFromOutline() {
+    if (!outline || !pptScene) return;
+    const batches = chunkOutline(outline);
+    const emptyResults = new Array(batches.length).fill(null);
+    setOutlineBatches(batches);
+    setBatchSlides(emptyResults);
+    setBatchErrors(new Array(batches.length).fill(null));
     setPptError("");
     setPptContent(null);
-    try {
-      const res = await fetch("/api/ppt/generate-content", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paperContent: extractedText, scene }),
-      });
+    setPptStatus("loading");
+    runBatchesFrom(0, batches, outline, pptScene, emptyResults);
+  }
 
-      if (!res.ok) {
-        let errorMsg = `服务器错误（${res.status}），请重试`;
-        try {
-          const errData = await res.json() as { error?: string };
-          if (errData.error) errorMsg = errData.error;
-        } catch { /* 保留通用错误信息 */ }
-        console.error("PPT API 错误:", res.status, errorMsg);
-        throw new Error(errorMsg);
-      }
-      if (!res.body) throw new Error("服务器响应为空，请重试");
-
-      // 读取 SSE 流，等待最终 data 事件
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let sseBuffer = "";
-      let result: { pptContent?: unknown; error?: string } | null = null;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        sseBuffer += decoder.decode(value, { stream: true });
-        const lines = sseBuffer.split("\n");
-        sseBuffer = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const raw = line.slice(6).trim();
-          if (!raw) continue;
-          try { result = JSON.parse(raw); } catch { /* 跳过心跳注释等非 JSON 行 */ }
-        }
-      }
-
-      if (!result) throw new Error("生成失败，请重试");
-      if (result.error) throw new Error(result.error);
-      setPptContent(result.pptContent);
-      setPptStatus("done");
-
-      // 保存到 Supabase（fire-and-forget，失败不影响主流程）
-      fetch("/api/ppt/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName, scene, pptData: result.pptContent }),
-      })
-        .then(r => r.json())
-        .then((res: { id?: string }) => {
-          if (res.id) pptIdRef.current = res.id;
-        })
-        .catch(() => {});
-    } catch (err) {
-      setPptError(err instanceof Error ? err.message : "生成失败，请重试");
-      setPptStatus("error");
-    }
+  function handleRetryBatch(index: number) {
+    if (!pptScene || outlineBatches.length === 0) return;
+    runBatchesFrom(index, outlineBatches, outline ?? [], pptScene, batchSlides);
   }
 
   async function handlePptDownload() {
@@ -397,7 +438,7 @@ export default function PptPage() {
                     size="sm"
                     onClick={() => {
                       setShowRestoreBanner(false);
-                      handlePptGenerate(restoredScene);
+                      handleGenerateOutline(restoredScene);
                     }}
                   >
                     重新生成 PPT
@@ -639,7 +680,7 @@ export default function PptPage() {
                       </div>
 
                       <Button
-                        onClick={() => pptScene && handlePptGenerate(pptScene)}
+                        onClick={handleGenerateFromOutline}
                         className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
                       >
                         根据大纲生成 PPT →
@@ -647,12 +688,69 @@ export default function PptPage() {
                     </div>
                   )}
 
-                  {/* 正文生成中 */}
+                  {/* 正文分批生成中 */}
                   {pptStatus === "loading" && (
-                    <div className="text-center py-8">
-                      <div className="flex justify-center mb-3"><DotLoader /></div>
-                      <p className="text-sm text-gray-600">AI 正在生成幻灯片内容…</p>
-                      <p className="text-xs text-gray-400 mt-1">通常需要 10–20 秒</p>
+                    <div className="space-y-4">
+                      <div className="text-center py-2">
+                        {currentBatchIndex !== null ? (
+                          <>
+                            <div className="flex justify-center mb-3"><DotLoader /></div>
+                            <p className="text-sm text-gray-600">
+                              正在生成 第 {currentBatchIndex + 1} 批 / 共 {outlineBatches.length} 批
+                            </p>
+                          </>
+                        ) : batchErrors.some(Boolean) ? (
+                          <p className="text-sm text-amber-600">⚠️ 有一批生成失败，点击下方按钮重试</p>
+                        ) : (
+                          <p className="text-sm text-gray-600">正在整理结果…</p>
+                        )}
+                      </div>
+
+                      {/* 进度条 */}
+                      <div className="flex gap-1">
+                        {outlineBatches.map((_, i) => {
+                          const state = batchErrors[i] ? "error" : batchSlides[i] ? "done" : (i === currentBatchIndex ? "loading" : "pending");
+                          return (
+                            <div
+                              key={i}
+                              className={`flex-1 h-1.5 rounded-full ${
+                                state === "done"    ? "bg-green-500" :
+                                state === "error"   ? "bg-red-400" :
+                                state === "loading"  ? "bg-indigo-400 animate-pulse" :
+                                "bg-gray-200"
+                              }`}
+                            />
+                          );
+                        })}
+                      </div>
+
+                      {/* 失败批次的重试入口 */}
+                      {outlineBatches.map((batch, i) => (
+                        batchErrors[i] && (
+                          <div key={i} className="p-3 bg-red-50 border border-red-100 rounded-lg space-y-2">
+                            <p className="text-xs text-red-600">
+                              第 {i + 1} 批（{batch.map(s => s.title).join("、")}）生成失败：{batchErrors[i]}
+                            </p>
+                            <Button size="sm" variant="outline" onClick={() => handleRetryBatch(i)}>
+                              点击重试
+                            </Button>
+                          </div>
+                        )
+                      ))}
+
+                      {/* 已生成批次的实时预览 */}
+                      {batchSlides.some(s => s) && (
+                        <PptSlidePreview
+                          pptContent={{
+                            title: outline?.find(s => s.type === "cover")?.title ?? "",
+                            scene: pptScene ?? "defense",
+                            total_pages: batchSlides.flat().filter(Boolean).length,
+                            slides: batchSlides.filter((s): s is NonNullable<typeof s> => s !== null).flat(),
+                          }}
+                          paperContent={extractedText}
+                          templateId={templateId}
+                        />
+                      )}
                     </div>
                   )}
 
