@@ -86,6 +86,8 @@ export default function PptPage() {
         fileName: string;
         paperContent: string;
         pptScene: "defense" | "meeting" | null;
+        templateId?: TemplateId;
+        outline?: SlideOutlineItem[] | null;
         isComplete?: boolean;
         pptTitle?: string;
         totalSlides?: number;
@@ -100,6 +102,7 @@ export default function PptPage() {
       setFileName(data.fileName);
       setExtractedText(data.paperContent);
       setUploadStage("done");
+      if (data.templateId) setTemplateId(data.templateId);
       setRestoredScene(data.pptScene ?? null);
       setRestoredIsComplete(data.isComplete ?? false);
       setRestoredPptTitle(data.pptTitle ?? null);
@@ -127,6 +130,11 @@ export default function PptPage() {
             setPptStatus("selecting");
             setShowRestoreBanner(true);
           });
+      } else if (data.outline && data.outline.length > 0 && data.pptScene) {
+        // 大纲已生成但还没确认生成正文（含用户的删除/排序/标题/备注编辑）：直接恢复到大纲编辑界面，不重新调用 AI
+        setPptScene(data.pptScene);
+        setOutline(data.outline);
+        setPptStatus("outline-editing");
       } else {
         setPptStatus("selecting");
         setShowRestoreBanner(true);
@@ -135,7 +143,7 @@ export default function PptPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  // 上传/场景/生成完成时保存——paperContent 限 10000 字符，防止 localStorage 超限
+  // 上传/场景/大纲编辑/生成完成时保存——paperContent 限 100000 字符，防止 localStorage 超限
   useEffect(() => {
     if (!fileName || !extractedText || !userId) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -143,8 +151,10 @@ export default function PptPage() {
     try {
       localStorage.setItem(`iyanhub_ppt_${userId}`, JSON.stringify({
         fileName,
-        paperContent: extractedText.slice(0, 10000),
+        paperContent: extractedText.slice(0, 100000),
         pptScene: pptScene ?? null,
+        templateId,
+        outline: (pptStatus === "outline-editing" || pptStatus === "loading") ? outline : null,
         isComplete: pptStatus === "done",
         pptTitle: content?.title ?? null,
         totalSlides: content?.total_pages ?? null,
@@ -152,7 +162,7 @@ export default function PptPage() {
         timestamp: Date.now(),
       }));
     } catch { /* 静默 */ }
-  }, [fileName, extractedText, pptScene, pptStatus, pptContent, userId]);
+  }, [fileName, extractedText, pptScene, templateId, outline, pptStatus, pptContent, userId]);
 
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -561,7 +571,7 @@ export default function PptPage() {
                         <div className="text-2xl mb-2">🎓</div>
                         <div className="font-semibold text-gray-800 text-sm mb-1">毕业 / 学位答辩</div>
                         <div className="text-xs text-gray-500 leading-relaxed">
-                          正式学术风格，深蓝色调<br />AI 自动决定页数（通常 10–13 页）
+                          正式学术风格，深蓝色调<br />AI 自动决定页数（通常 15–20 页）
                         </div>
                         <div className="mt-2 text-xs text-blue-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">点击选择 →</div>
                       </button>
@@ -572,7 +582,7 @@ export default function PptPage() {
                         <div className="text-2xl mb-2">📊</div>
                         <div className="font-semibold text-gray-800 text-sm mb-1">组会 / 进展汇报</div>
                         <div className="text-xs text-gray-500 leading-relaxed">
-                          简洁汇报风格，清爽简约<br />AI 自动决定页数（通常 7–10 页）
+                          简洁汇报风格，清爽简约<br />AI 自动决定页数（通常 15–20 页）
                         </div>
                         <div className="mt-2 text-xs text-green-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">点击选择 →</div>
                       </button>
