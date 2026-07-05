@@ -35,6 +35,8 @@ export default function MyPapersPage() {
   const [search, setSearch]   = useState("");
   const [query, setQuery]     = useState(""); // debounced
   const [loading, setLoading] = useState(true);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearing,         setClearing]         = useState(false);
 
   // 300 ms debounce
   useEffect(() => {
@@ -77,6 +79,28 @@ export default function MyPapersPage() {
     }
   }
 
+  async function handleDeleteAll() {
+    setClearing(true);
+    try {
+      const res = await fetch("/api/my-papers", { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert((data as { error?: string }).error || "删除失败，请重试");
+        return;
+      }
+      setSearch("");
+      setQuery("");
+      setPage(1);
+      setPapers([]);
+      setTotal(0);
+    } catch {
+      alert("删除失败，请重试");
+    } finally {
+      setClearing(false);
+      setShowClearConfirm(false);
+    }
+  }
+
   return (
     <div className="min-h-full" style={{ background: "#F8FAFC" }}>
       <Header title="我的论文" />
@@ -88,13 +112,23 @@ export default function MyPapersPage() {
             <h1 className="text-xl font-bold text-gray-800 mb-0.5">📚 我的论文</h1>
             <p className="text-sm text-gray-500">所有上传过的论文，点击继续分析</p>
           </div>
-          <button
-            onClick={() => dispatchLoadPaper(null)}
-            className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-all"
-            style={{ background: "#3B82F6" }}
-          >
-            + 上传新论文
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {papers.length > 0 && (
+              <button
+                onClick={() => setShowClearConfirm(true)}
+                className="px-3 py-2 rounded-lg text-sm font-medium text-red-500 border border-red-300 hover:bg-red-50 transition-all"
+              >
+                全部删除
+              </button>
+            )}
+            <button
+              onClick={() => dispatchLoadPaper(null)}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-all"
+              style={{ background: "#3B82F6" }}
+            >
+              + 上传新论文
+            </button>
+          </div>
         </div>
 
         {/* 搜索栏 */}
@@ -209,6 +243,35 @@ export default function MyPapersPage() {
           </>
         )}
       </main>
+
+      {/* 全部删除 - 确认弹窗 */}
+      {showClearConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40"
+          onClick={(e) => { if (e.target === e.currentTarget && !clearing) setShowClearConfirm(false); }}
+        >
+          <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6">
+            <h2 className="font-semibold text-gray-800 mb-2">全部删除</h2>
+            <p className="text-sm text-gray-500 mb-6">确定要删除所有已上传的论文吗？此操作不可撤销。</p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowClearConfirm(false)}
+                disabled={clearing}
+                className="px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-600 hover:border-gray-400 transition-colors disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleDeleteAll}
+                disabled={clearing}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-white bg-red-500 hover:bg-red-600 transition-colors disabled:opacity-50"
+              >
+                {clearing ? "删除中…" : "确认删除"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

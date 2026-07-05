@@ -3,7 +3,7 @@
 // 对应数据库字段：id, user_id, title, content, file_size, created_at
 
 import { NextRequest, NextResponse } from "next/server";
-import { getSupabaseAuthClient } from "@/lib/supabase";
+import { getSupabaseAuthClient, getSupabaseAdminClient } from "@/lib/supabase";
 
 export async function GET(req: NextRequest) {
   try {
@@ -61,5 +61,38 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ id: data.id });
   } catch {
     return NextResponse.json({ error: "保存失败" }, { status: 500 });
+  }
+}
+
+export async function DELETE() {
+  try {
+    const supabase = await getSupabaseAuthClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "请先登录" }, { status: 401 });
+
+    const admin = getSupabaseAdminClient();
+    if (!admin) return NextResponse.json({ error: "服务器配置错误" }, { status: 500 });
+
+    const { data: papers } = await admin
+      .from("papers")
+      .select("id")
+      .eq("user_id", user.id);
+
+    const ids = (papers ?? []).map((p) => p.id);
+
+    if (ids.length > 0) {
+      // 1. 删除 paper_summaries 里的缓存总结
+      await admin.from("paper_summaries").delete().in("paper_id", ids);
+      // 2. 删除来自这些论文的研究笔记（source_id 关联）
+      await admin.from("research_notes").delete().eq("user_id", user.id).in("source_id", ids);
+    }
+
+    // 3. 删除所有论文本身
+    const { error } = await admin.from("papers").delete().eq("user_id", user.id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    return NextResponse.json({ success: true });
+  } catch {
+    return NextResponse.json({ error: "删除失败" }, { status: 500 });
   }
 }
