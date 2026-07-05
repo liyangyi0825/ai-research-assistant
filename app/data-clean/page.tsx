@@ -239,6 +239,11 @@ export default function DataCleanPage() {
   const [chartSvgUrl,    setChartSvgUrl]    = useState("");
   const [chartError,     setChartError]     = useState("");
 
+  // ── 图例设置状态（自定义名称 / 显示隐藏 / 位置）────────────────────────────
+  const [legendLabels,   setLegendLabels]   = useState<Record<string, string>>({});
+  const [legendHidden,   setLegendHidden]   = useState<Set<string>>(new Set());
+  const [legendPosition, setLegendPosition] = useState<"upper right" | "upper left" | "lower right" | "lower left">("upper right");
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 页面加载时从 DB 恢复最近一次清洗结果
@@ -370,6 +375,7 @@ export default function DataCleanPage() {
     setTruncatedOnRestore(false);
     setChartXCol(""); setChartYCols([]); setChartTitle("");
     setChartXLabel(""); setChartYLabel(""); setChartPngUrl(""); setChartSvgUrl(""); setChartError("");
+    setLegendLabels({}); setLegendHidden(new Set()); setLegendPosition("upper right");
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -421,6 +427,7 @@ export default function DataCleanPage() {
     setPhase("done");
     setActiveTab("after");
     setChartPngUrl(""); setChartSvgUrl(""); setChartError("");
+    setLegendLabels({}); setLegendHidden(new Set()); setLegendPosition("upper right");
     // 用清洗后实际列名预填图表配置，严格过滤不存在的列
     if (analysis.charts?.length > 0) {
       const colSet = new Set(h);
@@ -447,13 +454,16 @@ export default function DataCleanPage() {
       toast.error("请先选择 X 轴和至少一个 Y 轴列");
       return;
     }
-    // 发送前再次过滤，确保 y_cols 都在实际数据列里
+    // 发送前再次过滤，确保 y_cols 都在实际数据列里，并去掉被隐藏的图例项
     const colSet = new Set(cleanedHeaders);
-    const safeYCols = chartYCols.filter(c => colSet.has(c));
+    const safeYCols = chartYCols.filter(c => colSet.has(c) && !legendHidden.has(c));
     if (safeYCols.length === 0) {
-      toast.error("所选 Y 轴列在清洗后数据中不存在，请重新勾选");
+      toast.error("所选 Y 轴列都被隐藏或不存在，请重新勾选");
       return;
     }
+    // 自定义图例名称，未填时用列名本身
+    const legendLabelsPayload: Record<string, string> = {};
+    safeYCols.forEach(c => { legendLabelsPayload[c] = legendLabels[c]?.trim() || c; });
 
     setChartGenerating(true);
     setChartError("");
@@ -470,13 +480,15 @@ export default function DataCleanPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          data:       dataRows,
-          chart_type: chartType,
-          x_col:      chartXCol,
-          y_cols:     safeYCols,
-          title:      chartTitle,
-          x_label:    chartXLabel || chartXCol,
-          y_label:    chartYLabel,
+          data:          dataRows,
+          chart_type:    chartType,
+          x_col:         chartXCol,
+          y_cols:        safeYCols,
+          title:         chartTitle,
+          x_label:       chartXLabel || chartXCol,
+          y_label:       chartYLabel,
+          legend_labels: legendLabelsPayload,
+          legend_loc:    legendPosition,
         }),
       });
       const json = await res.json();
@@ -837,11 +849,62 @@ export default function DataCleanPage() {
                   </div>
                 </div>
 
+                {/* 图例设置：自定义名称、显示/隐藏、位置（多条 Y 轴数据线才需要图例） */}
+                {chartYCols.length > 1 && (
+                  <div className="rounded-xl border border-gray-100 p-3 sm:p-4 space-y-3">
+                    <label className="block text-xs font-semibold text-gray-500">图例设置</label>
+                    <div className="space-y-2">
+                      {chartYCols.map(col => {
+                        const hidden = legendHidden.has(col);
+                        return (
+                          <div key={col} className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={!hidden}
+                              onChange={e => {
+                                setLegendHidden(prev => {
+                                  const next = new Set(prev);
+                                  e.target.checked ? next.delete(col) : next.add(col);
+                                  return next;
+                                });
+                              }}
+                              title="显示/隐藏该数据线"
+                              className="w-4 h-4 accent-indigo-500 shrink-0"
+                            />
+                            <input
+                              type="text"
+                              value={legendLabels[col] ?? ""}
+                              onChange={e => setLegendLabels(prev => ({ ...prev, [col]: e.target.value }))}
+                              placeholder={col}
+                              className={`flex-1 min-w-0 rounded-lg border border-gray-200 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 ${
+                                hidden ? "text-gray-400 bg-gray-50" : "text-gray-700"
+                              }`}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-500 mb-1">图例位置</label>
+                      <select
+                        value={legendPosition}
+                        onChange={e => setLegendPosition(e.target.value as typeof legendPosition)}
+                        className="w-full sm:w-48 rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                      >
+                        <option value="upper right">右上</option>
+                        <option value="upper left">左上</option>
+                        <option value="lower right">右下</option>
+                        <option value="lower left">左下</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
                 {/* 生成按钮 */}
                 <Button
                   className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
                   onClick={handleGenerateChart}
-                  disabled={chartGenerating || !chartXCol || chartYCols.length === 0}
+                  disabled={chartGenerating || !chartXCol || chartYCols.length === 0 || chartYCols.every(c => legendHidden.has(c))}
                 >
                   {chartGenerating ? (
                     <span className="inline-flex items-center gap-2"><DotLoader /> 生成中，请稍候…</span>

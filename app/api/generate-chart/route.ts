@@ -20,6 +20,8 @@ export async function POST(req: NextRequest) {
       title?: string;
       x_label?: string;
       y_label?: string;
+      legend_labels?: Record<string, string>;
+      legend_loc?: "upper right" | "upper left" | "lower right" | "lower left";
     };
 
     console.log('[chart] 收到请求:', { x_col: body.x_col, y_cols: body.y_cols, chart_type: body.chart_type });

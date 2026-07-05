@@ -15,6 +15,10 @@ title = config.get('title', '')
 x_label = config.get('x_label', x_col)
 y_label = config.get('y_label', '')
 output_path = config['output_path']
+legend_labels = config.get('legend_labels') or {}
+legend_loc = config.get('legend_loc') or 'best'
+if legend_loc not in ('upper right', 'upper left', 'lower right', 'lower left', 'best'):
+    legend_loc = 'best'
 
 # 修复1：直接加载已知路径的中文字体
 fm.fontManager.addfont('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc')
@@ -74,14 +78,15 @@ for i, y_col in enumerate(y_cols):
         continue
     color = colors[i % len(colors)]
     marker = markers[i % len(markers)]
+    label = legend_labels.get(y_col, y_col)
     if chart_type == 'line':
         ax.plot(x_pos, y, color=color, marker=marker,
-                markevery=max(1, len(x_pos) // 20), label=y_col)
+                markevery=max(1, len(x_pos) // 20), label=label)
     elif chart_type == 'scatter':
-        ax.scatter(x_pos, y, color=color, marker=marker, label=y_col)
+        ax.scatter(x_pos, y, color=color, marker=marker, label=label)
     elif chart_type == 'bar':
         width = 0.8 / len(y_cols)
-        ax.bar([p + i * width for p in x_pos], y, width=width, color=color, label=y_col)
+        ax.bar([p + i * width for p in x_pos], y, width=width, color=color, label=label)
         if i == len(y_cols) - 1:
             ax.set_xticks([p + width * (len(y_cols) - 1) / 2 for p in x_pos])
             ax.set_xticklabels(x_raw, rotation=45, ha='right')
@@ -101,7 +106,7 @@ ax.set_ylabel(y_label)
 if title:
     ax.set_title(title, fontsize=15, fontweight='bold', pad=12)
 if len(y_cols) > 1:
-    ax.legend(fontsize=9, loc='best', framealpha=0.8)
+    ax.legend(fontsize=9, loc=legend_loc, framealpha=0.8)
 ax.spines['top'].set_visible(True)
 ax.spines['right'].set_visible(True)
 ax.spines['top'].set_linewidth(1.5)
