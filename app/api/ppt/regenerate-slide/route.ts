@@ -35,12 +35,13 @@ export async function POST(req: NextRequest) {
     const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
-    const { currentSlide, prevSlide, nextSlide, userInstruction, scene } = (await req.json()) as {
+    const { currentSlide, prevSlide, nextSlide, userInstruction, scene, paperContent } = (await req.json()) as {
       currentSlide: Slide;
       prevSlide: Slide | null;
       nextSlide: Slide | null;
       userInstruction: string;
       scene: "defense" | "meeting";
+      paperContent?: string;
     };
 
     if (!userInstruction?.trim()) {
@@ -48,6 +49,7 @@ export async function POST(req: NextRequest) {
     }
 
     const isDefense = scene === "defense";
+    const paperExcerpt = paperContent?.trim().slice(0, 20000) ?? "";
 
     const prompt = `你是一位专业的学术PPT设计专家。请根据用户指令修改指定的幻灯片，只输出单个 slide 的 JSON 对象，以 { 开头以 } 结尾，不要任何说明文字，不要代码块标记。
 
@@ -61,6 +63,12 @@ ${JSON.stringify(currentSlide, null, 2)}
 
 ${prevSlide ? `【上一页内容（参考，保持逻辑连贯）】\n${JSON.stringify(prevSlide, null, 2)}\n` : ""}
 ${nextSlide ? `【下一页内容（参考，保持逻辑连贯）】\n${JSON.stringify(nextSlide, null, 2)}\n` : ""}
+${paperExcerpt ? `【论文原文（修改内容必须基于这里的原文，禁止凭空编造或改写）】\n${paperExcerpt}\n` : ""}
+
+【内容来源要求——最高优先级】
+- 修改后的内容必须直接来自上面的论文原文，⛔ 不要脱离论文自己编造数据、结论或术语
+- paragraphs/figure_desc/analysis 等文字内容优先摘录论文原句，保留原文的数值和专业术语
+- 如果用户指令要求的内容在论文原文中找不到依据，就用论文里最相关的原文内容填充，不要凭空杜撰
 
 【内容格式规则——必须严格遵守】
 

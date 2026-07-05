@@ -567,7 +567,7 @@ const TYPE_BADGE: Record<string, { bg: string; label: string }> = {
 };
 
 // ── 主组件 ────────────────────────────────────────────────────────────────────
-export function PptSlidePreview({ pptContent }: { pptContent: PptContent }) {
+export function PptSlidePreview({ pptContent, paperContent }: { pptContent: PptContent; paperContent?: string }) {
   const [idx, setIdx]       = useState(0);
   const [scale, setScale]   = useState(0.5);
   const containerRef        = useRef<HTMLDivElement>(null);
@@ -617,6 +617,7 @@ export function PptSlidePreview({ pptContent }: { pptContent: PptContent }) {
           nextSlide:    idx < slides.length - 1 ? slides[idx + 1] : null,
           userInstruction: instruction,
           scene: pptContent.scene ?? "defense",
+          paperContent,
         }),
       });
       const data = await res.json();
@@ -629,7 +630,7 @@ export function PptSlidePreview({ pptContent }: { pptContent: PptContent }) {
     } finally {
       setRegenerating(false);
     }
-  }, [instruction, regenerating, slides, idx, pptContent.scene]);
+  }, [instruction, regenerating, slides, idx, pptContent.scene, paperContent]);
 
   // 切换页时让缩略图滚入可视区
   useEffect(() => {

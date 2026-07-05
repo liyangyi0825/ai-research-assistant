@@ -473,7 +473,7 @@ export default function PptPage() {
                         </Button>
                       </div>
 
-                      <PptSlidePreview pptContent={pptContent} />
+                      <PptSlidePreview pptContent={pptContent} paperContent={extractedText} />
 
                       <Button
                         onClick={handlePptDownload}
