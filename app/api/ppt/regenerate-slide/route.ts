@@ -4,6 +4,32 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import type { Slide } from "@/app/api/ppt/generate-content/route";
 
+/**
+ * 补全被截断的 JSON 字符串（括号计数法）。
+ * 能处理截断发生在字符串内部的情况（如 "paragrap 被截断）。
+ */
+function closeTruncatedJSON(raw: string): string {
+  let inString = false, escape = false;
+  let braces = 0, brackets = 0;
+
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (escape) { escape = false; continue; }
+    if (c === "\\") { escape = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === "{") braces++;
+    else if (c === "}") braces--;
+    else if (c === "[") brackets++;
+    else if (c === "]") brackets--;
+  }
+
+  let result = inString ? raw + '"' : raw;
+  for (let i = 0; i < brackets; i++) result += "]";
+  for (let i = 0; i < braces; i++) result += "}";
+  return result;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY;
@@ -23,7 +49,7 @@ export async function POST(req: NextRequest) {
 
     const isDefense = scene === "defense";
 
-    const prompt = `你是一位专业的学术PPT设计专家。请根据用户指令修改指定的幻灯片，只输出单页幻灯片的纯 JSON，不要代码块，不要任何说明文字。
+    const prompt = `你是一位专业的学术PPT设计专家。请根据用户指令修改指定的幻灯片，只输出单个 slide 的 JSON 对象，以 { 开头以 } 结尾，不要任何说明文字，不要代码块标记。
 
 【场景】${isDefense ? "毕业/学位答辩（正式学术风格）" : "组会/进展汇报（简洁风格）"}
 
@@ -113,13 +139,10 @@ comparison 类型字段：type, title, columns(heading/color/points数组), note
     try {
       slide = JSON.parse(cleaned);
     } catch {
-      // 截断容错：找到最后一个完整字段后补全对象
+      // 截断容错：括号计数法补全后再解析
       console.error("单页重生成 JSON 首次解析失败：", rawText.slice(0, 500));
       try {
-        const base = jsonStart !== -1 ? stripped.slice(jsonStart) : stripped;
-        const lastComma = base.lastIndexOf('",');
-        const truncated = lastComma > 0 ? base.slice(0, lastComma + 1) + '"notes":""}' : base;
-        slide = JSON.parse(truncated);
+        slide = JSON.parse(closeTruncatedJSON(cleaned));
         console.log("单页重生成 JSON 截断补全成功");
       } catch {
         return NextResponse.json({ error: "AI 输出格式异常，请重试" }, { status: 500 });
