@@ -6,6 +6,12 @@ import { PptSlidePreview } from "@/components/PptSlidePreview";
 import { Header } from "@/components/Header";
 import { getSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { PPT_TEMPLATES, TEMPLATE_LIST, DEFAULT_TEMPLATE, type TemplateId } from "@/lib/pptTemplates";
+import type { SlideOutlineItem, SlideOutlineType } from "@/app/api/ppt/generate-outline/route";
+
+const OUTLINE_TYPE_LABEL: Record<SlideOutlineType, string> = {
+  cover: "封面", contents: "目录", section: "章节", content: "内容",
+  figure: "图表", stats: "数据", table: "表格", comparison: "对比", ending: "结尾",
+};
 
 function DotLoader() {
   return (
@@ -18,7 +24,7 @@ function DotLoader() {
 }
 
 type UploadStage = "idle" | "uploading" | "done" | "error";
-type PptStatus = "idle" | "selecting" | "loading" | "done" | "error";
+type PptStatus = "idle" | "selecting" | "outline-loading" | "outline-editing" | "loading" | "done" | "error";
 
 export default function PptPage() {
   // PDF 提取
@@ -33,6 +39,13 @@ export default function PptPage() {
   const [pptStatus, setPptStatus] = useState<PptStatus>("idle");
   const [pptScene, setPptScene] = useState<"defense" | "meeting" | null>(null);
   const [templateId, setTemplateId] = useState<TemplateId>(DEFAULT_TEMPLATE);
+
+  // 大纲（第一步：生成骨架结构，供用户编辑确认）
+  const [outline, setOutline] = useState<SlideOutlineItem[] | null>(null);
+  const [outlineError, setOutlineError] = useState("");
+  const [outlineDragIndex, setOutlineDragIndex] = useState<number | null>(null);
+  const [outlineEditingIndex, setOutlineEditingIndex] = useState<number | null>(null);
+  const [outlineNoteIndex, setOutlineNoteIndex] = useState<number | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [pptContent, setPptContent] = useState<any>(null);
   const [pptError, setPptError] = useState("");
@@ -192,12 +205,61 @@ export default function PptPage() {
     setPptScene(null);
     setPptContent(null);
     setPptError("");
+    setOutline(null);
+    setOutlineError("");
+    setOutlineDragIndex(null);
+    setOutlineEditingIndex(null);
+    setOutlineNoteIndex(null);
     setShowRestoreBanner(false);
     setRestoredScene(null);
     setRestoredIsComplete(false);
     setRestoredPptTitle(null);
     setRestoredTotalSlides(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  async function handleGenerateOutline(scene: "defense" | "meeting") {
+    setPptScene(scene);
+    setPptStatus("outline-loading");
+    setOutlineError("");
+    setOutline(null);
+    try {
+      const res = await fetch("/api/ppt/generate-outline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paperContent: extractedText, scene }),
+      });
+      const data = await res.json() as { outline?: SlideOutlineItem[]; error?: string };
+      if (!res.ok || data.error) throw new Error(data.error || `服务器错误（${res.status}）`);
+      setOutline(data.outline ?? []);
+      setPptStatus("outline-editing");
+    } catch (err) {
+      setOutlineError(err instanceof Error ? err.message : "生成大纲失败，请重试");
+      setPptStatus("selecting");
+    }
+  }
+
+  function handleOutlineDelete(index: number) {
+    setOutline(prev => prev ? prev.filter((_, i) => i !== index) : prev);
+  }
+
+  function handleOutlineTitleChange(index: number, title: string) {
+    setOutline(prev => prev ? prev.map((item, i) => i === index ? { ...item, title } : item) : prev);
+  }
+
+  function handleOutlineNoteChange(index: number, note: string) {
+    setOutline(prev => prev ? prev.map((item, i) => i === index ? { ...item, note } : item) : prev);
+  }
+
+  function handleOutlineDrop(targetIndex: number) {
+    setOutline(prev => {
+      if (!prev || outlineDragIndex === null || outlineDragIndex === targetIndex) return prev;
+      const next = [...prev];
+      const [moved] = next.splice(outlineDragIndex, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+    setOutlineDragIndex(null);
   }
 
   async function handlePptGenerate(scene: "defense" | "meeting") {
@@ -452,7 +514,7 @@ export default function PptPage() {
                   {pptStatus === "selecting" && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <button
-                        onClick={() => handlePptGenerate("defense")}
+                        onClick={() => handleGenerateOutline("defense")}
                         className="group text-left p-4 rounded-xl border-2 border-blue-100 hover:border-blue-400 hover:bg-blue-50 transition-all"
                       >
                         <div className="text-2xl mb-2">🎓</div>
@@ -463,7 +525,7 @@ export default function PptPage() {
                         <div className="mt-2 text-xs text-blue-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">点击选择 →</div>
                       </button>
                       <button
-                        onClick={() => handlePptGenerate("meeting")}
+                        onClick={() => handleGenerateOutline("meeting")}
                         className="group text-left p-4 rounded-xl border-2 border-green-100 hover:border-green-400 hover:bg-green-50 transition-all"
                       >
                         <div className="text-2xl mb-2">📊</div>
@@ -476,11 +538,120 @@ export default function PptPage() {
                     </div>
                   )}
 
-                  {/* 生成中 */}
+                  {/* 生成大纲失败 */}
+                  {pptStatus === "selecting" && outlineError && (
+                    <div className="p-3 bg-red-50 border border-red-100 rounded-lg text-red-500 text-sm">❌ {outlineError}</div>
+                  )}
+
+                  {/* 大纲生成中 */}
+                  {pptStatus === "outline-loading" && (
+                    <div className="text-center py-8">
+                      <div className="flex justify-center mb-3"><DotLoader /></div>
+                      <p className="text-sm text-gray-600">AI 正在梳理论文章节，生成大纲…</p>
+                      <p className="text-xs text-gray-400 mt-1">通常需要 5–10 秒</p>
+                    </div>
+                  )}
+
+                  {/* 大纲编辑 */}
+                  {pptStatus === "outline-editing" && outline && (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-semibold text-gray-700">📝 大纲预览（共 {outline.length} 页，可拖拽调整顺序）</p>
+                        <Button size="sm" variant="outline" onClick={() => setPptStatus("selecting")} className="text-xs">
+                          换场景
+                        </Button>
+                      </div>
+
+                      <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
+                        {outline.map((item, index) => (
+                          <div
+                            key={index}
+                            draggable
+                            onDragStart={() => setOutlineDragIndex(index)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={() => handleOutlineDrop(index)}
+                            className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 flex items-start gap-2 cursor-move hover:border-indigo-300"
+                          >
+                            <span className="text-gray-300 mt-0.5 select-none">⠿</span>
+                            <span className="text-xs text-gray-400 w-6 shrink-0 mt-0.5">{index + 1}</span>
+                            <span className={`text-[11px] px-1.5 py-0.5 rounded shrink-0 mt-0.5 ${item.type === "figure" ? "bg-amber-100 text-amber-700" : "bg-indigo-100 text-indigo-700"}`}>
+                              {OUTLINE_TYPE_LABEL[item.type] ?? item.type}
+                              {item.type === "section" && item.sectionNumber ? ` ${item.sectionNumber}` : ""}
+                            </span>
+
+                            <div className="flex-1 min-w-0">
+                              {outlineEditingIndex === index ? (
+                                <input
+                                  autoFocus
+                                  value={item.title}
+                                  onChange={(e) => handleOutlineTitleChange(index, e.target.value)}
+                                  onBlur={() => setOutlineEditingIndex(null)}
+                                  onKeyDown={(e) => { if (e.key === "Enter") setOutlineEditingIndex(null); }}
+                                  className="w-full text-sm border border-indigo-300 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                                />
+                              ) : (
+                                <p
+                                  className="text-sm text-gray-800 truncate cursor-text"
+                                  onClick={() => setOutlineEditingIndex(index)}
+                                  title="点击编辑标题"
+                                >
+                                  {item.title}
+                                </p>
+                              )}
+
+                              {outlineNoteIndex === index ? (
+                                <input
+                                  autoFocus
+                                  value={item.note ?? ""}
+                                  placeholder="这页重点讲…"
+                                  onChange={(e) => handleOutlineNoteChange(index, e.target.value)}
+                                  onBlur={() => setOutlineNoteIndex(null)}
+                                  onKeyDown={(e) => { if (e.key === "Enter") setOutlineNoteIndex(null); }}
+                                  className="w-full mt-1 text-xs border border-amber-300 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-amber-400"
+                                />
+                              ) : item.note ? (
+                                <p
+                                  className="text-xs text-amber-600 mt-0.5 cursor-text"
+                                  onClick={() => setOutlineNoteIndex(index)}
+                                  title="点击编辑备注"
+                                >
+                                  💡 {item.note}
+                                </p>
+                              ) : (
+                                <button
+                                  onClick={() => setOutlineNoteIndex(index)}
+                                  className="text-xs text-gray-400 hover:text-amber-600 mt-0.5"
+                                >
+                                  + 添加备注
+                                </button>
+                              )}
+                            </div>
+
+                            <button
+                              onClick={() => handleOutlineDelete(index)}
+                              className="text-gray-300 hover:text-red-500 shrink-0 mt-0.5"
+                              title="删除此页"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+
+                      <Button
+                        onClick={() => pptScene && handlePptGenerate(pptScene)}
+                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white"
+                      >
+                        根据大纲生成 PPT →
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* 正文生成中 */}
                   {pptStatus === "loading" && (
                     <div className="text-center py-8">
                       <div className="flex justify-center mb-3"><DotLoader /></div>
-                      <p className="text-sm text-gray-600">AI 正在规划幻灯片结构…</p>
+                      <p className="text-sm text-gray-600">AI 正在生成幻灯片内容…</p>
                       <p className="text-xs text-gray-400 mt-1">通常需要 10–20 秒</p>
                     </div>
                   )}
