@@ -117,6 +117,7 @@ comparison 类型字段：type, title, columns(heading/color/points数组), note
         model: "deepseek-v4-pro",
         max_tokens: 8000,
         temperature: 0.1,
+        stream: true,
         messages: [{ role: "user", content: prompt }],
       }),
     });
@@ -126,8 +127,29 @@ comparison 类型字段：type, title, columns(heading/color/points数组), note
       return NextResponse.json({ error: `AI 生成失败（${res.status}）：${err.slice(0, 120)}` }, { status: 500 });
     }
 
-    const data = await res.json();
-    const rawText: string = data?.content?.[0]?.text ?? "";
+    // ── 流式读取 SSE，拼接完整文本（非流式调用在 DeepSeek 兼容接口上偶发返回空内容）───
+    let rawText = "";
+    let sseBuffer = "";
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+      const lines = sseBuffer.split("\n");
+      sseBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6).trim();
+        if (!raw || raw === "[DONE]") continue;
+        try {
+          const evt = JSON.parse(raw);
+          if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+            rawText += evt.delta.text ?? "";
+          }
+        } catch { /* 跳过无法解析的行 */ }
+      }
+    }
 
     const stripped = rawText.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
     const jsonStart = stripped.indexOf("{");
