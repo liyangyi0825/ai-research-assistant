@@ -141,11 +141,13 @@ comparison 类型字段：type, title, columns(heading/color/points数组), note
       slide = JSON.parse(cleaned);
     } catch {
       // 截断容错：括号计数法补全后再解析
-      console.error("单页重生成 JSON 首次解析失败：", rawText.slice(0, 500));
+      console.error("单页重生成 JSON 首次解析失败，输出前500字：", rawText.slice(0, 500));
+      console.error("单页重生成 JSON 首次解析失败，输出末尾500字：", rawText.slice(-500));
       try {
         slide = JSON.parse(closeTruncatedJSON(cleaned));
         console.log("单页重生成 JSON 截断补全成功");
-      } catch {
+      } catch (e2) {
+        console.error("单页重生成 JSON 截断补全仍失败：", e2 instanceof Error ? e2.message : String(e2));
         return NextResponse.json({ error: "AI 输出格式异常，请重试" }, { status: 500 });
       }
     }
