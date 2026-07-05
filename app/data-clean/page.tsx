@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/Header";
 import { toast } from "sonner";
@@ -101,6 +101,56 @@ function applyRules(
     }
   }
   return { headers: h, rows: r };
+}
+
+// ── 图表轴候选列判断（根据列名与取值特征，过滤适合做 X / Y 轴的列）──────────
+
+const DATE_TIME_NAME_RE = /日期|时间|date|time/i;
+const MARKER_NAME_RE    = /标记/;
+const Y_KEYWORD_NAME_RE = /MW|值|数据|合计/i;
+const INDEX_NAME_RE     = /序号|编号|index|^id$|^no$/i;
+
+interface ColumnStat {
+  header: string;
+  isNumeric: boolean;
+  isXCandidate: boolean;
+}
+
+function isNumericCell(v: string | number): boolean {
+  const s = String(v ?? "").trim();
+  return s !== "" && !isNaN(Number(s));
+}
+
+// 判断每一列是否数值列、是否适合做 X 轴：
+// - 日期/时间列（列名含关键字且取值有变化）→ 适合做 X 轴
+// - 唯一值占比低于 50%（分类列）→ 适合做 X 轴
+// - 全数字且列名含"序号/编号"等 → 适合做 X 轴（序号列）
+// - 全数字且列名含"MW/值/数据/合计"等 → 只归为 Y 轴数值列，不作为 X 轴候选
+// - 列名带"标记"字样的辅助列 → 默认排除，不作为 X 轴候选
+function analyzeColumnsForChart(headers: string[], rows: (string | number)[][]): ColumnStat[] {
+  return headers.map((header, i) => {
+    const values      = rows.map(r => r[i]);
+    const nonEmpty    = values.filter(v => String(v ?? "").trim() !== "");
+    const uniqueCount = new Set(nonEmpty.map(v => String(v).trim())).size;
+    const uniqueRatio = nonEmpty.length > 0 ? uniqueCount / nonEmpty.length : 0;
+    const isNumeric   = nonEmpty.length > 0 && nonEmpty.every(isNumericCell);
+    const isMarker    = MARKER_NAME_RE.test(header);
+
+    let isXCandidate = false;
+    if (!isMarker) {
+      if (DATE_TIME_NAME_RE.test(header) && uniqueCount > 1) {
+        isXCandidate = true;
+      } else if (isNumeric && Y_KEYWORD_NAME_RE.test(header)) {
+        isXCandidate = false;
+      } else if (uniqueRatio < 0.5 && uniqueCount > 1) {
+        isXCandidate = true;
+      } else if (isNumeric && INDEX_NAME_RE.test(header)) {
+        isXCandidate = true;
+      }
+    }
+
+    return { header, isNumeric, isXCandidate };
+  });
 }
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
@@ -451,6 +501,16 @@ export default function DataCleanPage() {
 
   const headers = rawHeaders; // alias for clarity in JSX
 
+  // 图表轴候选列：X 轴过滤掉纯数值列/标记列，Y 轴只保留数值列
+  const columnStats = useMemo(
+    () => analyzeColumnsForChart(cleanedHeaders, cleanedRows),
+    [cleanedHeaders, cleanedRows],
+  );
+  const xCandidateCols = [...new Set(columnStats.filter(c => c.isXCandidate).map(c => c.header))];
+  const xUsesFallback  = xCandidateCols.length === 0 && cleanedHeaders.length > 0;
+  const xAxisOptions   = xUsesFallback ? cleanedHeaders : xCandidateCols;
+  const numericCols    = [...new Set(columnStats.filter(c => c.isNumeric).map(c => c.header))];
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
       <Header title="数据清洗" />
@@ -698,8 +758,11 @@ export default function DataCleanPage() {
                       className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-300"
                     >
                       <option value="">-- 选择 X 轴 --</option>
-                      {cleanedHeaders.map(h => <option key={h} value={h}>{h}</option>)}
+                      {xAxisOptions.map(h => <option key={h} value={h}>{h}</option>)}
                     </select>
+                    {xUsesFallback && (
+                      <p className="text-xs text-amber-500 mt-1">未能自动识别 X 轴列，请手动选择</p>
+                    )}
                   </div>
 
                   {/* X 轴标签 */}
@@ -745,7 +808,7 @@ export default function DataCleanPage() {
                     Y 轴列（可多选，已选 {chartYCols.length} 列）
                   </label>
                   <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto p-1">
-                    {[...new Set(cleanedHeaders.filter(h => h !== chartXCol))].map(h => {
+                    {numericCols.filter(h => h !== chartXCol).map(h => {
                       const checked = chartYCols.includes(h);
                       return (
                         <label
