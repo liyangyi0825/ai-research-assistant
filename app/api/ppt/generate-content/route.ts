@@ -210,8 +210,8 @@ export async function POST(req: NextRequest) {
         figureMatches,
       ].filter(Boolean).join("\n\n---\n\n");
 
-      if (combined.length < 2000) return content.slice(0, 30000);
-      return combined.slice(0, 30000);
+      if (combined.length < 2000) return content.slice(0, 25000);
+      return combined.slice(0, 25000);
     };
 
     const keyContent = extractKeyContent(paperContent);
@@ -219,7 +219,13 @@ export async function POST(req: NextRequest) {
     const isDefense = scene === "defense";
     const today = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
 
-    const prompt = `【输出要求——最高优先级】
+    const prompt = `【一致性要求——最高优先级】
+- 必须按照论文的实际章节结构生成，章节标题直接从论文提取原文，不得自行概括或改写
+- 严格按照论文从头到尾的顺序生成，不得跳过任何章节，不得合并或拆分章节
+- 论文中每一个实验、每一组数据、每一个结论都必须体现在对应页面中，不得遗漏
+- 每次生成同一篇论文，章节结构和页面顺序必须保持一致，不得因随机性导致结构变化
+
+【输出要求——最高优先级】
 输出必须是完整的合法 JSON，以 { 开头，以 } 结尾。
 如果内容太多导致无法在 token 限制内完成，优先保证 JSON 结构完整，可以减少幻灯片总页数，但每页内容必须完整，不要截断输出。
 只输出纯 JSON，不要代码块标记，不要任何说明文字。
@@ -228,19 +234,15 @@ export async function POST(req: NextRequest) {
 
 【场景】${isDefense ? "毕业/学位答辩（正式学术风格）" : "组会/进展汇报（简洁风格）"}
 
-【一致性要求——违反视为严重错误】
-- 必须按照论文的实际章节结构生成，章节标题直接从论文提取原文，不得自行概括或改写
-- 严格按照论文从头到尾的顺序生成，不得跳过任何章节
-- 每次生成同一篇论文，章节结构和页面顺序必须保持一致
-
 【页数与字数限制——必须严格遵守，这是控制输出长度的关键】
 - slides 数组总页数：不超过 13 页（这是硬性上限，避免输出被截断）
-- 每个 paragraphs 段落：50-120 字（约 2-3 句话），⛔ 禁止空数组 [] 或空字符串
+- 每个 paragraphs 段落：80-150 字（约 3-4 句话），⛔ 禁止空数组 [] 或空字符串
 - notes 字段：不超过 20 字
-- figure_desc 字段：不超过 60 字
-- analysis 字段：不超过 60 字
+- figure_desc 字段：不少于 60 字
+- analysis 字段：不少于 60 字
 - card.points 每条：不超过 25 字
 - ⛔ type=content 的 standard/split/hero 页面，paragraphs 至少要有 1 个非空段落
+- 每个重要实验结果必须有具体数值支撑，不得用模糊表述代替
 ${isDefense
   ? "- 结构：封面→目录→章节过渡页→内容页→结尾页"
   : "- 结构：封面→目录→内容页→结尾页（省略章节过渡页）"
@@ -261,8 +263,8 @@ ${isDefense
 - 找不到足够具体数值时，chart_data 留空（不要编造数字），渲染时会退回占位框
 
 【paragraphs 格式——必须填满内容，⛔ 不要偷懒只写一句话】
-- standard/split：必须写 2 个段落（不是1个！），每段 50-120 字，流畅陈述性文字，含数值+因果
-- hero：paragraphs[0] 为核心结论（40-80字含数值），paragraphs[1] 必须填写补充说明/意义（不是可选，50-100字），⛔ 不要留空
+- standard/split：必须写 2 个段落（不是1个！），每段 80-150 字，流畅陈述性文字，含数值+因果
+- hero：paragraphs[0] 为核心结论（80-150字含数值），paragraphs[1] 必须填写补充说明/意义（不是可选，80-150字），⛔ 不要留空
 - 段落里用 [[双方括号]] 标记最关键 1-2 个词/数值，每段最多 2 处
 - ⛔ 禁止 bullet point（"•"）出现在 paragraphs 里
 
