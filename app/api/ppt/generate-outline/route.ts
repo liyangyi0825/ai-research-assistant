@@ -32,6 +32,8 @@ function closeTruncatedJSON(raw: string): string {
     else if (c === "]") brackets--;
   }
   let result = inString ? raw + '"' : raw;
+  // 截断处可能恰好停在逗号后（如 "...},{"type":"section",...},"），需先去掉末尾多余的逗号再补括号
+  result = result.replace(/,\s*$/, "");
   for (let i = 0; i < brackets; i++) result += "]";
   for (let i = 0; i < braces; i++) result += "}";
   return result;
@@ -94,7 +96,7 @@ ${keyContent}`;
       },
       body: JSON.stringify({
         model: "deepseek-v4-pro",
-        max_tokens: 4000,
+        max_tokens: 8192,
         temperature: 0.1,
         stream: true,
         messages: [{ role: "user", content: prompt }],
