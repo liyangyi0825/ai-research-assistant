@@ -25,7 +25,7 @@ export function SiteFilingFooter() {
           className={`inline-flex items-center gap-1 ${linkClass}`}
         >
           <Image
-            src="/beian-police.svg"
+            src="/beian-police.png"
             alt="公安备案"
             width={14}
             height={14}

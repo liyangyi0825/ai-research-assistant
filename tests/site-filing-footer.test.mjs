@@ -17,6 +17,10 @@ test("filing footer contains the official filing records and safe links", async 
     (source.match(/rel="noopener noreferrer"/g) ?? []).length,
     2,
   );
+  assert.match(source, /src="\/beian-police\.png"/);
+  assert.match(source, /width=\{14\}/);
+  assert.match(source, /height=\{14\}/);
+  assert.doesNotMatch(source, /beian-police\.svg/);
 });
 
 test("root layout renders one body and one global filing footer", async () => {
