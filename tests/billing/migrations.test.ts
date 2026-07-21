@@ -78,6 +78,7 @@ const rpcNames = [
   "billing_finalize_usage",
   "billing_release_usage",
   "billing_adjust_credit",
+  "billing_consume_order_rate_limit",
 ] as const;
 
 test("schema migration creates every billing table with UUID and timestamp conventions", () => {
@@ -458,6 +459,22 @@ test("credit adjustment rejects negative outcomes and is idempotent", () => {
   assert.match(sql, /idempotency_key = p_idempotency_key/);
   assert.match(sql, /nullif\(btrim\(p_reason\), ''\) is null/);
   assert.match(sql, /insert into public\.billing_admin_audit_logs/);
+});
+
+test("order rate-limit consumption is an atomic service-role-only RPC", () => {
+  const rateLimit = sqlFunction("billing_consume_order_rate_limit");
+  const types = projectFile("lib/billing/database.types.ts");
+  const guide = projectFile("docs/billing-database.md").toLowerCase();
+
+  assert.match(rateLimit, /pg_advisory_xact_lock/);
+  assert.match(rateLimit, /delete from public\.billing_rate_limits/);
+  assert.match(rateLimit, /select coalesce\(sum\(request_count\), 0\)/);
+  assert.match(rateLimit, /insert into public\.billing_rate_limits/);
+  assert.match(rateLimit, /on conflict \(user_id, action, window_started_at\) do update/);
+  assert.match(rateLimit, /'allowed', false/);
+  assert.match(rateLimit, /'allowed', true/);
+  assert.match(types, /billing_consume_order_rate_limit: \{[\s\S]*?p_user_id: UUID;[\s\S]*?p_now: Timestamp;[\s\S]*?p_window_seconds\?: number;[\s\S]*?p_limit\?: number;/);
+  assert.match(guide, /billing_consume_order_rate_limit/);
 });
 
 test("database types expose every table and RPC without any placeholders", () => {

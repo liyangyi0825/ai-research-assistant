@@ -29,3 +29,21 @@ persists and evaluates the sliding window correctly for ordinary requests, but
 two simultaneous requests can race between the count and insert operations.
 Before handling significant concurrent production traffic, add a database-side
 atomic consume function and make this repository call it.
+
+## Review Remediation
+
+- A disabled `billing_admins` record now takes precedence over `ADMIN_EMAIL`;
+  bootstrap authorization only applies when the server-side lookup has no row.
+- `billing_consume_order_rate_limit` now holds a per-user transaction advisory
+  lock while it cleans expired requests, counts the window, and consumes one
+  request. The default repository calls this RPC through the service-role
+  client.
+- The RPC contract is documented in the migration, generated database types,
+  database guide, and tests. It is `SECURITY DEFINER`, pins `search_path`,
+  revokes client execution, and grants only `service_role`.
+
+## Current Concern
+
+The prior count/insert race is resolved in the migration. By task scope, the
+new function was statically tested only; it still needs its documented local or
+isolated-test-database runtime verification before any production use.

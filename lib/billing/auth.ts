@@ -110,7 +110,15 @@ export async function requireBillingAdmin(
     normalizeEmail(user.email) !== null &&
     normalizeEmail(user.email) === normalizeEmail(dependencies.adminEmail);
 
-  if (!record?.isActive && !isBootstrapAdmin) {
+  if (record && !record.isActive) {
+    throw new BillingError(
+      "BILLING_ADMIN_REQUIRED",
+      "An active billing administrator is required.",
+      403,
+    );
+  }
+
+  if (!record && !isBootstrapAdmin) {
     throw new BillingError(
       "BILLING_ADMIN_REQUIRED",
       "An active billing administrator is required.",

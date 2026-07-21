@@ -88,6 +88,22 @@ test("requireBillingAdmin supports the ADMIN_EMAIL bootstrap only after server a
   assert.equal(admin.role, "BILLING_ADMIN");
 });
 
+test("requireBillingAdmin does not let ADMIN_EMAIL reactivate a disabled database administrator", async () => {
+  await assert.rejects(
+    () =>
+      requireBillingAdmin(
+        dependencies({
+          findAdmin: async () => ({
+            role: "BILLING_ADMIN",
+            isActive: false,
+          }),
+          adminEmail: "student@example.com",
+        }),
+      ),
+    (error: unknown) => expectBillingError(error, "BILLING_ADMIN_REQUIRED", 403),
+  );
+});
+
 test("assertBillingAccess rejects billing writes while the server feature flag is disabled", () => {
   const config = getBillingConfig({ BILLING_FEATURE_ENABLED: "false" });
 

@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   consumeOrderRateLimit,
+  createOrderRateLimitRepository,
   ORDER_RATE_LIMIT_MAX_REQUESTS,
   ORDER_RATE_LIMIT_WINDOW_MS,
+  type BillingRateLimitRpcClient,
   type OrderRateLimitRepository,
 } from "../../lib/billing/rate-limit";
 import { BillingError } from "../../lib/billing/errors";
@@ -36,6 +38,36 @@ class InMemoryOrderRateLimitRepository implements OrderRateLimitRepository {
 
     this.requests.push({ userId, occurredAt: now.getTime() });
     return true;
+  }
+}
+
+class InMemoryRateLimitRpcClient implements BillingRateLimitRpcClient {
+  private readonly requests: Array<{ userId: string; occurredAt: number }> = [];
+  functionName: string | null = null;
+
+  async rpc(
+    functionName: string,
+    args: {
+      p_user_id: string;
+      p_now: string;
+      p_window_seconds: number;
+      p_limit: number;
+    },
+  ) {
+    this.functionName = functionName;
+    const now = new Date(args.p_now).getTime();
+    const earliestAllowed = now - args.p_window_seconds * 1_000;
+    const used = this.requests.filter(
+      (request) =>
+        request.userId === args.p_user_id && request.occurredAt > earliestAllowed,
+    ).length;
+
+    if (used >= args.p_limit) {
+      return { data: { allowed: false }, error: null };
+    }
+
+    this.requests.push({ userId: args.p_user_id, occurredAt: now });
+    return { data: { allowed: true }, error: null };
   }
 }
 
@@ -71,6 +103,23 @@ test("consumeOrderRateLimit permits a user again after the sliding window expire
       repository,
     ),
   );
+});
+
+test("the default rate-limit repository consumes capacity through the atomic database RPC", async () => {
+  const client = new InMemoryRateLimitRpcClient();
+  const repository = createOrderRateLimitRepository(client);
+  const now = new Date("2026-07-22T00:00:00.000Z");
+
+  for (let request = 0; request < ORDER_RATE_LIMIT_MAX_REQUESTS; request += 1) {
+    await consumeOrderRateLimit("user-1", now, repository);
+  }
+
+  await assert.rejects(
+    () => consumeOrderRateLimit("user-1", now, repository),
+    (error: unknown) =>
+      error instanceof BillingError && error.code === "ORDER_RATE_LIMITED",
+  );
+  assert.equal(client.functionName, "billing_consume_order_rate_limit");
 });
 
 test("consumeOrderRateLimit fails closed when persistent storage is unavailable", async () => {

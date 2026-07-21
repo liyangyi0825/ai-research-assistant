@@ -921,6 +921,79 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.billing_consume_order_rate_limit(
+  p_user_id UUID,
+  p_now TIMESTAMPTZ,
+  p_window_seconds INTEGER DEFAULT 60,
+  p_limit BIGINT DEFAULT 5
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_cutoff TIMESTAMPTZ;
+  v_used BIGINT;
+BEGIN
+  IF p_user_id IS NULL
+    OR p_now IS NULL
+    OR p_window_seconds IS NULL
+    OR p_limit IS NULL
+    OR p_window_seconds <= 0
+    OR p_limit <= 0 THEN
+    RAISE EXCEPTION 'rate limit user, time, window, and limit must be positive'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('billing_order_rate_limit:' || p_user_id::TEXT, 0)
+  );
+
+  v_cutoff := p_now - make_interval(secs => p_window_seconds);
+
+  DELETE FROM public.billing_rate_limits
+  WHERE user_id = p_user_id
+    AND action = 'CREATE_ORDER'
+    AND window_started_at <= v_cutoff;
+
+  SELECT COALESCE(sum(request_count), 0)
+  INTO v_used
+  FROM public.billing_rate_limits
+  WHERE user_id = p_user_id
+    AND action = 'CREATE_ORDER'
+    AND window_started_at > v_cutoff;
+
+  IF v_used >= p_limit THEN
+    RETURN jsonb_build_object(
+      'allowed', FALSE,
+      'request_count', v_used
+    );
+  END IF;
+
+  INSERT INTO public.billing_rate_limits (
+    user_id,
+    action,
+    window_started_at,
+    request_count
+  )
+  VALUES (
+    p_user_id,
+    'CREATE_ORDER',
+    p_now,
+    1
+  )
+  ON CONFLICT (user_id, action, window_started_at) DO UPDATE
+  SET request_count = public.billing_rate_limits.request_count + 1,
+      updated_at = now();
+
+  RETURN jsonb_build_object(
+    'allowed', TRUE,
+    'request_count', v_used + 1
+  );
+END;
+$$;
+
 REVOKE ALL ON FUNCTION public.billing_settle_paid_order(
   TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TIMESTAMPTZ, JSONB
 ) FROM PUBLIC, anon, authenticated;
@@ -950,4 +1023,11 @@ REVOKE ALL ON FUNCTION public.billing_adjust_credit(
 ) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.billing_adjust_credit(
   UUID, BIGINT, TEXT, TEXT, UUID, TEXT
+) TO service_role;
+
+REVOKE ALL ON FUNCTION public.billing_consume_order_rate_limit(
+  UUID, TIMESTAMPTZ, INTEGER, BIGINT
+) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.billing_consume_order_rate_limit(
+  UUID, TIMESTAMPTZ, INTEGER, BIGINT
 ) TO service_role;

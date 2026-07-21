@@ -681,6 +681,15 @@ export type Database = {
         };
         Returns: Json;
       };
+      billing_consume_order_rate_limit: {
+        Args: {
+          p_user_id: UUID;
+          p_now: Timestamp;
+          p_window_seconds?: number;
+          p_limit?: number;
+        };
+        Returns: Json;
+      };
     };
     Enums: { [_ in never]: never };
     CompositeTypes: { [_ in never]: never };

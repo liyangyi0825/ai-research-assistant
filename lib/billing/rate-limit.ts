@@ -16,49 +16,60 @@ export type OrderRateLimitRepository = {
   consume(input: ConsumeOrderRateLimitInput): Promise<boolean>;
 };
 
+type BillingRateLimitRpcResult = {
+  data: { allowed: boolean } | null;
+  error: { message: string } | null;
+};
+
+export type BillingRateLimitRpcClient = {
+  rpc(
+    functionName: "billing_consume_order_rate_limit",
+    args: {
+      p_user_id: string;
+      p_now: string;
+      p_window_seconds: number;
+      p_limit: number;
+    },
+  ): PromiseLike<BillingRateLimitRpcResult>;
+};
+
+export function createOrderRateLimitRepository(
+  client: BillingRateLimitRpcClient,
+): OrderRateLimitRepository {
+  return {
+    async consume({ userId, now, limit, windowMs }) {
+      const { data, error } = await client.rpc(
+        "billing_consume_order_rate_limit",
+        {
+          p_user_id: userId,
+          p_now: now.toISOString(),
+          p_window_seconds: windowMs / 1_000,
+          p_limit: limit,
+        },
+      );
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      if (!data || typeof data.allowed !== "boolean") {
+        throw new Error("Billing rate-limit RPC returned an invalid response.");
+      }
+
+      return data.allowed;
+    },
+  };
+}
+
 const supabaseOrderRateLimitRepository: OrderRateLimitRepository = {
-  async consume({ userId, action, now, limit, windowMs }) {
+  async consume(input) {
     const database = getSupabaseAdminClient();
 
     if (!database) {
       throw new Error("Billing rate-limit storage is unavailable.");
     }
 
-    const cutoff = new Date(now.getTime() - windowMs).toISOString();
-    const { data, error } = await database
-      .from("billing_rate_limits")
-      .select("request_count")
-      .eq("user_id", userId)
-      .eq("action", action)
-      .gt("window_started_at", cutoff);
-
-    if (error) {
-      throw error;
-    }
-
-    const used = data.reduce(
-      (count, record) => count + Number(record.request_count),
-      0,
-    );
-
-    if (used >= limit) {
-      return false;
-    }
-
-    const { error: insertError } = await database
-      .from("billing_rate_limits")
-      .insert({
-        user_id: userId,
-        action,
-        window_started_at: now.toISOString(),
-        request_count: 1,
-      });
-
-    if (insertError) {
-      throw insertError;
-    }
-
-    return true;
+    return createOrderRateLimitRepository(database).consume(input);
   },
 };
 

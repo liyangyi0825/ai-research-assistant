@@ -6,7 +6,7 @@
 
 禁止对线上数据库执行这些迁移或本文命令。迁移验证只允许使用开发者本机 Supabase，或与生产完全隔离、可随时销毁的独立测试数据库。不要把任何数据库口令、支付密钥或真实回调载荷写入仓库和测试日志。
 
-客户端角色只获得启用商品和本人账务数据的读取权限。创建订单、支付结算、退款、发票、额度与管理写入均由服务端使用受控身份完成。五个事务 RPC 均为 `SECURITY DEFINER`、固定 `search_path`，并撤销 `PUBLIC`、`anon` 和 `authenticated` 的执行权限，仅授权 `service_role`。
+客户端角色只获得启用商品和本人账务数据的读取权限。创建订单、支付结算、退款、发票、额度与管理写入均由服务端使用受控身份完成。六个事务 RPC（包括 `billing_consume_order_rate_limit`）均为 `SECURITY DEFINER`、固定 `search_path`，并撤销 `PUBLIC`、`anon` 和 `authenticated` 的执行权限，仅授权 `service_role`。
 
 ## 迁移顺序
 
