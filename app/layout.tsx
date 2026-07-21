@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { FeedbackWidget } from "@/components/FeedbackWidget";
 import { LoginSuccessNotice } from "@/components/LoginSuccessNotice";
 import { AppShell } from "@/components/AppShell";
+import { SiteFilingFooter } from "@/components/SiteFilingFooter";
 import { Toaster } from "sonner";
 import "./globals.css";
 import "katex/dist/katex.min.css";
@@ -39,14 +40,15 @@ export default function RootLayout({
       lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="h-full">
-          <AppShell>
-            {children}
-          </AppShell>
-          <FeedbackWidget />
-          <LoginSuccessNotice />
-          <Toaster richColors position="top-center" />
-        </body>
+      <body className="flex min-h-full flex-col">
+        <div className="min-h-0 flex-1">
+          <AppShell>{children}</AppShell>
+        </div>
+        <SiteFilingFooter />
+        <FeedbackWidget />
+        <LoginSuccessNotice />
+        <Toaster richColors position="top-center" />
+      </body>
     </html>
   );
 }

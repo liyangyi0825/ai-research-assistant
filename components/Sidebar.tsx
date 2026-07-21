@@ -235,39 +235,6 @@ export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
             退出登录
           </button>
         </div>
-        <div className="flex flex-wrap items-center justify-center gap-x-1 mt-1.5">
-          <a
-            href="https://beian.miit.gov.cn"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs transition-colors whitespace-nowrap"
-            style={{ color: "#334155" }}
-            onMouseEnter={e => (e.currentTarget.style.color = "#64748B")}
-            onMouseLeave={e => (e.currentTarget.style.color = "#334155")}
-          >
-            津ICP备2026007356号
-          </a>
-          <span className="text-xs" style={{ color: "#334155" }}>｜</span>
-          <a
-            href="https://beian.mps.gov.cn"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs transition-colors whitespace-nowrap inline-flex items-center gap-0.5"
-            style={{ color: "#334155" }}
-            onMouseEnter={e => (e.currentTarget.style.color = "#64748B")}
-            onMouseLeave={e => (e.currentTarget.style.color = "#334155")}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="https://beian.mps.gov.cn/img/logo01.dd7ff50e.png"
-              alt="公安备案"
-              width={14}
-              height={14}
-              style={{ verticalAlign: "middle" }}
-            />
-            冀公网安备13028302000277号
-          </a>
-        </div>
       </div>
     </aside>
   );
