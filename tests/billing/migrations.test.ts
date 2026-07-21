@@ -254,10 +254,10 @@ test("paid-order settlement locks and validates the complete payment contract", 
   const sql = sqlFunction("billing_settle_paid_order");
 
   assert.match(sql, /from public\.billing_orders[\s\S]*?for update/);
-  assert.match(sql, /v_order\.order_number <> p_order_number/);
-  assert.match(sql, /v_order\.amount_minor <> p_amount_minor/);
-  assert.match(sql, /v_order\.currency <> upper\(p_currency\)/);
-  assert.match(sql, /v_order\.status <> 'pending'/);
+  assert.match(sql, /v_order\.order_number is distinct from p_order_number/);
+  assert.match(sql, /v_order\.amount_minor is distinct from p_amount_minor/);
+  assert.match(sql, /v_order\.currency is distinct from upper\(p_currency\)/);
+  assert.match(sql, /v_order\.status is distinct from 'pending'/);
   assert.match(sql, /v_order\.expires_at <= p_paid_at/);
   assert.match(sql, /insert into public\.billing_payments/);
   assert.match(sql, /insert into public\.billing_subscriptions/);
@@ -269,12 +269,44 @@ test("paid-order settlement locks and validates the complete payment contract", 
 test("an idempotent webhook replay still rejects a mismatched payment payload", () => {
   const sql = sqlFunction("billing_settle_paid_order");
 
-  assert.match(sql, /v_existing_event\.order_number <> p_order_number/);
   assert.match(
     sql,
-    /from public\.billing_payments[\s\S]*?provider_transaction_id = p_provider_transaction_id/,
+    /v_existing_event\.order_number is distinct from p_order_number/,
+  );
+  assert.match(
+    sql,
+    /from public\.billing_payments[\s\S]*?provider_transaction_id is not distinct from p_provider_transaction_id/,
   );
   assert.match(sql, /raise exception 'webhook replay payload mismatch'/);
+});
+
+test("failed webhook replay rejects null amount and currency before any idempotent return", () => {
+  const settle = sqlFunction("billing_settle_paid_order");
+  const types = projectFile("lib/billing/database.types.ts");
+
+  assert.match(
+    settle,
+    /p_amount_minor is null[\s\S]*?p_currency is null[\s\S]*?p_paid_at is null/,
+  );
+
+  const nullGuard = settle.indexOf("p_amount_minor is null");
+  const failedReplay = settle.indexOf("v_existing_event.status = 'failed'");
+  assert.notEqual(nullGuard, -1);
+  assert.notEqual(failedReplay, -1);
+  assert.ok(nullGuard < failedReplay);
+
+  for (const comparison of [
+    "v_existing_event.provider_transaction_id is distinct from p_provider_transaction_id",
+    "v_existing_event.request_idempotency_key is distinct from p_request_idempotency_key",
+    "v_existing_event.amount_minor is distinct from p_amount_minor",
+    "v_existing_event.currency is distinct from upper(p_currency)",
+    "v_existing_event.paid_at is distinct from p_paid_at",
+  ]) {
+    assert.match(settle, new RegExp(comparison.replace(/[().]/g, "\\$&")));
+  }
+
+  assert.doesNotMatch(settle, /p_payload_summary/);
+  assert.doesNotMatch(types, /p_payload_summary/);
 });
 
 test("settlement consumes a pre-persisted webhook event and preserves failure auditability", () => {
@@ -383,7 +415,7 @@ test("webhook replay validates request idempotency and paid timestamp", () => {
   assert.match(event, /paid_at timestamptz not null/);
   assert.match(
     settle,
-    /v_existing_event\.request_idempotency_key <> p_request_idempotency_key/,
+    /v_existing_event\.request_idempotency_key is distinct from p_request_idempotency_key/,
   );
   assert.match(
     settle,
@@ -391,9 +423,9 @@ test("webhook replay validates request idempotency and paid timestamp", () => {
   );
   assert.match(
     settle,
-    /request_idempotency_key = p_request_idempotency_key/,
+    /request_idempotency_key is not distinct from p_request_idempotency_key/,
   );
-  assert.match(settle, /paid_at = p_paid_at/);
+  assert.match(settle, /paid_at is not distinct from p_paid_at/);
 });
 
 test("usage RPCs reserve, finalize, and release atomically by one task key", () => {

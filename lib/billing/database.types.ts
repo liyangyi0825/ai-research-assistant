@@ -648,7 +648,6 @@ export type Database = {
           p_currency: string;
           p_paid_at: Timestamp;
           p_response_summary?: Json;
-          p_payload_summary?: Json;
         };
         Returns: Json;
       };

@@ -9,8 +9,7 @@ CREATE OR REPLACE FUNCTION public.billing_settle_paid_order(
   p_amount_minor BIGINT,
   p_currency TEXT,
   p_paid_at TIMESTAMPTZ,
-  p_response_summary JSONB DEFAULT '{}'::JSONB,
-  p_payload_summary JSONB DEFAULT '{}'::JSONB
+  p_response_summary JSONB DEFAULT '{}'::JSONB
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -39,7 +38,10 @@ BEGIN
       USING ERRCODE = 'invalid_parameter_value';
   END IF;
 
-  IF p_amount_minor < 0 OR p_paid_at IS NULL THEN
+  IF p_amount_minor IS NULL
+    OR p_currency IS NULL
+    OR p_paid_at IS NULL
+    OR p_amount_minor < 0 THEN
     RAISE EXCEPTION 'invalid payment amount or paid time'
       USING ERRCODE = 'invalid_parameter_value';
   END IF;
@@ -58,11 +60,11 @@ BEGIN
 
   v_event_id := v_existing_event.id;
 
-  IF v_existing_event.order_number <> p_order_number
-    OR v_existing_event.provider_transaction_id <> p_provider_transaction_id
-    OR v_existing_event.request_idempotency_key <> p_request_idempotency_key
-    OR v_existing_event.amount_minor <> p_amount_minor
-    OR v_existing_event.currency <> upper(p_currency)
+  IF v_existing_event.order_number IS DISTINCT FROM p_order_number
+    OR v_existing_event.provider_transaction_id IS DISTINCT FROM p_provider_transaction_id
+    OR v_existing_event.request_idempotency_key IS DISTINCT FROM p_request_idempotency_key
+    OR v_existing_event.amount_minor IS DISTINCT FROM p_amount_minor
+    OR v_existing_event.currency IS DISTINCT FROM upper(p_currency)
     OR v_existing_event.paid_at IS DISTINCT FROM p_paid_at THEN
     RAISE EXCEPTION 'webhook replay payload mismatch'
       USING ERRCODE = 'data_exception';
@@ -81,22 +83,22 @@ BEGIN
     FOR UPDATE;
 
     IF NOT FOUND
-      OR v_order.order_number <> p_order_number
-      OR v_order.provider <> upper(p_provider)
-      OR v_order.amount_minor <> p_amount_minor
-      OR v_order.currency <> upper(p_currency)
+      OR v_order.order_number IS DISTINCT FROM p_order_number
+      OR v_order.provider IS DISTINCT FROM upper(p_provider)
+      OR v_order.amount_minor IS DISTINCT FROM p_amount_minor
+      OR v_order.currency IS DISTINCT FROM upper(p_currency)
       OR v_order.expires_at <= p_paid_at
       OR NOT EXISTS (
         SELECT 1
         FROM public.billing_payments
-        WHERE order_id = v_order.id
-          AND provider = upper(p_provider)
-          AND provider_transaction_id = p_provider_transaction_id
-          AND request_idempotency_key = p_request_idempotency_key
-          AND amount_minor = p_amount_minor
-          AND currency = upper(p_currency)
-          AND paid_at = p_paid_at
-          AND status = 'PAID'
+        WHERE order_id IS NOT DISTINCT FROM v_order.id
+          AND provider IS NOT DISTINCT FROM upper(p_provider)
+          AND provider_transaction_id IS NOT DISTINCT FROM p_provider_transaction_id
+          AND request_idempotency_key IS NOT DISTINCT FROM p_request_idempotency_key
+          AND amount_minor IS NOT DISTINCT FROM p_amount_minor
+          AND currency IS NOT DISTINCT FROM upper(p_currency)
+          AND paid_at IS NOT DISTINCT FROM p_paid_at
+          AND status IS NOT DISTINCT FROM 'PAID'
       ) THEN
       RAISE EXCEPTION 'webhook replay payload mismatch'
         USING ERRCODE = 'data_exception';
@@ -143,27 +145,27 @@ BEGIN
       USING ERRCODE = 'no_data_found';
   END IF;
 
-  IF v_order.order_number <> p_order_number THEN
+  IF v_order.order_number IS DISTINCT FROM p_order_number THEN
     RAISE EXCEPTION 'order number mismatch'
       USING ERRCODE = 'data_exception';
   END IF;
 
-  IF v_order.provider <> upper(p_provider) THEN
+  IF v_order.provider IS DISTINCT FROM upper(p_provider) THEN
     RAISE EXCEPTION 'payment provider mismatch'
       USING ERRCODE = 'data_exception';
   END IF;
 
-  IF v_order.amount_minor <> p_amount_minor THEN
+  IF v_order.amount_minor IS DISTINCT FROM p_amount_minor THEN
     RAISE EXCEPTION 'payment amount mismatch'
       USING ERRCODE = 'data_exception';
   END IF;
 
-  IF v_order.currency <> upper(p_currency) THEN
+  IF v_order.currency IS DISTINCT FROM upper(p_currency) THEN
     RAISE EXCEPTION 'payment currency mismatch'
       USING ERRCODE = 'data_exception';
   END IF;
 
-  IF v_order.status <> 'PENDING' THEN
+  IF v_order.status IS DISTINCT FROM 'PENDING' THEN
     RAISE EXCEPTION 'order is not pending'
       USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
@@ -920,10 +922,10 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.billing_settle_paid_order(
-  TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TIMESTAMPTZ, JSONB, JSONB
+  TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TIMESTAMPTZ, JSONB
 ) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.billing_settle_paid_order(
-  TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TIMESTAMPTZ, JSONB, JSONB
+  TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TIMESTAMPTZ, JSONB
 ) TO service_role;
 
 REVOKE ALL ON FUNCTION public.billing_reserve_usage(
