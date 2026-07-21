@@ -229,6 +229,49 @@ test("POST orders rejects blank agreements and invalid providers", async () => {
   }
 });
 
+test("POST orders rejects providers that differ from the server payment mode", async () => {
+  for (const [provider, paymentMode] of [
+    ["wechat", "mock"],
+    ["alipay", "mock"],
+    ["mock", "wechat"],
+  ] as const) {
+    const events: string[] = [];
+    const handler = createOrderPostHandler({
+      requireUser: async () => {
+        events.push("auth");
+        return user;
+      },
+      getConfig: () => ({ ...config, paymentMode }),
+      assertAccess: () => events.push("access"),
+      consumeRateLimit: async () => {
+        events.push("rate-limit");
+      },
+      createOrder: async () => {
+        events.push("create-order");
+        return order;
+      },
+    });
+
+    const response = await handler(
+      jsonRequest({
+        productId: publicProduct.id,
+        provider,
+        acceptedAgreementVersion: "membership-v1",
+      }),
+    );
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(events, ["auth", "access", "rate-limit"]);
+    assert.deepEqual(await responseBody(response), {
+      error: {
+        code: "PAYMENT_PROVIDER_MISMATCH",
+        message:
+          "Requested payment provider does not match the server payment mode.",
+      },
+    });
+  }
+});
+
 test("POST orders stops immediately when authentication or access checks fail", async () => {
   const events: string[] = [];
   const handler = createOrderPostHandler({

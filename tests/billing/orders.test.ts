@@ -279,6 +279,43 @@ test("createOrder prices and snapshots the order from the enabled database produ
   assert.equal(order.status, "PENDING");
 });
 
+test("createOrder trims entitlement feature keys before persisting the snapshot", async () => {
+  const repository = new InMemoryBillingRepository([
+    product({
+      entitlements: [
+        {
+          ...product().entitlements[0],
+          featureKey: "  deep_research  ",
+        },
+      ],
+    }),
+  ]);
+
+  const order = await createOrder(validInput(), dependencies(repository));
+
+  assert.equal(order.snapshotEntitlements[0].feature_key, "deep_research");
+});
+
+test("createOrder fails closed before insertion for a blank entitlement feature key", async () => {
+  const repository = new InMemoryBillingRepository([
+    product({
+      entitlements: [
+        {
+          ...product().entitlements[0],
+          featureKey: " \t ",
+        },
+      ],
+    }),
+  ]);
+
+  await assert.rejects(
+    () => createOrder(validInput(), dependencies(repository)),
+    (error: unknown) =>
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
+  );
+  assert.equal(repository.orders.length, 0);
+});
+
 test("client supplied amount and currency cannot affect order pricing", async () => {
   const repository = new InMemoryBillingRepository();
   const forgedInput = {
@@ -342,6 +379,27 @@ test("createOrder rejects inactive products and unknown providers", async () => 
     (error: unknown) => expectBillingError(error, "INVALID_PROVIDER", 400),
   );
   assert.equal(repository.orders.length, 0);
+});
+
+test("createOrder rejects providers that differ from the server payment mode", async () => {
+  for (const [provider, paymentMode] of [
+    ["wechat", "mock"],
+    ["alipay", "mock"],
+    ["mock", "wechat"],
+  ] as const) {
+    const repository = new InMemoryBillingRepository();
+
+    await assert.rejects(
+      () =>
+        createOrder(validInput({ provider }), {
+          ...dependencies(repository),
+          paymentMode,
+        }),
+      (error: unknown) =>
+        expectBillingError(error, "PAYMENT_PROVIDER_MISMATCH", 400),
+    );
+    assert.equal(repository.orders.length, 0);
+  }
 });
 
 test("createOrder expires pending orders after thirty minutes", async () => {
@@ -417,7 +475,7 @@ test("the Supabase repository reads the matching entitlement version for an orde
     {
       data: [
         {
-          feature_key: "deep_research",
+          feature_key: "  deep_research  ",
           entitlement_version: "pro-v1",
           periodic_limit: 100,
           credit_grant: 0,
@@ -441,6 +499,31 @@ test("the Supabase repository reads the matching entitlement version for an orde
       ["plan_id", "plan-pro"],
       ["entitlement_version", "pro-v1"],
     ],
+  );
+});
+
+test("the Supabase repository fails closed on a blank entitlement feature key", async () => {
+  const client = new InMemorySupabaseClient([
+    { data: databaseProduct(), error: null },
+    {
+      data: [
+        {
+          feature_key: " \t ",
+          entitlement_version: "pro-v1",
+          periodic_limit: 100,
+          credit_grant: 0,
+          configuration: { model: "standard" },
+        },
+      ],
+      error: null,
+    },
+  ]);
+  const repository = createBillingRepository(client);
+
+  await assert.rejects(
+    () => repository.findActiveProduct("product-pro-monthly"),
+    (error: unknown) =>
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
   );
 });
 

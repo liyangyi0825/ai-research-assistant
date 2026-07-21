@@ -177,6 +177,16 @@ function stringValue(value: unknown): string {
   return value;
 }
 
+function requiredTrimmedString(value: unknown): string {
+  const normalized = stringValue(value).trim();
+
+  if (!normalized) {
+    throw storageError();
+  }
+
+  return normalized;
+}
+
 function nullableString(value: unknown): string | null {
   return value === null ? null : stringValue(value);
 }
@@ -241,7 +251,7 @@ function enumValue<T extends string>(
 function entitlementSnapshot(value: unknown): BillingEntitlementSnapshot {
   const row = record(value);
   return {
-    featureKey: stringValue(row.feature_key),
+    featureKey: requiredTrimmedString(row.feature_key),
     entitlementVersion: stringValue(row.entitlement_version),
     periodicLimit: nullableInteger(row.periodic_limit),
     creditGrant: integerValue(row.credit_grant),
@@ -254,7 +264,7 @@ function orderEntitlementSnapshot(
 ): BillingOrderEntitlementSnapshot {
   const row = record(value);
   return {
-    feature_key: stringValue(row.feature_key),
+    feature_key: requiredTrimmedString(row.feature_key),
     entitlement_version: stringValue(row.entitlement_version),
     periodic_limit: nullableInteger(row.periodic_limit),
     credit_grant: integerValue(row.credit_grant),

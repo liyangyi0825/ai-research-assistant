@@ -59,3 +59,41 @@ middleware, AI API, or filing changes were made.
 
 - Repository behavior is covered with a complete injectable Supabase query
   double; by instruction, no live or online database integration was run.
+
+---
+
+## Review Remediation (2026-07-22)
+
+### Changes
+
+- Order routes now require the parsed `body.provider` to equal the server's
+  `config.paymentMode` before product access. A Mock-only server cannot create
+  WeChat/Alipay orders, and a formal-provider server cannot be downgraded to
+  Mock by the client.
+- `createOrder` receives the server payment mode through its injectable domain
+  dependencies and independently enforces the same provider contract.
+- Supabase entitlement rows and injected domain products now trim
+  `feature_key`; an empty result fails closed with a non-sensitive 503 before an
+  order can be inserted.
+
+### TDD Evidence
+
+- Provider RED: the route returned 201 for a server/client provider mismatch,
+  and the domain service created the mismatched order instead of rejecting it.
+- Provider GREEN: both new mismatch tests passed after adding route and domain
+  enforcement.
+- Entitlement RED: four assertions demonstrated missing trim behavior and
+  acceptance of blank feature keys at both repository and order boundaries.
+- Entitlement GREEN: the focused domain/repository suite passed 17/17 after
+  normalization and fail-closed validation.
+
+### Verification
+
+- `node_modules\.bin\tsx.cmd --test tests/billing/orders.test.ts tests/billing/order-routes.test.ts`: 26 passed, 0 failed.
+- `npm.cmd test`: 75 passed, 0 failed.
+- `npm.cmd run typecheck`: exit 0.
+- Targeted ESLint across the modified Task 4 TypeScript files: exit 0.
+- `git diff --cached --check`: exit 0.
+
+No live database, push, deployment, UI, payment confirmation, webhook,
+middleware, AI API, filing, or other out-of-scope change was made.

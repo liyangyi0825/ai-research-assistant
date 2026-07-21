@@ -5,7 +5,11 @@ import {
   requireBillingUser,
   type BillingUser,
 } from "./auth";
-import { getBillingConfig, type BillingConfig } from "./config";
+import {
+  getBillingConfig,
+  type BillingConfig,
+  type PaymentMode,
+} from "./config";
 import { BillingError } from "./errors";
 import { consumeOrderRateLimit } from "./rate-limit";
 import {
@@ -28,6 +32,7 @@ export type CreateOrderDependencies = {
   repository?: BillingRepository;
   now?: () => Date;
   createOrderNumber?: () => string;
+  paymentMode?: PaymentMode;
 };
 
 function createOrderNumber(): string {
@@ -58,6 +63,33 @@ function requiredAgreementVersion(value: unknown): string {
   return value.trim();
 }
 
+function assertProviderMatchesPaymentMode(
+  provider: CreateOrderInput["provider"],
+  paymentMode: PaymentMode,
+): void {
+  if (provider !== paymentMode) {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_MISMATCH",
+      "Requested payment provider does not match the server payment mode.",
+      400,
+    );
+  }
+}
+
+function requiredFeatureKey(value: string): string {
+  const featureKey = value.trim();
+
+  if (!featureKey) {
+    throw new BillingError(
+      "BILLING_STORAGE_UNAVAILABLE",
+      "Billing data is temporarily unavailable.",
+      503,
+    );
+  }
+
+  return featureKey;
+}
+
 function storageFailure(error: unknown): never {
   if (error instanceof BillingError) {
     throw error;
@@ -78,6 +110,9 @@ export async function createOrder(
   const clock = dependencies.now ?? (() => new Date());
   const numberFactory = dependencies.createOrderNumber ?? createOrderNumber;
   const provider = normalizeProvider(input.provider);
+  const paymentMode =
+    dependencies.paymentMode ?? getBillingConfig().paymentMode;
+  assertProviderMatchesPaymentMode(input.provider, paymentMode);
   const acceptedAgreementVersion = requiredAgreementVersion(
     input.acceptedAgreementVersion,
   );
@@ -114,7 +149,7 @@ export async function createOrder(
       snapshotCreditGrant: product.creditGrant,
       snapshotEntitlementVersion: product.entitlementVersion,
       snapshotEntitlements: product.entitlements.map((entitlement) => ({
-        feature_key: entitlement.featureKey,
+        feature_key: requiredFeatureKey(entitlement.featureKey),
         entitlement_version: entitlement.entitlementVersion,
         periodic_limit: entitlement.periodicLimit,
         credit_grant: entitlement.creditGrant,
@@ -163,7 +198,10 @@ export type CreateOrderPostHandlerDependencies = {
   getConfig: () => BillingConfig;
   assertAccess: (user: BillingUser, config: BillingConfig) => void;
   consumeRateLimit: (userId: string) => Promise<void>;
-  createOrder: (input: CreateOrderInput) => Promise<BillingOrder>;
+  createOrder: (
+    input: CreateOrderInput,
+    dependencies: Pick<CreateOrderDependencies, "paymentMode">,
+  ) => Promise<BillingOrder>;
 };
 
 export type GetUserOrderHandlerDependencies = {
@@ -267,10 +305,16 @@ export function createOrderPostHandler(
       dependencies.assertAccess(user, config);
       await dependencies.consumeRateLimit(user.id);
       const body = await parseCreateOrderBody(request);
-      const order = await dependencies.createOrder({
-        userId: user.id,
-        ...body,
-      });
+      assertProviderMatchesPaymentMode(body.provider, config.paymentMode);
+      const order = await dependencies.createOrder(
+        {
+          userId: user.id,
+          ...body,
+        },
+        {
+          paymentMode: config.paymentMode,
+        },
+      );
 
       return Response.json({ order }, { status: 201 });
     } catch (error) {
