@@ -76,6 +76,7 @@ export type BillingOrderRow = {
   snapshot_duration_days: number | null;
   snapshot_credit_grant: number;
   snapshot_entitlement_version: string;
+  snapshot_entitlements: Json;
   snapshot_details: Json;
   accepted_agreement_version: string;
   expires_at: Timestamp;
@@ -187,6 +188,7 @@ export type BillingCreditLedgerRow = {
   available_after: number;
   reserved_after: number;
   idempotency_key: string;
+  audit_log_id: UUID | null;
   reference_type: string | null;
   reference_id: string | null;
   metadata: Json;
@@ -201,6 +203,11 @@ export type BillingWebhookEventRow = {
   order_number: string;
   provider: "MOCK" | "WECHAT" | "ALIPAY";
   provider_event_id: string;
+  provider_transaction_id: string;
+  request_idempotency_key: string;
+  amount_minor: number;
+  currency: "CNY";
+  paid_at: Timestamp;
   signature_valid: boolean;
   status: "RECEIVED" | "PROCESSING" | "PROCESSED" | "FAILED";
   payload_summary: Json;
@@ -307,7 +314,15 @@ export type Database = {
           "sku" | "name" | "product_type" | "price_minor" | "entitlement_version"
         >;
         Update: Update<BillingProductRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_products_plan_id_fkey";
+            columns: ["plan_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_plans";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_plan_entitlements: {
         Row: BillingPlanEntitlementRow;
@@ -316,7 +331,15 @@ export type Database = {
           "plan_id" | "feature_key" | "entitlement_version"
         >;
         Update: Update<BillingPlanEntitlementRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_plan_entitlements_plan_id_fkey";
+            columns: ["plan_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_plans";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_orders: {
         Row: BillingOrderRow;
@@ -330,11 +353,27 @@ export type Database = {
           | "snapshot_product_name"
           | "snapshot_product_type"
           | "snapshot_entitlement_version"
+          | "snapshot_entitlements"
           | "accepted_agreement_version"
           | "expires_at"
         >;
         Update: Update<BillingOrderRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_orders_product_id_fkey";
+            columns: ["product_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_products";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "billing_orders_snapshot_plan_id_fkey";
+            columns: ["snapshot_plan_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_plans";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_payments: {
         Row: BillingPaymentRow;
@@ -349,7 +388,15 @@ export type Database = {
           | "request_idempotency_key"
         >;
         Update: Update<BillingPaymentRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_payments_order_id_fkey";
+            columns: ["order_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_orders";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_subscriptions: {
         Row: BillingSubscriptionRow;
@@ -358,7 +405,22 @@ export type Database = {
           "user_id" | "plan_id" | "source_order_id" | "starts_at" | "ends_at"
         >;
         Update: Update<BillingSubscriptionRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_subscriptions_plan_id_fkey";
+            columns: ["plan_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_plans";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "billing_subscriptions_source_order_id_fkey";
+            columns: ["source_order_id"];
+            isOneToOne: true;
+            referencedRelation: "billing_orders";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_user_entitlements: {
         Row: BillingUserEntitlementRow;
@@ -367,7 +429,22 @@ export type Database = {
           "user_id" | "feature_key" | "source_type" | "valid_from"
         >;
         Update: Update<BillingUserEntitlementRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_user_entitlements_plan_entitlement_id_fkey";
+            columns: ["plan_entitlement_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_plan_entitlements";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "billing_user_entitlements_source_order_id_fkey";
+            columns: ["source_order_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_orders";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_usage_quotas: {
         Row: BillingUsageQuotaRow;
@@ -385,7 +462,22 @@ export type Database = {
           "user_id" | "task_idempotency_key" | "feature_key"
         >;
         Update: Update<BillingUsageRecordRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_usage_records_credit_account_id_fkey";
+            columns: ["credit_account_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_credit_accounts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "billing_usage_records_quota_id_fkey";
+            columns: ["quota_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_usage_quotas";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_credit_accounts: {
         Row: BillingCreditAccountRow;
@@ -406,17 +498,46 @@ export type Database = {
           | "reserved_after"
           | "idempotency_key"
         >;
-        Update: Update<BillingCreditLedgerRow>;
-        Relationships: [];
+        Update: never;
+        Relationships: [
+          {
+            foreignKeyName: "billing_credit_ledger_account_id_fkey";
+            columns: ["account_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_credit_accounts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "billing_credit_ledger_audit_log_id_fkey";
+            columns: ["audit_log_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_admin_audit_logs";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_webhook_events: {
         Row: BillingWebhookEventRow;
         Insert: Insert<
           BillingWebhookEventRow,
-          "order_number" | "provider" | "provider_event_id"
+          | "order_number"
+          | "provider"
+          | "provider_event_id"
+          | "provider_transaction_id"
+          | "request_idempotency_key"
+          | "amount_minor"
+          | "paid_at"
         >;
         Update: Update<BillingWebhookEventRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_webhook_events_order_id_fkey";
+            columns: ["order_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_orders";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_refund_requests: {
         Row: BillingRefundRequestRow;
@@ -425,7 +546,15 @@ export type Database = {
           "order_id" | "user_id" | "requested_amount_minor" | "reason"
         >;
         Update: Update<BillingRefundRequestRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_refund_requests_order_id_fkey";
+            columns: ["order_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_orders";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_refunds: {
         Row: BillingRefundRow;
@@ -440,7 +569,29 @@ export type Database = {
           | "idempotency_key"
         >;
         Update: Update<BillingRefundRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_refunds_order_id_fkey";
+            columns: ["order_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_orders";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "billing_refunds_payment_id_fkey";
+            columns: ["payment_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_payments";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "billing_refunds_refund_request_id_fkey";
+            columns: ["refund_request_id"];
+            isOneToOne: true;
+            referencedRelation: "billing_refund_requests";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_invoice_requests: {
         Row: BillingInvoiceRequestRow;
@@ -449,7 +600,15 @@ export type Database = {
           "user_id" | "invoice_title" | "amount_minor" | "delivery_email"
         >;
         Update: Update<BillingInvoiceRequestRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_invoice_requests_order_id_fkey";
+            columns: ["order_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_orders";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_admins: {
         Row: BillingAdminRow;

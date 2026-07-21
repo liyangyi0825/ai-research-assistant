@@ -51,12 +51,29 @@ BEGIN
     AND provider_event_id = p_provider_event_id
   FOR UPDATE;
 
-  IF FOUND THEN
-    IF v_existing_event.order_number <> p_order_number THEN
-      RAISE EXCEPTION 'webhook replay payload mismatch'
-        USING ERRCODE = 'data_exception';
-    END IF;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'webhook event must be persisted before settlement'
+      USING ERRCODE = 'no_data_found';
+  END IF;
 
+  v_event_id := v_existing_event.id;
+
+  IF v_existing_event.order_number <> p_order_number
+    OR v_existing_event.provider_transaction_id <> p_provider_transaction_id
+    OR v_existing_event.request_idempotency_key <> p_request_idempotency_key
+    OR v_existing_event.amount_minor <> p_amount_minor
+    OR v_existing_event.currency <> upper(p_currency)
+    OR v_existing_event.paid_at IS DISTINCT FROM p_paid_at THEN
+    RAISE EXCEPTION 'webhook replay payload mismatch'
+      USING ERRCODE = 'data_exception';
+  END IF;
+
+  IF v_existing_event.signature_valid IS NOT TRUE THEN
+    RAISE EXCEPTION 'webhook signature is not valid'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  IF v_existing_event.status = 'PROCESSED' THEN
     SELECT *
     INTO v_order
     FROM public.billing_orders
@@ -75,8 +92,10 @@ BEGIN
         WHERE order_id = v_order.id
           AND provider = upper(p_provider)
           AND provider_transaction_id = p_provider_transaction_id
+          AND request_idempotency_key = p_request_idempotency_key
           AND amount_minor = p_amount_minor
           AND currency = upper(p_currency)
+          AND paid_at = p_paid_at
           AND status = 'PAID'
       ) THEN
       RAISE EXCEPTION 'webhook replay payload mismatch'
@@ -90,65 +109,24 @@ BEGIN
     );
   END IF;
 
-  INSERT INTO public.billing_webhook_events (
-    order_number,
-    provider,
-    provider_event_id,
-    signature_valid,
-    status,
-    payload_summary
-  )
-  VALUES (
-    p_order_number,
-    upper(p_provider),
-    p_provider_event_id,
-    TRUE,
-    'PROCESSING',
-    COALESCE(p_payload_summary, '{}'::JSONB)
-  )
-  ON CONFLICT (provider, provider_event_id) DO NOTHING
-  RETURNING id INTO v_event_id;
-
-  IF v_event_id IS NULL THEN
-    SELECT *
-    INTO v_existing_event
-    FROM public.billing_webhook_events
-    WHERE provider = upper(p_provider)
-      AND provider_event_id = p_provider_event_id;
-
-    IF v_existing_event.order_number <> p_order_number THEN
-      RAISE EXCEPTION 'webhook replay payload mismatch'
-        USING ERRCODE = 'data_exception';
-    END IF;
-
-    SELECT *
-    INTO v_order
-    FROM public.billing_orders
-    WHERE id = v_existing_event.order_id
-    FOR UPDATE;
-
-    IF NOT FOUND
-      OR v_order.order_number <> p_order_number
-      OR v_order.provider <> upper(p_provider)
-      OR v_order.amount_minor <> p_amount_minor
-      OR v_order.currency <> upper(p_currency)
-      OR v_order.expires_at <= p_paid_at
-      OR NOT EXISTS (
-        SELECT 1
-        FROM public.billing_payments
-        WHERE order_id = v_order.id
-          AND provider = upper(p_provider)
-          AND provider_transaction_id = p_provider_transaction_id
-          AND amount_minor = p_amount_minor
-          AND currency = upper(p_currency)
-          AND status = 'PAID'
-      ) THEN
-      RAISE EXCEPTION 'webhook replay payload mismatch'
-        USING ERRCODE = 'data_exception';
-    END IF;
-
+  IF v_existing_event.status = 'FAILED' THEN
     RETURN jsonb_build_object(
-      'status', 'ALREADY_PROCESSED',
+      'status', 'ALREADY_FAILED',
+      'event_status', v_existing_event.status,
+      'error_code', v_existing_event.error_code,
+      'order_id', v_existing_event.order_id
+    );
+  END IF;
+
+  IF v_existing_event.status = 'RECEIVED' THEN
+    UPDATE public.billing_webhook_events
+    SET status = 'PROCESSING',
+        error_code = NULL,
+        updated_at = now()
+    WHERE id = v_event_id;
+  ELSE
+    RETURN jsonb_build_object(
+      'status', 'IN_PROGRESS',
       'event_status', v_existing_event.status,
       'order_id', v_existing_event.order_id
     );
@@ -268,26 +246,27 @@ BEGIN
     )
     SELECT
       v_order.user_id,
-      entitlement.id,
-      entitlement.feature_key,
+      NULL::UUID,
+      entitlement.value ->> 'feature_key',
       'PLAN',
       v_order.id,
-      jsonb_build_object(
-        'periodic_limit', entitlement.periodic_limit,
-        'configuration', entitlement.configuration
-      ),
+      entitlement.value - 'credit_grant',
       p_paid_at,
       v_entitlement_end
-    FROM public.billing_plan_entitlements AS entitlement
-    WHERE entitlement.plan_id = v_order.snapshot_plan_id
-      AND entitlement.entitlement_version = v_order.snapshot_entitlement_version
+    FROM jsonb_array_elements(v_order.snapshot_entitlements)
+      AS entitlement(value)
+    WHERE jsonb_typeof(entitlement.value) = 'object'
+      AND NULLIF(entitlement.value ->> 'feature_key', '') IS NOT NULL
     ON CONFLICT (user_id, feature_key, source_order_id) DO NOTHING;
 
-    SELECT COALESCE(sum(entitlement.credit_grant), 0)
+    SELECT COALESCE(
+      sum(COALESCE((entitlement.value ->> 'credit_grant')::BIGINT, 0)),
+      0
+    )
     INTO v_credit_grant
-    FROM public.billing_plan_entitlements AS entitlement
-    WHERE entitlement.plan_id = v_order.snapshot_plan_id
-      AND entitlement.entitlement_version = v_order.snapshot_entitlement_version;
+    FROM jsonb_array_elements(v_order.snapshot_entitlements)
+      AS entitlement(value)
+    WHERE jsonb_typeof(entitlement.value) = 'object';
   ELSE
     v_credit_grant := v_order.snapshot_credit_grant;
   END IF;
@@ -335,7 +314,7 @@ BEGIN
       0,
       v_account.available_balance,
       v_account.reserved_balance,
-      'settlement:' || p_provider_event_id || ':credit',
+      'settlement:' || upper(p_provider) || ':' || p_provider_event_id || ':credit',
       'ORDER',
       v_order.id::TEXT,
       jsonb_build_object('provider', upper(p_provider))
@@ -778,6 +757,14 @@ DECLARE
   v_ledger_id UUID;
   v_audit_id UUID;
 BEGIN
+  IF p_user_id IS NULL
+    OR p_amount IS NULL
+    OR p_admin_user_id IS NULL
+    OR p_currency IS NULL THEN
+    RAISE EXCEPTION 'adjustment user, amount, administrator, and currency are required'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
   IF p_amount = 0 THEN
     RAISE EXCEPTION 'credit adjustment must be non-zero'
       USING ERRCODE = 'invalid_parameter_value';
@@ -813,9 +800,19 @@ BEGIN
   FOR UPDATE;
 
   IF FOUND THEN
-    IF v_existing.user_id <> p_user_id
-      OR v_existing.entry_type <> 'ADJUSTMENT'
-      OR v_existing.delta_available <> p_amount THEN
+    IF v_existing.user_id IS DISTINCT FROM p_user_id
+      OR v_existing.entry_type IS DISTINCT FROM 'ADJUSTMENT'
+      OR v_existing.delta_available IS DISTINCT FROM p_amount
+      OR v_existing.reference_type IS DISTINCT FROM 'ADMIN'
+      OR v_existing.reference_id IS DISTINCT FROM p_admin_user_id::TEXT
+      OR v_existing.metadata ->> 'reason' IS DISTINCT FROM btrim(p_reason)
+      OR v_existing.audit_log_id IS NULL
+      OR NOT EXISTS (
+        SELECT 1
+        FROM public.billing_credit_accounts
+        WHERE id = v_existing.account_id
+          AND currency = upper(p_currency)
+      ) THEN
       RAISE EXCEPTION 'adjustment idempotency key payload mismatch'
         USING ERRCODE = 'data_exception';
     END IF;
@@ -823,6 +820,7 @@ BEGIN
     RETURN jsonb_build_object(
       'status', 'ALREADY_APPLIED',
       'ledger_id', v_existing.id,
+      'audit_id', v_existing.audit_log_id,
       'available_balance', v_existing.available_after
     );
   END IF;
@@ -860,34 +858,6 @@ BEGIN
       USING ERRCODE = 'insufficient_resources';
   END IF;
 
-  INSERT INTO public.billing_credit_ledger (
-    account_id,
-    user_id,
-    entry_type,
-    delta_available,
-    delta_reserved,
-    available_after,
-    reserved_after,
-    idempotency_key,
-    reference_type,
-    reference_id,
-    metadata
-  )
-  VALUES (
-    v_account.id,
-    p_user_id,
-    'ADJUSTMENT',
-    p_amount,
-    0,
-    v_account.available_balance,
-    v_account.reserved_balance,
-    p_idempotency_key,
-    'ADMIN',
-    p_admin_user_id::TEXT,
-    jsonb_build_object('reason', btrim(p_reason))
-  )
-  RETURNING id INTO v_ledger_id;
-
   INSERT INTO public.billing_admin_audit_logs (
     actor_user_id,
     target_user_id,
@@ -909,6 +879,36 @@ BEGIN
     jsonb_build_object('available_balance', v_account.available_balance)
   )
   RETURNING id INTO v_audit_id;
+
+  INSERT INTO public.billing_credit_ledger (
+    account_id,
+    user_id,
+    entry_type,
+    delta_available,
+    delta_reserved,
+    available_after,
+    reserved_after,
+    idempotency_key,
+    audit_log_id,
+    reference_type,
+    reference_id,
+    metadata
+  )
+  VALUES (
+    v_account.id,
+    p_user_id,
+    'ADJUSTMENT',
+    p_amount,
+    0,
+    v_account.available_balance,
+    v_account.reserved_balance,
+    p_idempotency_key,
+    v_audit_id,
+    'ADMIN',
+    p_admin_user_id::TEXT,
+    jsonb_build_object('reason', btrim(p_reason))
+  )
+  RETURNING id INTO v_ledger_id;
 
   RETURN jsonb_build_object(
     'status', 'APPLIED',

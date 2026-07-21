@@ -14,6 +14,21 @@
 2. `202607210002_billing_rls.sql`：逐表启用 RLS，默认拒绝写入，并开放受策略约束的只读访问。
 3. `202607210003_billing_functions.sql`：支付结算、用量预占/确认/释放和人工额度调整。
 
+## 订单与回调调用契约
+
+创建订单时必须显式写入 `snapshot_entitlements`，不能依赖空数组默认值。该字段是下单时权益数组的不可变快照；每项至少包含非空 `feature_key`，并可包含 `periodic_limit`、`configuration` 和非负 `credit_grant`。结算只读取这份订单快照，不回查可被后续修改的套餐权益目录。
+
+支付回调必须按以下顺序处理：
+
+1. 验签并解析非敏感字段。
+2. 以 `RECEIVED` 状态先写入 `billing_webhook_events`，同时保存 Provider、事件 ID、交易 ID、支付请求幂等键、金额、币种和支付时间。
+3. 调用 `billing_settle_paid_order`；RPC 会锁定已持久化事件和订单，并在同一事务内完成支付、权益/额度、订单与事件状态更新。
+4. 若 RPC 抛错，在该失败事务之外用独立数据库语句把原事件标记为 `FAILED` 并写入安全的 `error_code`。该更新必须带 `WHERE status = 'RECEIVED'` 条件；若更新 0 行，必须重新读取事件并保留已提交的终态。数据库触发器同时禁止覆盖 `PROCESSED`/`FAILED` 终态或修改已接收载荷。不得把完整回调载荷或密钥写入错误字段。
+
+同一 Provider 与事件 ID 的重放必须携带完全相同的交易 ID、支付请求幂等键、金额、币种和支付时间；任何差异都按载荷冲突拒绝。额度发放流水键包含 Provider 命名空间，避免不同 Provider 的相同事件 ID 冲突。
+
+人工额度调整的每次调用（包括重放）都要求 active admin。重放必须使用相同目标用户、金额、币种、管理员和去空格后的原因，并返回首次操作的 `ledger_id` 与 `audit_id`。
+
 ## 仅限本地验证
 
 先启动本地 Supabase，再在仓库根目录运行：

@@ -69,6 +69,9 @@ CREATE TABLE public.billing_orders (
   snapshot_duration_days INTEGER CHECK (snapshot_duration_days > 0),
   snapshot_credit_grant BIGINT NOT NULL DEFAULT 0 CHECK (snapshot_credit_grant >= 0),
   snapshot_entitlement_version TEXT NOT NULL,
+  snapshot_entitlements JSONB NOT NULL CHECK (
+    jsonb_typeof(snapshot_entitlements) = 'array'
+  ),
   snapshot_details JSONB NOT NULL DEFAULT '{}'::JSONB,
   accepted_agreement_version TEXT NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL,
@@ -207,6 +210,7 @@ CREATE TABLE public.billing_credit_ledger (
   available_after BIGINT NOT NULL CHECK (available_after >= 0),
   reserved_after BIGINT NOT NULL CHECK (reserved_after >= 0),
   idempotency_key TEXT NOT NULL UNIQUE,
+  audit_log_id UUID,
   reference_type TEXT,
   reference_id TEXT,
   metadata JSONB NOT NULL DEFAULT '{}'::JSONB,
@@ -221,6 +225,11 @@ CREATE TABLE public.billing_webhook_events (
   order_number TEXT NOT NULL,
   provider TEXT NOT NULL CHECK (provider IN ('MOCK', 'WECHAT', 'ALIPAY')),
   provider_event_id TEXT NOT NULL,
+  provider_transaction_id TEXT NOT NULL,
+  request_idempotency_key TEXT NOT NULL,
+  amount_minor BIGINT NOT NULL CHECK (amount_minor >= 0),
+  currency TEXT NOT NULL DEFAULT 'CNY' CHECK (currency = 'CNY'),
+  paid_at TIMESTAMPTZ NOT NULL,
   signature_valid BOOLEAN NOT NULL DEFAULT FALSE,
   status TEXT NOT NULL DEFAULT 'RECEIVED' CHECK (
     status IN ('RECEIVED', 'PROCESSING', 'PROCESSED', 'FAILED')
@@ -230,7 +239,11 @@ CREATE TABLE public.billing_webhook_events (
   processed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (provider, provider_event_id)
+  UNIQUE (provider, provider_event_id),
+  CHECK (
+    status <> 'FAILED'
+    OR NULLIF(btrim(error_code), '') IS NOT NULL
+  )
 );
 
 CREATE TABLE public.billing_refund_requests (
@@ -324,6 +337,12 @@ CREATE TABLE public.billing_rate_limits (
   UNIQUE (user_id, action, window_started_at)
 );
 
+ALTER TABLE public.billing_credit_ledger
+  ADD CONSTRAINT billing_credit_ledger_audit_log_id_fkey
+  FOREIGN KEY (audit_log_id)
+  REFERENCES public.billing_admin_audit_logs(id)
+  ON DELETE RESTRICT;
+
 CREATE INDEX billing_orders_user_created_idx
   ON public.billing_orders (user_id, created_at DESC);
 CREATE INDEX billing_payments_order_idx
@@ -368,6 +387,7 @@ BEGIN
     NEW.snapshot_duration_days,
     NEW.snapshot_credit_grant,
     NEW.snapshot_entitlement_version,
+    NEW.snapshot_entitlements,
     NEW.snapshot_details,
     NEW.accepted_agreement_version
   ) IS DISTINCT FROM ROW(
@@ -380,6 +400,7 @@ BEGIN
     OLD.snapshot_duration_days,
     OLD.snapshot_credit_grant,
     OLD.snapshot_entitlement_version,
+    OLD.snapshot_entitlements,
     OLD.snapshot_details,
     OLD.accepted_agreement_version
   ) THEN
@@ -401,6 +422,57 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.billing_validate_webhook_event_update()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF ROW(
+    NEW.id,
+    NEW.order_number,
+    NEW.provider,
+    NEW.provider_event_id,
+    NEW.provider_transaction_id,
+    NEW.request_idempotency_key,
+    NEW.amount_minor,
+    NEW.currency,
+    NEW.paid_at,
+    NEW.signature_valid,
+    NEW.payload_summary,
+    NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.id,
+    OLD.order_number,
+    OLD.provider,
+    OLD.provider_event_id,
+    OLD.provider_transaction_id,
+    OLD.request_idempotency_key,
+    OLD.amount_minor,
+    OLD.currency,
+    OLD.paid_at,
+    OLD.signature_valid,
+    OLD.payload_summary,
+    OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'billing webhook event payload is immutable'
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+
+  IF NEW.status IS DISTINCT FROM OLD.status
+    AND NOT (
+      (OLD.status = 'RECEIVED' AND NEW.status IN ('PROCESSING', 'FAILED'))
+      OR
+      (OLD.status = 'PROCESSING' AND NEW.status IN ('PROCESSED', 'FAILED'))
+    ) THEN
+    RAISE EXCEPTION 'invalid billing webhook event status transition'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
 CREATE TRIGGER billing_orders_protect_snapshot
 BEFORE UPDATE ON public.billing_orders
 FOR EACH ROW EXECUTE FUNCTION public.billing_protect_order_snapshot();
@@ -408,6 +480,10 @@ FOR EACH ROW EXECUTE FUNCTION public.billing_protect_order_snapshot();
 CREATE TRIGGER billing_credit_ledger_immutable
 BEFORE UPDATE OR DELETE ON public.billing_credit_ledger
 FOR EACH ROW EXECUTE FUNCTION public.billing_protect_credit_ledger();
+
+CREATE TRIGGER billing_webhook_events_validate_update
+BEFORE UPDATE ON public.billing_webhook_events
+FOR EACH ROW EXECUTE FUNCTION public.billing_validate_webhook_event_update();
 
 DO $$
 DECLARE
@@ -445,3 +521,4 @@ $$;
 REVOKE ALL ON FUNCTION public.billing_set_updated_at() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.billing_protect_order_snapshot() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.billing_protect_credit_ledger() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.billing_validate_webhook_event_update() FROM PUBLIC;
