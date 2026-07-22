@@ -176,7 +176,13 @@ test("payment intents durably claim, complete, fail, and reuse one provider crea
   assert.match(claim, /on conflict do nothing/);
   assert.match(claim, /from public\.billing_payment_intents[\s\S]*?for update/);
   assert.match(claim, /status = 'created'/);
-  assert.match(claim, /status = 'creating'[\s\S]*?claim_expires_at > p_now/);
+  assert.match(claim, /v_now timestamptz/);
+  assert.equal(
+    (claim.match(/v_now := clock_timestamp\(\)/g) ?? []).length,
+    2,
+  );
+  assert.match(claim, /status = 'creating'[\s\S]*?claim_expires_at > v_now/);
+  assert.doesNotMatch(claim, /\bp_now\b/);
   assert.match(claim, /status in \('failed', 'creating'\)/);
   assert.match(claim, /'status', 'claimed'/);
   assert.match(claim, /'status', 'reuse'/);
@@ -188,6 +194,15 @@ test("payment intents durably claim, complete, fail, and reuse one provider crea
   assert.match(complete, /provider_transaction_id = p_provider_transaction_id/);
   assert.match(complete, /payment_token = p_payment_token/);
   assert.match(complete, /payment_status = p_payment_status/);
+  assert.match(
+    complete,
+    /expires_at is distinct from p_expires_at[\s\S]*?raise exception 'payment intent expiration mismatch'/,
+  );
+  const completeUpdate = complete.match(
+    /update public\.billing_payment_intents[\s\S]*?where id = v_intent\.id/,
+  );
+  assert.ok(completeUpdate);
+  assert.doesNotMatch(completeUpdate[0], /expires_at = p_expires_at/);
   assert.match(fail, /status = 'creating'[\s\S]*?claim_token is not distinct from p_claim_token/);
   assert.match(fail, /set status = 'failed'/);
 
@@ -213,6 +228,11 @@ test("payment intents durably claim, complete, fail, and reuse one provider crea
   assert.match(types, /billing_complete_payment_intent: \{/);
   assert.match(types, /billing_fail_payment_intent: \{/);
   assert.match(types, /billing_claim_mock_payment_confirmation: \{/);
+  const claimType = types.match(
+    /billing_claim_payment_intent: \{[\s\S]*?Returns: Json;/,
+  );
+  assert.ok(claimType);
+  assert.doesNotMatch(claimType[0], /p_now/);
 });
 
 test("credit and quota balances cannot become negative and order snapshots are immutable", () => {

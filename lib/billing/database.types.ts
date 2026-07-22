@@ -684,7 +684,6 @@ export type Database = {
           p_provider: string;
           p_request_idempotency_key: string;
           p_claim_token: UUID;
-          p_now: Timestamp;
         };
         Returns: Json;
       };

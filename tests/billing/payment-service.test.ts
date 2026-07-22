@@ -186,6 +186,21 @@ test("createOrderPayment reuses a persisted result across provider instances", a
   assert.equal(replacementCalls, 0);
 });
 
+test("createOrderPayment treats equivalent database and provider expiration offsets as one instant", async () => {
+  const repository = new MemoryPaymentRepository(
+    order({ expiresAt: "2026-07-22T03:30:00+00:00" }),
+  );
+  const payment = await createOrderPayment(
+    "user-1",
+    "order-id-1",
+    dependencies(repository),
+  );
+
+  assert.equal(payment.expiresAt, "2026-07-22T03:30:00.000Z");
+  assert.equal(repository.completeCalls, 1);
+  assert.deepEqual(repository.failCalls, []);
+});
+
 test("createOrderPayment allows only the database claim holder to call the provider", async () => {
   const repository = new MemoryPaymentRepository();
   let releaseProvider!: () => void;

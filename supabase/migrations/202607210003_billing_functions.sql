@@ -5,8 +5,7 @@ CREATE OR REPLACE FUNCTION public.billing_claim_payment_intent(
   p_order_id UUID,
   p_provider TEXT,
   p_request_idempotency_key TEXT,
-  p_claim_token UUID,
-  p_now TIMESTAMPTZ
+  p_claim_token UUID
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -16,11 +15,11 @@ AS $$
 DECLARE
   v_order public.billing_orders%ROWTYPE;
   v_intent public.billing_payment_intents%ROWTYPE;
+  v_now TIMESTAMPTZ;
 BEGIN
   IF p_user_id IS NULL
     OR p_order_id IS NULL
     OR p_claim_token IS NULL
-    OR p_now IS NULL
     OR NULLIF(btrim(p_request_idempotency_key), '') IS NULL
     OR upper(p_provider) NOT IN ('MOCK', 'WECHAT', 'ALIPAY') THEN
     RAISE EXCEPTION 'invalid payment intent claim'
@@ -38,9 +37,11 @@ BEGIN
       USING ERRCODE = 'no_data_found';
   END IF;
 
+  v_now := clock_timestamp();
+
   IF v_order.provider IS DISTINCT FROM upper(p_provider)
     OR v_order.status IS DISTINCT FROM 'PENDING'
-    OR v_order.expires_at <= p_now THEN
+    OR v_order.expires_at <= v_now THEN
     RAISE EXCEPTION 'billing order cannot create a payment'
       USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
@@ -64,7 +65,7 @@ BEGIN
     p_request_idempotency_key,
     'CREATING',
     p_claim_token,
-    p_now + interval '30 seconds',
+    v_now + interval '30 seconds',
     v_order.amount_minor,
     v_order.currency,
     v_order.expires_at
@@ -76,6 +77,9 @@ BEGIN
   FROM public.billing_payment_intents
   WHERE order_id = v_order.id
   FOR UPDATE;
+
+  -- Refresh after acquiring the intent lock so lock wait time cannot age a lease.
+  v_now := clock_timestamp();
 
   IF NOT FOUND
     OR v_intent.user_id IS DISTINCT FROM p_user_id
@@ -103,7 +107,7 @@ BEGIN
   END IF;
 
   IF v_intent.status = 'CREATING'
-    AND v_intent.claim_expires_at > p_now
+    AND v_intent.claim_expires_at > v_now
     AND v_intent.claim_token IS DISTINCT FROM p_claim_token THEN
     RETURN jsonb_build_object(
       'status', 'IN_PROGRESS',
@@ -116,7 +120,7 @@ BEGIN
     UPDATE public.billing_payment_intents
     SET status = 'CREATING',
         claim_token = p_claim_token,
-        claim_expires_at = p_now + interval '30 seconds',
+        claim_expires_at = v_now + interval '30 seconds',
         provider_transaction_id = NULL,
         payment_token = NULL,
         payment_status = NULL,
@@ -177,11 +181,15 @@ BEGIN
       USING ERRCODE = 'no_data_found';
   END IF;
 
+  IF v_intent.expires_at IS DISTINCT FROM p_expires_at THEN
+    RAISE EXCEPTION 'payment intent expiration mismatch'
+      USING ERRCODE = 'data_exception';
+  END IF;
+
   IF v_intent.status = 'CREATED' THEN
     IF v_intent.provider_transaction_id IS DISTINCT FROM p_provider_transaction_id
       OR v_intent.payment_token IS DISTINCT FROM p_payment_token
       OR v_intent.payment_status IS DISTINCT FROM p_payment_status
-      OR v_intent.expires_at IS DISTINCT FROM p_expires_at
       OR v_intent.paid_at IS DISTINCT FROM p_paid_at THEN
       RAISE EXCEPTION 'payment intent completion mismatch'
         USING ERRCODE = 'data_exception';
@@ -198,7 +206,6 @@ BEGIN
         provider_transaction_id = p_provider_transaction_id,
         payment_token = p_payment_token,
         payment_status = p_payment_status,
-        expires_at = p_expires_at,
         paid_at = p_paid_at,
         last_error_code = NULL,
         updated_at = now()
@@ -1352,10 +1359,10 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.billing_claim_payment_intent(
-  UUID, UUID, TEXT, TEXT, UUID, TIMESTAMPTZ
+  UUID, UUID, TEXT, TEXT, UUID
 ) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.billing_claim_payment_intent(
-  UUID, UUID, TEXT, TEXT, UUID, TIMESTAMPTZ
+  UUID, UUID, TEXT, TEXT, UUID
 ) TO service_role;
 
 REVOKE ALL ON FUNCTION public.billing_complete_payment_intent(

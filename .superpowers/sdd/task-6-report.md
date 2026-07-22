@@ -80,3 +80,18 @@ deployment, push, UI, AI API, or filing changes were performed.
   not tested against a database because this task explicitly prohibited live
   database access. They must be verified later against a local or fully
   isolated disposable Supabase instance.
+
+## Final review follow-up
+
+- Added a RED/GREEN regression for equivalent timestamp encodings such as
+  `2026-07-22T03:30:00+00:00` and `2026-07-22T03:30:00.000Z`. The service now
+  compares epoch instants and normalizes persisted/provider timestamps to ISO.
+- `billing_complete_payment_intent` compares the Provider expiry as
+  `TIMESTAMPTZ` against the stored order snapshot for every completion path and
+  never overwrites that snapshot.
+- Removed application `p_now` from the claim RPC. It refreshes PostgreSQL
+  `clock_timestamp()` after acquiring both the order and intent locks before
+  evaluating or issuing the 30-second lease.
+- The lease is intentionally not renewed yet. Documentation now records the
+  deterministic Provider idempotency key as the second line of defense when a
+  slow Provider call outlives the lease.

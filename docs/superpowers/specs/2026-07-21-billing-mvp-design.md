@@ -36,7 +36,7 @@
 ### 订单与支付
 
 - `billing_orders`：订单号、用户、商品、快照金额、币种、支付渠道、状态、创建/过期/支付时间、退款状态和协议版本。
-- `billing_payment_intents`：服务端专用的支付创建状态、请求幂等键、短期 claim 租约以及持久化 Provider 结果；客户端不可读写。
+- `billing_payment_intents`：服务端专用的支付创建状态、请求幂等键、基于数据库时钟的短期 claim 租约以及持久化 Provider 结果；客户端不可读写。Provider 过期时间按绝对时刻比较，不能用字符串表示是否完全相同来判断。
 - `billing_payments`：Provider 交易号、支付状态、金额、币种、请求幂等键和非敏感响应摘要。
 - `billing_webhook_events`：Provider 事件 ID、验签状态、处理状态和安全载荷摘要；Provider 与事件 ID 组合唯一。
 

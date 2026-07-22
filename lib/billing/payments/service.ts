@@ -51,7 +51,6 @@ export type ClaimPaymentIntentInput = {
   provider: BillingProvider;
   requestIdempotencyKey: string;
   claimToken: string;
-  now: string;
 };
 
 export type PaymentIntentClaim =
@@ -130,6 +129,13 @@ function nullableString(value: unknown): string | null {
   return requiredString(value);
 }
 
+function normalizedTimestamp(value: unknown): string {
+  const timestamp = requiredString(value);
+  const epoch = Date.parse(timestamp);
+  if (!Number.isFinite(epoch)) throw storageError();
+  return new Date(epoch).toISOString();
+}
+
 function mapStoredPayment(value: unknown): StoredPaymentResult {
   const row = record(value);
   const status = row.payment_status;
@@ -153,8 +159,11 @@ function mapStoredPayment(value: unknown): StoredPaymentResult {
     amountMinor,
     currency: "CNY",
     paymentToken: requiredString(row.payment_token),
-    expiresAt: requiredString(row.expires_at),
-    paidAt: nullableString(row.paid_at),
+    expiresAt: normalizedTimestamp(row.expires_at),
+    paidAt:
+      nullableString(row.paid_at) === null
+        ? null
+        : normalizedTimestamp(row.paid_at),
   };
 }
 
@@ -201,7 +210,7 @@ function mapOrder(value: unknown): PaymentOrderSnapshot {
     status,
     amountMinor,
     currency: "CNY",
-    expiresAt: requiredString(row.expires_at),
+    expiresAt: normalizedTimestamp(row.expires_at),
   };
 }
 
@@ -233,7 +242,6 @@ export function createPaymentServiceRepository(
           p_provider: input.provider,
           p_request_idempotency_key: input.requestIdempotencyKey,
           p_claim_token: input.claimToken,
-          p_now: input.now,
         });
         if (result.error) throw storageError();
         return mapPaymentIntentClaim(result.data);
@@ -355,7 +363,7 @@ function assertCreatedPayment(
     payment.status !== "PENDING" ||
     payment.amountMinor !== order.amountMinor ||
     payment.currency !== order.currency ||
-    payment.expiresAt !== order.expiresAt ||
+    Date.parse(payment.expiresAt) !== Date.parse(order.expiresAt) ||
     payment.paidAt !== null ||
     !payment.providerTransactionId.trim() ||
     !payment.paymentToken.trim()
@@ -391,6 +399,11 @@ export async function createOrderPayment(
     );
   }
 
+  order = {
+    ...order,
+    expiresAt: normalizedTimestamp(order.expiresAt),
+  };
+
   const now = (dependencies.now ?? (() => new Date()))();
   assertPayable(order, now);
   const config = (dependencies.getConfig ?? getBillingConfig)();
@@ -424,7 +437,6 @@ export async function createOrderPayment(
       provider: order.provider,
       requestIdempotencyKey,
       claimToken,
-      now: now.toISOString(),
     });
   } catch (error) {
     if (error instanceof BillingError) throw error;
@@ -451,6 +463,10 @@ export async function createOrderPayment(
       idempotencyKey: requestIdempotencyKey,
     });
     assertCreatedPayment(order, payment);
+    payment = {
+      ...payment,
+      expiresAt: normalizedTimestamp(payment.expiresAt),
+    };
   } catch {
     try {
       await repository.failPaymentIntent(

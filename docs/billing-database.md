@@ -18,7 +18,7 @@
 
 创建订单时必须显式写入 `snapshot_entitlements`，不能依赖空数组默认值。该字段是下单时权益数组的不可变快照；每项至少包含非空 `feature_key`，并可包含 `periodic_limit`、`configuration` 和非负 `credit_grant`。结算只读取这份订单快照，不回查可被后续修改的套餐权益目录。
 
-创建 Provider 支付前，服务端必须先调用 `billing_claim_payment_intent`。该 RPC 锁定订单，并以订单 ID 和请求幂等键原子创建或接管一段有期限的 `CREATING` 租约；`CREATED` 直接复用已持久化结果，未过期的其他创建者返回 `IN_PROGRESS`，只有 `CLAIMED` 调用者可以请求 Provider。成功结果通过 `billing_complete_payment_intent` 持久化交易号、token、状态和过期时间；失败通过 `billing_fail_payment_intent` 只记录安全错误码。失败或租约过期后可重试，且同一订单的跨实例并发最多只有一个 Provider 创建者。Mock 确认也从该表读取持久化结果，不依赖单进程 Map。
+创建 Provider 支付前，服务端必须先调用 `billing_claim_payment_intent`。该 RPC 锁定订单，并以订单 ID 和请求幂等键原子创建或接管一段有期限的 `CREATING` 租约；租约判断和截止时间只使用数据库 `clock_timestamp()`，不接受应用实例时间。`CREATED` 直接复用已持久化结果，未过期的其他创建者返回 `IN_PROGRESS`，只有 `CLAIMED` 调用者可以请求 Provider。成功结果通过 `billing_complete_payment_intent` 持久化交易号、token 和状态；Provider 返回的过期时间必须与 intent 中的订单快照表示同一时刻，RPC 只比较、不覆盖快照。失败通过 `billing_fail_payment_intent` 只记录安全错误码。失败或租约过期后可重试。当前 30 秒租约不续租；若 Provider 调用超过租期，另一个实例可能接管，因此确定性的 Provider 请求幂等键是防止重复创建的第二道防线。Mock 确认也从该表读取持久化结果，不依赖单进程 Map。
 
 支付回调必须按以下顺序处理：
 
