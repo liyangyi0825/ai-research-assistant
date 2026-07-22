@@ -194,6 +194,28 @@ test("Mock server confirmation pays a pending unexpired payment only", async () 
   );
 });
 
+test("Mock confirmation uses one timestamp across the expiration boundary", async () => {
+  const times = [
+    new Date("2026-07-22T03:00:00.000Z"),
+    new Date("2026-07-22T03:29:59.999Z"),
+    new Date("2026-07-22T03:30:00.001Z"),
+  ];
+  let clockCall = 0;
+  const provider = new MockPaymentProvider({
+    secret: mockSecret,
+    now: () => times[Math.min(clockCall++, times.length - 1)],
+  });
+  const pending = await provider.createPayment(createInput());
+
+  const paid = await provider.confirmPayment({
+    providerTransactionId: pending.providerTransactionId,
+  });
+
+  assert.equal(paid.status, "PAID");
+  assert.equal(paid.paidAt, "2026-07-22T03:29:59.999Z");
+  assert.ok(Date.parse(paid.paidAt) < Date.parse(paid.expiresAt));
+});
+
 test("Mock closes pending payments and rejects inconsistent transitions", async () => {
   const provider = mockProvider();
   const pending = await provider.createPayment(createInput());

@@ -287,7 +287,8 @@ export class MockPaymentProvider implements PaymentProvider {
     if (payment.status !== "PENDING") {
       throw this.invalidState(payment.status, "confirm");
     }
-    if (Date.parse(payment.expiresAt) <= this.now().getTime()) {
+    const confirmationNow = this.now();
+    if (Date.parse(payment.expiresAt) <= confirmationNow.getTime()) {
       throw new BillingError(
         "PAYMENT_EXPIRED",
         "The mock payment has expired.",
@@ -296,7 +297,7 @@ export class MockPaymentProvider implements PaymentProvider {
     }
 
     payment.status = "PAID";
-    payment.paidAt = this.now().toISOString();
+    payment.paidAt = confirmationNow.toISOString();
     return clonePayment(payment);
   }
 

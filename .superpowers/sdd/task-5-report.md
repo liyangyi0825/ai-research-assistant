@@ -33,6 +33,12 @@ create retry failed after expiration. The registry now retains one process-level
 Mock provider and uses overloads to expose its server confirmation method, while
 create idempotency is checked before the first-execution expiration rule.
 
+A formal follow-up review found that Mock confirmation read the clock once for
+the expiration check and again for `paidAt`. A controlled clock crossing the
+expiration boundary reproduced a paid-after-expiry result. `confirmPayment`
+now captures one `confirmationNow` value and uses it for both operations, so
+the transition and its timestamp are atomic with respect to the injected clock.
+
 ## Security and State Rules
 
 - Amounts must be non-negative safe integers in minor units; refunds must be
@@ -51,8 +57,8 @@ create idempotency is checked before the first-execution expiration rule.
 
 ## Verification
 
-- `npx.cmd tsx --test tests/billing/payment-providers.test.ts`: 12 passed.
-- `npm.cmd run test`: 87 passed.
+- `npx.cmd tsx --test tests/billing/payment-providers.test.ts`: 13 passed.
+- `npm.cmd run test`: 88 passed.
 - `npm.cmd run typecheck`: passed.
 - `npx.cmd eslint lib/billing/payments tests/billing/payment-providers.test.ts`:
   passed with zero warnings.
