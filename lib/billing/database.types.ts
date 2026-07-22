@@ -42,6 +42,14 @@ export type BillingProductRow = {
   updated_at: Timestamp;
 };
 
+export type BillingOrderEntitlementSnapshot = {
+  feature_key: string;
+  entitlement_version: string;
+  periodic_limit: number | null;
+  credit_grant: number;
+  configuration: Json;
+};
+
 export type BillingPlanEntitlementRow = {
   id: UUID;
   plan_id: UUID;
@@ -76,7 +84,7 @@ export type BillingOrderRow = {
   snapshot_duration_days: number | null;
   snapshot_credit_grant: number;
   snapshot_entitlement_version: string;
-  snapshot_entitlements: Json;
+  snapshot_entitlements: BillingOrderEntitlementSnapshot[];
   snapshot_details: Json;
   accepted_agreement_version: string;
   expires_at: Timestamp;
@@ -155,6 +163,7 @@ export type BillingUserEntitlementRow = {
 export type BillingUsageQuotaRow = {
   id: UUID;
   user_id: UUID;
+  subscription_id: UUID | null;
   feature_key: string;
   period_start: Timestamp;
   period_end: Timestamp;
@@ -499,7 +508,15 @@ export type Database = {
           "user_id" | "feature_key" | "period_start" | "period_end" | "quota_limit"
         >;
         Update: Update<BillingUsageQuotaRow>;
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "billing_usage_quotas_subscription_id_fkey";
+            columns: ["subscription_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_subscriptions";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       billing_usage_records: {
         Row: BillingUsageRecordRow;

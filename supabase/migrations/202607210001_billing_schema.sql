@@ -206,6 +206,7 @@ CREATE TABLE public.billing_user_entitlements (
 CREATE TABLE public.billing_usage_quotas (
   id UUID PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
+  subscription_id UUID REFERENCES public.billing_subscriptions(id) ON DELETE RESTRICT,
   feature_key TEXT NOT NULL,
   period_start TIMESTAMPTZ NOT NULL,
   period_end TIMESTAMPTZ NOT NULL,
@@ -216,6 +217,7 @@ CREATE TABLE public.billing_usage_quotas (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (period_end > period_start),
   CHECK (reserved_units + used_units <= quota_limit),
+  UNIQUE (subscription_id, feature_key),
   UNIQUE (user_id, feature_key, period_start, period_end)
 );
 

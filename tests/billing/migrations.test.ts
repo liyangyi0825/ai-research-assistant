@@ -488,6 +488,84 @@ test("settlement grants the immutable entitlement snapshot stored on the order",
   assert.doesNotMatch(settle, /from public\.billing_plan_entitlements/);
 });
 
+test("subscription settlement atomically provisions quota periods from immutable snapshots", () => {
+  const quota = sqlTable("billing_usage_quotas");
+  const settle = sqlFunction("billing_settle_paid_order");
+  const reserve = sqlFunction("billing_reserve_usage");
+  const types = projectFile("lib/billing/database.types.ts");
+
+  assert.match(
+    quota,
+    /subscription_id uuid references public\.billing_subscriptions\(id\) on delete restrict/,
+  );
+  assert.match(quota, /unique \(subscription_id, feature_key\)/);
+  assert.match(
+    settle,
+    /insert into public\.billing_subscriptions[\s\S]*?returning \* into v_subscription/,
+  );
+
+  const quotaInsert = settle.match(
+    /insert into public\.billing_usage_quotas \([\s\S]*?on conflict \(subscription_id, feature_key\) do nothing/,
+  );
+  assert.ok(quotaInsert);
+  assert.match(quotaInsert[0], /v_subscription\.id/);
+  assert.match(quotaInsert[0], /entitlement\.value ->> 'feature_key'/);
+  assert.match(quotaInsert[0], /v_subscription\.starts_at/);
+  assert.match(quotaInsert[0], /v_subscription\.ends_at/);
+  assert.match(
+    quotaInsert[0],
+    /\(entitlement\.value ->> 'periodic_limit'\)::bigint/,
+  );
+  assert.match(
+    quotaInsert[0],
+    /from jsonb_array_elements\(v_order\.snapshot_entitlements\)/,
+  );
+  assert.doesNotMatch(quotaInsert[0], /billing_plan_entitlements/);
+  assert.doesNotMatch(quotaInsert[0], /update public\.billing_usage_quotas/);
+
+  const subscriptionBranch = settle.indexOf(
+    "if v_order.snapshot_product_type = 'subscription'",
+  );
+  const quotaProvisioning = settle.indexOf(
+    "insert into public.billing_usage_quotas",
+  );
+  const creditPackBranch = settle.indexOf(
+    "else v_credit_grant := v_order.snapshot_credit_grant",
+  );
+  assert.ok(subscriptionBranch < quotaProvisioning);
+  assert.ok(quotaProvisioning < creditPackBranch);
+
+  assert.match(
+    reserve,
+    /from public\.billing_usage_quotas[\s\S]*?period_start <= now\(\)[\s\S]*?period_end > now\(\)/,
+  );
+  assert.match(types, /subscription_id: UUID \| null;/);
+  assert.match(
+    types,
+    /snapshot_entitlements: BillingOrderEntitlementSnapshot\[\];/,
+  );
+  assert.match(
+    types,
+    /periodic_limit: number \| null;/,
+  );
+});
+
+test("settlement rejects malformed periodic quota snapshots before provisioning", () => {
+  const settle = sqlFunction("billing_settle_paid_order");
+  const validation = settle.match(
+    /if v_order\.snapshot_product_type = 'subscription'[\s\S]*?raise exception 'invalid subscription entitlement snapshot'[\s\S]*?end if/,
+  );
+
+  assert.ok(validation);
+  assert.match(validation[0], /jsonb_array_elements\(v_order\.snapshot_entitlements\)/);
+  assert.match(validation[0], /not \(entitlement\.value \? 'periodic_limit'\)/);
+  assert.match(
+    validation[0],
+    /jsonb_typeof\(entitlement\.value -> 'periodic_limit'\) <> 'number'/,
+  );
+  assert.match(validation[0], /using errcode = 'data_exception'/);
+});
+
 test("settlement credit ledger idempotency includes the provider namespace", () => {
   const settle = sqlFunction("billing_settle_paid_order");
 
@@ -643,7 +721,10 @@ test("database types expose public relationships and no ledger update operation"
 test("database types include the hardened order, webhook, and audit columns", () => {
   const types = projectFile("lib/billing/database.types.ts");
 
-  assert.match(types, /snapshot_entitlements: Json;/);
+  assert.match(
+    types,
+    /snapshot_entitlements: BillingOrderEntitlementSnapshot\[\];/,
+  );
   assert.match(
     types,
     /billing_orders: \{[\s\S]*?Insert: Insert<[\s\S]*?\| "snapshot_entitlements"/,

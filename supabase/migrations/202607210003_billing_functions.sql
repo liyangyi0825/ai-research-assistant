@@ -358,7 +358,7 @@ DECLARE
   v_order public.billing_orders%ROWTYPE;
   v_existing_event public.billing_webhook_events%ROWTYPE;
   v_event_id UUID;
-  v_subscription_id UUID;
+  v_subscription public.billing_subscriptions%ROWTYPE;
   v_entitlement_end TIMESTAMPTZ;
   v_credit_grant BIGINT := 0;
   v_account public.billing_credit_accounts%ROWTYPE;
@@ -571,6 +571,31 @@ BEGIN
   );
 
   IF v_order.snapshot_product_type = 'SUBSCRIPTION' THEN
+    IF EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(v_order.snapshot_entitlements)
+        AS entitlement(value)
+      WHERE jsonb_typeof(entitlement.value) <> 'object'
+        OR NULLIF(btrim(entitlement.value ->> 'feature_key'), '') IS NULL
+        OR NOT (entitlement.value ? 'periodic_limit')
+        OR (
+          entitlement.value -> 'periodic_limit' <> 'null'::JSONB
+          AND (
+            jsonb_typeof(entitlement.value -> 'periodic_limit') <> 'number'
+            OR CASE
+              WHEN jsonb_typeof(entitlement.value -> 'periodic_limit') = 'number'
+              THEN (entitlement.value ->> 'periodic_limit')::NUMERIC < 0
+                OR (entitlement.value ->> 'periodic_limit')::NUMERIC
+                  <> trunc((entitlement.value ->> 'periodic_limit')::NUMERIC)
+              ELSE FALSE
+            END
+          )
+        )
+    ) THEN
+      RAISE EXCEPTION 'invalid subscription entitlement snapshot'
+        USING ERRCODE = 'data_exception';
+    END IF;
+
     v_entitlement_end := p_paid_at
       + make_interval(days => v_order.snapshot_duration_days);
 
@@ -593,9 +618,9 @@ BEGIN
       FALSE
     )
     ON CONFLICT (source_order_id) DO NOTHING
-    RETURNING id INTO v_subscription_id;
+    RETURNING * INTO v_subscription;
 
-    IF v_subscription_id IS NULL THEN
+    IF v_subscription.id IS NULL THEN
       RAISE EXCEPTION 'order subscription was already granted'
         USING ERRCODE = 'unique_violation';
     END IF;
@@ -617,13 +642,33 @@ BEGIN
       'PLAN',
       v_order.id,
       entitlement.value - 'credit_grant',
-      p_paid_at,
-      v_entitlement_end
+      v_subscription.starts_at,
+      v_subscription.ends_at
     FROM jsonb_array_elements(v_order.snapshot_entitlements)
       AS entitlement(value)
     WHERE jsonb_typeof(entitlement.value) = 'object'
       AND NULLIF(entitlement.value ->> 'feature_key', '') IS NOT NULL
     ON CONFLICT (user_id, feature_key, source_order_id) DO NOTHING;
+
+    INSERT INTO public.billing_usage_quotas (
+      user_id,
+      subscription_id,
+      feature_key,
+      period_start,
+      period_end,
+      quota_limit
+    )
+    SELECT
+      v_order.user_id,
+      v_subscription.id,
+      entitlement.value ->> 'feature_key',
+      v_subscription.starts_at,
+      v_subscription.ends_at,
+      (entitlement.value ->> 'periodic_limit')::BIGINT
+    FROM jsonb_array_elements(v_order.snapshot_entitlements)
+      AS entitlement(value)
+    WHERE entitlement.value -> 'periodic_limit' <> 'null'::JSONB
+    ON CONFLICT (subscription_id, feature_key) DO NOTHING;
 
     SELECT COALESCE(
       sum(COALESCE((entitlement.value ->> 'credit_grant')::BIGINT, 0)),

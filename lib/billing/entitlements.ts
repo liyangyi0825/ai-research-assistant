@@ -185,6 +185,7 @@ function assertPlanSnapshot(entitlement: Entitlement): void {
 
 function assertSource(entitlement: Entitlement): void {
   if (entitlement.sourceType === "PLAN") {
+    if (entitlement.validUntil === null) throw storageError();
     assertPlanSnapshot(entitlement);
     return;
   }
@@ -202,6 +203,7 @@ export class EntitlementService {
   constructor(
     private readonly repository: EntitlementRepository =
       supabaseEntitlementRepository,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   async getEntitlement(
@@ -227,6 +229,16 @@ export class EntitlementService {
       throw storageError();
     }
     assertSource(entitlement);
+
+    const now = this.now().getTime();
+    if (!Number.isFinite(now)) throw storageError();
+    if (
+      Date.parse(entitlement.validFrom) > now ||
+      (entitlement.validUntil !== null &&
+        Date.parse(entitlement.validUntil) <= now)
+    ) {
+      return null;
+    }
     return entitlement;
   }
 

@@ -16,7 +16,9 @@
 
 ## 订单与回调调用契约
 
-创建订单时必须显式写入 `snapshot_entitlements`，不能依赖空数组默认值。该字段是下单时权益数组的不可变快照；每项至少包含非空 `feature_key`，并可包含 `periodic_limit`、`configuration` 和非负 `credit_grant`。结算只读取这份订单快照，不回查可被后续修改的套餐权益目录。
+创建订单时必须显式写入 `snapshot_entitlements`，不能依赖空数组默认值。该字段是下单时权益数组的不可变快照；每项必须包含非空 `feature_key` 和 `periodic_limit`（无限额时显式为 `null`），并包含 `configuration` 和非负 `credit_grant`。结算只读取这份订单快照，不回查可被后续修改的套餐权益目录。
+
+订阅订单结算会在同一事务中按快照里每个非空 `periodic_limit` 创建 `billing_usage_quotas`。quota 关联刚创建的 subscription，`period_start`/`period_end` 直接复用该 subscription 的起止时间，因此月度和年度商品都与各自订阅周期一致。重复事件在结算终态前返回，quota 的 `(subscription_id, feature_key)` 唯一约束与 `ON CONFLICT DO NOTHING` 作为第二道幂等保护，绝不重置已有 `reserved_units` 或 `used_units`。Credit Pack 不进入订阅分支，不创建 quota。
 
 创建 Provider 支付前，服务端必须先调用 `billing_claim_payment_intent`。该 RPC 锁定订单，并以订单 ID 和请求幂等键原子创建或接管一段有期限的 `CREATING` 租约；租约判断和截止时间只使用数据库 `clock_timestamp()`，不接受应用实例时间。`CREATED` 直接复用已持久化结果，未过期的其他创建者返回 `IN_PROGRESS`，只有 `CLAIMED` 调用者可以请求 Provider。成功结果通过 `billing_complete_payment_intent` 持久化交易号、token 和状态；Provider 返回的过期时间必须与 intent 中的订单快照表示同一时刻，RPC 只比较、不覆盖快照。失败通过 `billing_fail_payment_intent` 只记录安全错误码。失败或租约过期后可重试。当前 30 秒租约不续租；若 Provider 调用超过租期，另一个实例可能接管，因此确定性的 Provider 请求幂等键是防止重复创建的第二道防线。Mock 确认也从该表读取持久化结果，不依赖单进程 Map。
 

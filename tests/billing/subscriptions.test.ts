@@ -255,6 +255,78 @@ test("EntitlementService denies missing entitlements and fails closed for malfor
   );
 });
 
+test("PLAN entitlements require a finite unexpired validity window", async () => {
+  const planEntitlement = (validUntil: string | null): EntitlementRepository => ({
+    async findCurrentEntitlement() {
+      return {
+        id: "entitlement-1",
+        userId: "user-1",
+        featureKey: "deep_research",
+        sourceType: "PLAN",
+        sourceOrderId: "order-1",
+        value: {
+          feature_key: "deep_research",
+          entitlement_version: "pro-v1",
+          periodic_limit: 100,
+          configuration: { model: "standard" },
+        },
+        validFrom: "2026-07-01T08:00:00.000Z",
+        validUntil,
+      };
+    },
+  });
+
+  await assert.rejects(
+    new EntitlementService(
+      planEntitlement(null),
+      () => databaseNow,
+    ).requireEntitlement("user-1", "deep_research"),
+    (error) =>
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
+  );
+
+  await assert.rejects(
+    new EntitlementService(
+      planEntitlement(databaseNow.toISOString()),
+      () => databaseNow,
+    ).requireEntitlement("user-1", "deep_research"),
+    (error) => expectBillingError(error, "ENTITLEMENT_REQUIRED", 403),
+  );
+});
+
+test("ADMIN entitlements may be unlimited but finite grants still expire", async () => {
+  const adminEntitlement = (
+    validUntil: string | null,
+  ): EntitlementRepository => ({
+    async findCurrentEntitlement() {
+      return {
+        id: "entitlement-admin",
+        userId: "user-1",
+        featureKey: "deep_research",
+        sourceType: "ADMIN",
+        sourceOrderId: null,
+        value: { enabled: true },
+        validFrom: "2026-07-01T08:00:00.000Z",
+        validUntil,
+      };
+    },
+  });
+
+  const unlimited = await new EntitlementService(
+    adminEntitlement(null),
+    () => databaseNow,
+  ).requireEntitlement("user-1", "deep_research");
+  assert.equal(unlimited.validUntil, null);
+
+  await assert.rejects(
+    new EntitlementService(
+      adminEntitlement(databaseNow.toISOString()),
+      () => databaseNow,
+    ).requireEntitlement("user-1", "deep_research"),
+    (error) => expectBillingError(error, "ENTITLEMENT_REQUIRED", 403),
+  );
+});
+
 test("Task 2 settlement remains the only membership and credit grant path", async () => {
   const sql = (
     await readFile(

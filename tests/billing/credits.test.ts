@@ -112,6 +112,23 @@ test("usage RPC errors distinguish exhausted quota from insufficient credits", a
   );
 });
 
+test("a missing active quota is a provisioning failure, not an exhausted limit", async () => {
+  const client = new InMemoryRpcClient([
+    {
+      data: null,
+      error: { code: "53000", message: "active usage quota not found" },
+    },
+  ]);
+
+  await assert.rejects(
+    new CreditService(createBillingUsageRpcAdapter(client)).reserve(
+      reservation(),
+    ),
+    (error) =>
+      expectBillingError(error, "USAGE_QUOTA_NOT_PROVISIONED", 503),
+  );
+});
+
 test("unexpected usage database errors fail closed with a safe error", async () => {
   const client = new InMemoryRpcClient([
     {

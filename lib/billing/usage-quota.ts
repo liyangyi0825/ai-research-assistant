@@ -86,10 +86,14 @@ export function normalizeUsageReservation(
 
 function mapRpcError(error: { code?: string; message: string }): BillingError {
   const message = error.message.toLowerCase();
-  if (
-    message.includes("usage quota exceeded") ||
-    message.includes("active usage quota not found")
-  ) {
+  if (message.includes("active usage quota not found")) {
+    return new BillingError(
+      "USAGE_QUOTA_NOT_PROVISIONED",
+      "The research usage quota is temporarily unavailable.",
+      503,
+    );
+  }
+  if (message.includes("usage quota exceeded")) {
     return new BillingError(
       "USAGE_QUOTA_EXCEEDED",
       "The research usage limit has been reached.",

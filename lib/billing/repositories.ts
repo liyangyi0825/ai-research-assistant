@@ -1,6 +1,11 @@
 import { getSupabaseAdminClient } from "../supabase";
-import type { Json } from "./database.types";
+import type {
+  BillingOrderEntitlementSnapshot,
+  Json,
+} from "./database.types";
 import { BillingError } from "./errors";
+
+export type { BillingOrderEntitlementSnapshot } from "./database.types";
 
 export type BillingProductType = "SUBSCRIPTION" | "CREDIT_PACK";
 export type BillingProvider = "MOCK" | "WECHAT" | "ALIPAY";
@@ -18,14 +23,6 @@ export type BillingEntitlementSnapshot = {
   entitlementVersion: string;
   periodicLimit: number | null;
   creditGrant: number;
-  configuration: Json;
-};
-
-export type BillingOrderEntitlementSnapshot = {
-  feature_key: string;
-  entitlement_version: string;
-  periodic_limit: number | null;
-  credit_grant: number;
   configuration: Json;
 };
 
