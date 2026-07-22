@@ -3,8 +3,8 @@
 // 输出：{ pptContent: PptContent } 结构化 JSON，供前端预览和后续生成 PPTX 文件使用
 
 import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export type PptScene = "defense" | "meeting";
 
@@ -121,7 +121,6 @@ export interface PptContent {
 function closeTruncatedJSON(raw: string): string {
   let inString = false, escape = false;
   let braces = 0, brackets = 0;
-  let lastValidPos = -1; // 最后一个完整 JSON value 结束位置
 
   for (let i = 0; i < raw.length; i++) {
     const c = raw[i];
@@ -133,7 +132,7 @@ function closeTruncatedJSON(raw: string): string {
     }
     if (inString) continue;
     if (c === "{") braces++;
-    else if (c === "}") { braces--; if (braces === 0) lastValidPos = i; }
+    else if (c === "}") braces--;
     else if (c === "[") brackets++;
     else if (c === "]") brackets--;
   }
@@ -178,13 +177,14 @@ export async function POST(req: NextRequest) {
     const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
-    const { allowed, used, limit, userId } = await checkUsageLimit("ppt_generate");
-    if (!allowed) {
-      return NextResponse.json(
+    return await withAiUsage(
+      req,
+      "ppt_generate",
+      ({ used, limit }) => NextResponse.json(
         { error: `本月生成 PPT 次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 },
-      );
-    }
+      ),
+      async (usage) => {
 
     const { paperContent, scene } = (await req.json()) as {
       paperContent: string;
@@ -400,45 +400,42 @@ ${keyContent}`;
             } catch {
               console.error("[PPT] 截断补全失败，原始输出前 500 字:", rawText.slice(0, 500));
               console.error("[PPT] 原始输出末尾 500 字:", rawText.slice(-500));
+              usage.markFailed(new Error("PPT JSON serialization failed"));
               await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
               return;
             }
           } else {
+            usage.markFailed(new Error("PPT JSON serialization failed"));
             await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出格式异常，请重试" })}\n\n`));
             return;
           }
         }
 
         if (!pptContent.slides?.length) {
+          usage.markFailed(new Error("PPT output was empty"));
           await writer.write(encoder.encode(`data: ${JSON.stringify({ error: "AI 输出内容为空，请重试" })}\n\n`));
           return;
         }
 
         console.log("[ppt-layout-debug] 各页 layout 汇总：");
         pptContent.slides.forEach((slide, i) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const s = slide as any;
+          const s = slide as unknown as Record<string, unknown>;
           const paraPreview = Array.isArray(s.paragraphs) ? `paragraphs[${s.paragraphs.length}]="${String(s.paragraphs[0] ?? "").slice(0, 40)}"` : "no-paragraphs";
           const cardPreview = Array.isArray(s.cards)
-            ? `  cards[${s.cards.length}]=${s.cards.map((c: any) => `{h:"${c.heading ?? ""}",pts:${Array.isArray(c.points) ? c.points.length : 0}}`).join(",")}`
+            ? `  cards[${s.cards.length}]=${s.cards.map((c: Record<string, unknown>) => `{h:"${c.heading ?? ""}",pts:${Array.isArray(c.points) ? c.points.length : 0}}`).join(",")}`
             : "";
           console.log(`  [${i + 1}] type=${slide.type}  layout=${s.layout ?? "(无)"}  ${paraPreview}${cardPreview}`);
         });
 
-        if (userId) {
-          insertUsageRecord({
-            userId, actionType: "ppt_generate",
-            tokensInput: inputTokens, tokensOutput: outputTokens,
-          }).catch(() => {});
-        }
-
         await writer.write(encoder.encode(`data: ${JSON.stringify({ pptContent })}\n\n`));
 
       } catch (err) {
+        usage.markFailed(err);
         const msg = err instanceof Error ? err.message : String(err);
         console.error("PPT 生成异常:", msg);
         await writer.write(encoder.encode(`data: ${JSON.stringify({ error: `请求失败：${msg.slice(0, 120)}` })}\n\n`));
       } finally {
+        usage.setTokenUsage({ tokensInput: inputTokens, tokensOutput: outputTokens });
         writer.close().catch(() => {});
       }
     })();
@@ -450,6 +447,8 @@ ${keyContent}`;
         "X-Accel-Buffering": "no",
       },
     });
+      },
+    );
 
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

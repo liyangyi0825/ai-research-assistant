@@ -2,9 +2,9 @@
 // 通用上下文对话接口（检索词页 / 概念探索页复用）
 // 消耗 chat 配额，流式输出
 
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,13 +13,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }
 
-    const { allowed, used, limit, userId } = await checkUsageLimit("chat");
-    if (!allowed) {
-      return NextResponse.json(
+    return await withAiUsage(
+      req,
+      "chat",
+      ({ used, limit }) => NextResponse.json(
         { error: `本月对话次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 },
-      );
-    }
+      ),
+      async (usage) => {
 
     const { context, messages } = (await req.json()) as {
       context: string;
@@ -60,19 +61,6 @@ export async function POST(req: NextRequest) {
 
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
     let sseBuffer = "";
-
-    if (userId) {
-      after(async () => {
-        await insertUsageRecord({
-          userId,
-          actionType: "chat",
-          tokensInput: inputTokens,
-          tokensOutput: outputTokens,
-          cacheCreationTokens: cacheCreate,
-          cacheReadTokens: cacheRead,
-        });
-      });
-    }
 
     void (async () => {
       const reader = anthropicRes.body!.getReader();
@@ -116,7 +104,15 @@ export async function POST(req: NextRequest) {
             } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
+      } catch (error) {
+        usage.markFailed(error);
       } finally {
+        usage.setTokenUsage({
+          tokensInput: inputTokens,
+          tokensOutput: outputTokens,
+          cacheCreationTokens: cacheCreate,
+          cacheReadTokens: cacheRead,
+        });
         writer.close().catch(() => {});
       }
     })();
@@ -128,6 +124,8 @@ export async function POST(req: NextRequest) {
         "X-Accel-Buffering": "no",
       },
     });
+      },
+    );
   } catch (error) {
     console.error("context-chat 请求失败:", error);
     return NextResponse.json({ error: "请求失败，请稍后重试" }, { status: 500 });

@@ -1,9 +1,10 @@
 ﻿// 后端接口：概念探索器的 Claude 流式 AI（区块 1/3/4）
 // 路径：POST /api/concept-explorer/ai
 
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord, insertSearchHistory } from "@/lib/supabase";
+import { insertSearchHistory } from "@/lib/supabase";
 import type { Paper } from "../papers/route";
 
 function buildPrompt(
@@ -149,27 +150,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }
 
-    // 用量检查（消耗 concept_explore 配额，仅在 block=1 时检查并记录，避免重复扣除）
-    const { allowed, used, limit, userId } = await checkUsageLimit("concept_explore");
-    if (!allowed) {
-      return NextResponse.json(
-        { error: `本月概念探索器次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
-        { status: 429 }
-      );
-    }
-
     const { concept, block, papers = [], originText = "", conceptsText = "" } = await req.json();
 
     if (!concept?.trim() || ![1, 2, 3, 4].includes(block)) {
       return NextResponse.json({ error: "参数错误" }, { status: 400 });
     }
 
+    if (block === 2 && (!Array.isArray(papers) || papers.length === 0)) {
+      return NextResponse.json({ summaries: [] });
+    }
+
+    return await withAiUsage(
+      req,
+      "concept_explore",
+      ({ used, limit }) => NextResponse.json(
+        { error: `本月概念探索器次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 },
+      ),
+      async (usage) => {
+
     // 区块 2：批量生成论文关联说明，非流式，直接返回 JSON
     if (block === 2) {
-      if (!Array.isArray(papers) || papers.length === 0) {
-        return NextResponse.json({ summaries: [] });
-      }
-
       const relevanceRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -204,19 +205,17 @@ export async function POST(req: NextRequest) {
         console.error("[concept-ai] 区块2 JSON 解析失败:", relevanceText.slice(0, 300));
       }
 
-      if (userId) {
-        insertUsageRecord({
-          userId,
-          actionType: "concept_explore",
-          tokensInput: relevanceData.usage?.input_tokens ?? 0,
-          tokensOutput: relevanceData.usage?.output_tokens ?? 0,
-        }).catch(() => {});
-      }
+      usage.setTokenUsage({
+        tokensInput: relevanceData.usage?.input_tokens ?? 0,
+        tokensOutput: relevanceData.usage?.output_tokens ?? 0,
+      });
 
       return NextResponse.json({ summaries });
     }
 
     const prompt = buildPrompt(block, concept.trim(), papers, originText, conceptsText);
+
+    if (block !== 1) usage.skipLegacyUsage();
 
     const maxTokens = 8000;
 
@@ -250,19 +249,9 @@ export async function POST(req: NextRequest) {
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
     let sseBuffer = "";
 
-    // block=1 时记录用量 + 保存搜索历史（整个探索流程只记录一次）
-    if (block === 1 && userId) {
-      insertSearchHistory({ userId, type: "concept_explore", query: concept.trim() });
-      after(async () => {
-        await insertUsageRecord({
-          userId,
-          actionType: "concept_explore",
-          tokensInput: inputTokens,
-          tokensOutput: outputTokens,
-          cacheCreationTokens: cacheCreate,
-          cacheReadTokens: cacheRead,
-        });
-      });
+    // block=1 时保存搜索历史（整个探索流程只保存一次）
+    if (block === 1 && usage.userId) {
+      insertSearchHistory({ userId: usage.userId, type: "concept_explore", query: concept.trim() });
     }
 
     void (async () => {
@@ -314,7 +303,15 @@ export async function POST(req: NextRequest) {
             }
           }
         }
+      } catch (error) {
+        usage.markFailed(error);
       } finally {
+        usage.setTokenUsage({
+          tokensInput: inputTokens,
+          tokensOutput: outputTokens,
+          cacheCreationTokens: cacheCreate,
+          cacheReadTokens: cacheRead,
+        });
         writer.close().catch(() => {});
       }
     })();
@@ -326,6 +323,8 @@ export async function POST(req: NextRequest) {
         "X-Accel-Buffering": "no",
       },
     });
+      },
+    );
   } catch (error) {
     console.error("概念探索 AI 异常:", error);
     return NextResponse.json({ error: "请求失败，请重试" }, { status: 500 });

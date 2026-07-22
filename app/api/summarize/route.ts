@@ -2,9 +2,10 @@
 // 路径：POST /api/summarize
 // ⚠️ API Key 在服务器端读取，绝不暴露给浏览器
 
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord, getSupabaseAuthClient } from "@/lib/supabase";
+import { getSupabaseAuthClient } from "@/lib/supabase";
 
 const DB_SAVE_INTERVAL = 400; // 每累积 400 个字符写一次数据库
 
@@ -18,14 +19,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 用量限额检查
-    const { allowed, used, limit, userId } = await checkUsageLimit("summarize");
-    if (!allowed) {
-      return NextResponse.json(
+    return await withAiUsage(
+      req,
+      "summarize",
+      ({ used, limit }) => NextResponse.json(
         { error: `本月 AI 总结次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 }
-      );
-    }
+      ),
+      async (usage) => {
 
     // 获取 Supabase 客户端（用于增量保存）
     const supabase = await getSupabaseAuthClient();
@@ -146,19 +147,6 @@ ${truncatedContent}
     let accumulatedText = "";   // 累积已生成的总结文字
     let lastDbSaveLen = 0;      // 上次写 DB 时的文字长度
 
-    if (userId) {
-      after(async () => {
-        await insertUsageRecord({
-          userId,
-          actionType: "summarize",
-          tokensInput: inputTokens,
-          tokensOutput: outputTokens,
-          cacheCreationTokens: cacheCreate,
-          cacheReadTokens: cacheRead,
-        });
-      });
-    }
-
     void (async () => {
       const reader = anthropicRes.body!.getReader();
       const thinkingBlocks = new Set<number>();
@@ -232,7 +220,15 @@ ${truncatedContent}
             .eq("paper_id", paperId)
             .eq("user_id", user.id);
         }
+      } catch (error) {
+        usage.markFailed(error);
       } finally {
+        usage.setTokenUsage({
+          tokensInput: inputTokens,
+          tokensOutput: outputTokens,
+          cacheCreationTokens: cacheCreate,
+          cacheReadTokens: cacheRead,
+        });
         writer.close().catch(() => {});
       }
     })();
@@ -244,6 +240,8 @@ ${truncatedContent}
         "X-Accel-Buffering": "no",
       },
     });
+      },
+    );
   } catch (error) {
     console.error("请求失败:", error);
     const msg = error instanceof Error ? error.message : "请求失败，请重试";

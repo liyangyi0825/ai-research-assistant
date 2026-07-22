@@ -4,9 +4,8 @@
 // 用途：将论文内容转为 LaTeX 结构化总结，可在 Overleaf 中用 XeLaTeX 编译
 
 import { NextRequest } from "next/server";
-import { after } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 import JSZip from "jszip";
 
 export async function POST(req: NextRequest) {
@@ -16,13 +15,14 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "服务器未配置 API Key，请检查 .env.local 文件" }, { status: 500 });
     }
 
-    const { allowed, used, limit, userId } = await checkUsageLimit("latex_export");
-    if (!allowed) {
-      return Response.json(
+    return await withAiUsage(
+      req,
+      "latex_export",
+      ({ used, limit }) => Response.json(
         { error: `本月导出 LaTeX 次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 }
-      );
-    }
+      ),
+      async (usage) => {
 
     const { paperContent } = await req.json() as { paperContent: string };
     if (!paperContent || paperContent.trim().length === 0) {
@@ -93,19 +93,12 @@ ${truncatedContent}
     const textBlock = data.content?.find((b: { type: string }) => b.type === "text");
     const raw: string = textBlock?.text ?? "";
 
-    // 记录用量（后台异步，不阻塞响应）
-    if (userId) {
-      after(async () => {
-        await insertUsageRecord({
-          userId,
-          actionType: "latex_export",
-          tokensInput:          data.usage?.input_tokens ?? 0,
-          tokensOutput:         data.usage?.output_tokens ?? 0,
-          cacheCreationTokens:  data.usage?.cache_creation_input_tokens ?? 0,
-          cacheReadTokens:      data.usage?.cache_read_input_tokens ?? 0,
-        });
-      });
-    }
+    usage.setTokenUsage({
+      tokensInput: data.usage?.input_tokens ?? 0,
+      tokensOutput: data.usage?.output_tokens ?? 0,
+      cacheCreationTokens: data.usage?.cache_creation_input_tokens ?? 0,
+      cacheReadTokens: data.usage?.cache_read_input_tokens ?? 0,
+    });
 
     // 解析 tex 和 bib 内容（用分隔符，避免 JSON 转义 LaTeX 反斜杠的问题）
     const texMatch = raw.match(/===TEX_START===\n([\s\S]*?)===TEX_END===/);
@@ -131,6 +124,8 @@ ${truncatedContent}
         "Content-Disposition": 'attachment; filename="latex_export.zip"',
       },
     });
+      },
+    );
   } catch (error) {
     console.error("[generate-latex] 请求失败:", error);
     const msg = error instanceof Error ? error.message : "导出失败，请重试";

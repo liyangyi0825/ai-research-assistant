@@ -1,9 +1,9 @@
 // POST /api/polish
 // 论文润色（流式输出）
 
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 type Language = "zh" | "en";
 type Discipline = "general" | "science" | "social_science" | "humanities" | "medical" | "business";
@@ -55,13 +55,14 @@ export async function POST(req: NextRequest) {
     const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
-    const { allowed, used, limit, userId } = await checkUsageLimit("polish");
-    if (!allowed) {
-      return NextResponse.json(
+    return await withAiUsage(
+      req,
+      "polish",
+      ({ used, limit }) => NextResponse.json(
         { error: `本月论文润色次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 },
-      );
-    }
+      ),
+      async (usage) => {
 
     const body = (await req.json()) as {
       text?: string;
@@ -114,17 +115,6 @@ export async function POST(req: NextRequest) {
     let inputTokens = 0, outputTokens = 0;
     let sseBuffer = "";
 
-    if (userId) {
-      after(async () => {
-        await insertUsageRecord({
-          userId,
-          actionType: "polish",
-          tokensInput: inputTokens,
-          tokensOutput: outputTokens,
-        });
-      });
-    }
-
     void (async () => {
       const reader = anthropicRes.body!.getReader();
       const thinkingBlocks = new Set<number>();
@@ -160,7 +150,10 @@ export async function POST(req: NextRequest) {
             } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
+      } catch (error) {
+        usage.markFailed(error);
       } finally {
+        usage.setTokenUsage({ tokensInput: inputTokens, tokensOutput: outputTokens });
         writer.close().catch(() => {});
       }
     })();
@@ -172,6 +165,8 @@ export async function POST(req: NextRequest) {
         "X-Accel-Buffering": "no",
       },
     });
+      },
+    );
   } catch (error) {
     console.error("polish 请求失败:", error);
     return NextResponse.json({ error: "请求失败，请稍后重试" }, { status: 500 });

@@ -2,12 +2,11 @@
 // 路径：POST /api/cite
 
 import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { getSupabaseAuthClient, insertUsageRecord, checkUsageLimit } from "@/lib/supabase";
+import { getSupabaseAuthClient } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
-  let userId: string | null = null;
-
   try {
     const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) {
@@ -20,16 +19,14 @@ export async function POST(req: NextRequest) {
     if (!user) {
       return NextResponse.json({ error: "请先登录" }, { status: 401 });
     }
-    userId = user.id;
-
-    // 检查本月用量是否超限
-    const { allowed, used, limit } = await checkUsageLimit("bibtex_export");
-    if (!allowed) {
-      return NextResponse.json(
+    return await withAiUsage(
+      req,
+      "bibtex_export",
+      ({ used, limit }) => NextResponse.json(
         { error: `本月 BibTeX 导出次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 }
-      );
-    }
+      ),
+      async (usage) => {
 
     const { content } = await req.json();
     if (!content) {
@@ -90,27 +87,17 @@ ${truncated}
       return NextResponse.json({ error: "AI 返回格式异常，请重试" }, { status: 500 });
     }
 
-    // 写入 usage 记录
-    if (userId) {
-      const inputTokens = data.usage?.input_tokens ?? 0;
-      const outputTokens = data.usage?.output_tokens ?? 0;
-      try {
-        await insertUsageRecord({
-          userId,
-          actionType: "bibtex_export",
-          tokensInput: inputTokens,
-          tokensOutput: outputTokens,
-        });
-      } catch {
-        // 用量记录失败不影响主流程
-        console.error("usage 记录失败");
-      }
-    }
+    usage.setTokenUsage({
+      tokensInput: data.usage?.input_tokens ?? 0,
+      tokensOutput: data.usage?.output_tokens ?? 0,
+    });
 
     return NextResponse.json({
       bibtex: parsed.bibtex ?? "",
       gbt7714: parsed.gbt7714 ?? "",
     });
+      },
+    );
   } catch (error) {
     console.error("引用生成异常:", error);
     return NextResponse.json({ error: "引用生成失败，请重试" }, { status: 500 });
