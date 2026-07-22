@@ -65,9 +65,17 @@ deployment, push, UI, AI API, or filing changes were performed.
 - A read-only security review found no Critical issue. Its service-level
   feature/runtime authorization and verifier-exception audit findings were
   fixed before submission.
-- The Mock Provider remains process-local by the existing Task 5 design. The
-  stable request key and callback provide in-process idempotency, while restart
-  durability would require a broader persistent payment-initiation contract.
+- Payment creation now uses the service-only `billing_payment_intents` table
+  and four atomic claim/complete/fail/Mock-confirm RPCs. Cross-instance callers
+  reuse one persisted provider result; only the current database lease holder
+  can call the Provider, and safe failure codes permit retry after failure or
+  lease expiry without persisting provider exception text.
+- Mock confirmation reads the durable intent and signs that persisted paid
+  result, so confirmation no longer requires the creating Provider instance's
+  in-memory Map.
+- Webhook routes validate provider/config mode before body access and enforce a
+  64 KiB byte limit both from `Content-Length` and while streaming. Oversized
+  streams are cancelled and return `WEBHOOK_BODY_TOO_LARGE` (413).
 - PostgreSQL row locks, simultaneous callbacks, and migration execution were
   not tested against a database because this task explicitly prohibited live
   database access. They must be verified later against a local or fully

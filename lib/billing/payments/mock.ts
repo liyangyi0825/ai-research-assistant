@@ -1,4 +1,5 @@
 import {
+  createHash,
   createHmac,
   randomBytes,
   randomUUID,
@@ -150,14 +151,20 @@ export class MockPaymentProvider implements PaymentProvider {
 
     this.assertFutureExpiration(normalized.expiresAt);
 
-    const providerTransactionId = `mock_tx_${randomUUID().replaceAll("-", "")}`;
+    const providerTransactionId = `mock_tx_${createHash("sha256")
+      .update(`transaction:${normalized.idempotencyKey}`)
+      .digest("hex")
+      .slice(0, 32)}`;
     const payment: StoredPayment = {
       providerTransactionId,
       orderNumber: normalized.orderNumber,
       status: "PENDING",
       amountMinor: normalized.amountMinor,
       currency: normalized.currency,
-      paymentToken: `mock_test_${randomBytes(24).toString("base64url")}`,
+      paymentToken: `mock_test_${createHash("sha256")
+        .update(`token:${normalized.idempotencyKey}`)
+        .digest("base64url")
+        .slice(0, 32)}`,
       expiresAt: normalized.expiresAt,
       paidAt: null,
       createInput: normalized,
@@ -321,10 +328,31 @@ export class MockPaymentProvider implements PaymentProvider {
     }
 
     const payment = await this.confirmPayment(input);
+    return this.createPaidPaymentWebhook(payment);
+  }
+
+  async createPaidPaymentWebhook(
+    payment: PaymentResult,
+  ): Promise<SignedPaymentWebhook> {
     if (!payment.paidAt) {
       throw new BillingError(
         "INVALID_PAYMENT_STATE",
         "A paid timestamp is required for mock confirmation.",
+        409,
+      );
+    }
+
+    if (
+      payment.status !== "PAID" ||
+      !payment.providerTransactionId.trim() ||
+      !payment.orderNumber.trim() ||
+      !validAmount(payment.amountMinor) ||
+      payment.currency !== "CNY" ||
+      !Number.isFinite(Date.parse(payment.paidAt))
+    ) {
+      throw new BillingError(
+        "INVALID_PAYMENT_STATE",
+        "A valid paid payment is required for mock confirmation.",
         409,
       );
     }
@@ -339,6 +367,19 @@ export class MockPaymentProvider implements PaymentProvider {
       occurredAt: payment.paidAt,
     };
     const rawBody = JSON.stringify(event);
+    const existing = this.confirmationWebhooks.get(
+      payment.providerTransactionId.trim(),
+    );
+    if (existing) {
+      if (existing.rawBody !== rawBody) {
+        throw new BillingError(
+          "IDEMPOTENCY_CONFLICT",
+          "The mock confirmation was replayed with different data.",
+          409,
+        );
+      }
+      return { rawBody: existing.rawBody, headers: { ...existing.headers } };
+    }
     const webhook: SignedPaymentWebhook = {
       rawBody,
       headers: {

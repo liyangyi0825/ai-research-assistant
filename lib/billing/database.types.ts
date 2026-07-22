@@ -103,6 +103,28 @@ export type BillingPaymentRow = {
   updated_at: Timestamp;
 };
 
+export type BillingPaymentIntentRow = {
+  id: UUID;
+  order_id: UUID;
+  user_id: UUID;
+  provider: "MOCK" | "WECHAT" | "ALIPAY";
+  request_idempotency_key: string;
+  status: "CREATING" | "CREATED" | "FAILED";
+  claim_token: UUID | null;
+  claim_expires_at: Timestamp | null;
+  provider_transaction_id: string | null;
+  payment_token: string | null;
+  payment_status: "PENDING" | "PAID" | "FAILED" | "CLOSED" | null;
+  amount_minor: number;
+  currency: "CNY";
+  expires_at: Timestamp;
+  paid_at: Timestamp | null;
+  last_error_code: string | null;
+  attempt_count: number;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
 export type BillingSubscriptionRow = {
   id: UUID;
   user_id: UUID;
@@ -375,6 +397,30 @@ export type Database = {
           },
         ];
       };
+      billing_payment_intents: {
+        Row: BillingPaymentIntentRow;
+        Insert: Insert<
+          BillingPaymentIntentRow,
+          | "order_id"
+          | "user_id"
+          | "provider"
+          | "request_idempotency_key"
+          | "claim_token"
+          | "claim_expires_at"
+          | "amount_minor"
+          | "expires_at"
+        >;
+        Update: Update<BillingPaymentIntentRow>;
+        Relationships: [
+          {
+            foreignKeyName: "billing_payment_intents_order_id_fkey";
+            columns: ["order_id"];
+            isOneToOne: true;
+            referencedRelation: "billing_orders";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       billing_payments: {
         Row: BillingPaymentRow;
         Insert: Insert<
@@ -631,6 +677,46 @@ export type Database = {
     };
     Views: { [_ in never]: never };
     Functions: {
+      billing_claim_payment_intent: {
+        Args: {
+          p_user_id: UUID;
+          p_order_id: UUID;
+          p_provider: string;
+          p_request_idempotency_key: string;
+          p_claim_token: UUID;
+          p_now: Timestamp;
+        };
+        Returns: Json;
+      };
+      billing_complete_payment_intent: {
+        Args: {
+          p_intent_id: UUID;
+          p_claim_token: UUID;
+          p_provider_transaction_id: string;
+          p_payment_token: string;
+          p_payment_status: string;
+          p_expires_at: Timestamp;
+          p_paid_at?: Timestamp | null;
+        };
+        Returns: Json;
+      };
+      billing_fail_payment_intent: {
+        Args: {
+          p_intent_id: UUID;
+          p_claim_token: UUID;
+          p_error_code: string;
+        };
+        Returns: Json;
+      };
+      billing_claim_mock_payment_confirmation: {
+        Args: {
+          p_user_id: UUID;
+          p_order_id: UUID;
+          p_provider_transaction_id: string;
+          p_paid_at: Timestamp;
+        };
+        Returns: Json;
+      };
       billing_settle_paid_order: {
         Args: {
           p_order_number: string;

@@ -40,6 +40,11 @@ function order(
 
 class MemoryPaymentRepository implements PaymentServiceRepository {
   failWith: Error | null = null;
+  claimState: "EMPTY" | "CREATING" | "CREATED" | "FAILED" = "EMPTY";
+  claimCalls = 0;
+  completeCalls = 0;
+  failCalls: string[] = [];
+  intentPayment: Omit<Awaited<ReturnType<MockPaymentProvider["createPayment"]>>, "orderNumber"> | null = null;
 
   constructor(readonly storedOrder: PaymentOrderSnapshot | null = order()) {}
 
@@ -48,6 +53,43 @@ class MemoryPaymentRepository implements PaymentServiceRepository {
     return this.storedOrder?.userId === userId && this.storedOrder.id === orderId
       ? { ...this.storedOrder }
       : null;
+  }
+
+  async claimPaymentIntent() {
+    this.claimCalls += 1;
+    if (this.claimState === "CREATED" && this.intentPayment) {
+      return { status: "REUSE" as const, payment: { ...this.intentPayment } };
+    }
+    if (this.claimState === "CREATING") {
+      return { status: "IN_PROGRESS" as const };
+    }
+    this.claimState = "CREATING";
+    return { status: "CLAIMED" as const, intentId: "intent-1" };
+  }
+
+  async completePaymentIntent(input: { payment: Awaited<ReturnType<MockPaymentProvider["createPayment"]>> }) {
+    this.completeCalls += 1;
+    this.intentPayment = {
+      providerTransactionId: input.payment.providerTransactionId,
+      status: input.payment.status,
+      amountMinor: input.payment.amountMinor,
+      currency: input.payment.currency,
+      paymentToken: input.payment.paymentToken,
+      expiresAt: input.payment.expiresAt,
+      paidAt: input.payment.paidAt,
+    };
+    this.claimState = "CREATED";
+    return { ...this.intentPayment };
+  }
+
+  async failPaymentIntent(_intentId: string, _claimToken: string, errorCode: string) {
+    this.failCalls.push(errorCode);
+    this.claimState = "FAILED";
+  }
+
+  async claimMockPaymentConfirmation() {
+    if (!this.intentPayment) throw new Error("missing payment intent");
+    return { ...this.intentPayment, status: "PAID" as const, paidAt: now.toISOString() };
   }
 }
 
@@ -79,6 +121,12 @@ test("createOrderPayment prices a pending payment only from the owned database s
     secret: "payment-service-test-secret",
     now: () => now,
   });
+  let providerCreateCalls = 0;
+  const createPayment = provider.createPayment.bind(provider);
+  provider.createPayment = async (input) => {
+    providerCreateCalls += 1;
+    return createPayment(input);
+  };
 
   const payment = await createOrderPayment(
     "user-1",
@@ -102,6 +150,111 @@ test("createOrderPayment prices a pending payment only from the owned database s
     dependencies(repository, provider),
   );
   assert.deepEqual(repeated, payment);
+  assert.equal(repository.claimCalls, 2);
+  assert.equal(repository.completeCalls, 1);
+  assert.equal(providerCreateCalls, 1);
+});
+
+test("createOrderPayment reuses a persisted result across provider instances", async () => {
+  const repository = new MemoryPaymentRepository();
+  const first = await createOrderPayment(
+    "user-1",
+    "order-id-1",
+    dependencies(
+      repository,
+      new MockPaymentProvider({ secret: "first-instance", now: () => now }),
+    ),
+  );
+  const replacement = new MockPaymentProvider({
+    secret: "replacement-instance",
+    now: () => now,
+  });
+  let replacementCalls = 0;
+  const replacementCreate = replacement.createPayment.bind(replacement);
+  replacement.createPayment = async (input) => {
+    replacementCalls += 1;
+    return replacementCreate(input);
+  };
+
+  const repeated = await createOrderPayment(
+    "user-1",
+    "order-id-1",
+    dependencies(repository, replacement),
+  );
+
+  assert.deepEqual(repeated, first);
+  assert.equal(replacementCalls, 0);
+});
+
+test("createOrderPayment allows only the database claim holder to call the provider", async () => {
+  const repository = new MemoryPaymentRepository();
+  let releaseProvider!: () => void;
+  let providerEntered!: () => void;
+  const providerGate = new Promise<void>((resolve) => {
+    releaseProvider = resolve;
+  });
+  const providerStarted = new Promise<void>((resolve) => {
+    providerEntered = resolve;
+  });
+  const provider = new MockPaymentProvider({
+    secret: "concurrent-instance",
+    now: () => now,
+  });
+  let providerCreateCalls = 0;
+  const createPayment = provider.createPayment.bind(provider);
+  provider.createPayment = async (input) => {
+    providerCreateCalls += 1;
+    providerEntered();
+    await providerGate;
+    return createPayment(input);
+  };
+
+  const first = createOrderPayment(
+    "user-1",
+    "order-id-1",
+    dependencies(repository, provider),
+  );
+  await providerStarted;
+  const second = createOrderPayment(
+    "user-1",
+    "order-id-1",
+    dependencies(repository, provider),
+  );
+  releaseProvider();
+  await assert.rejects(
+    second,
+    (error: unknown) =>
+      expectBillingError(error, "PAYMENT_CREATION_IN_PROGRESS", 409),
+  );
+  await first;
+
+  assert.equal(providerCreateCalls, 1);
+});
+
+test("createOrderPayment safely releases a failed claim without persisting provider details", async () => {
+  const repository = new MemoryPaymentRepository();
+  const provider = new MockPaymentProvider({
+    secret: "provider-secret-do-not-leak",
+    now: () => now,
+  });
+  provider.createPayment = async () => {
+    throw new Error("provider token=do-not-leak");
+  };
+
+  await assert.rejects(
+    () =>
+      createOrderPayment(
+        "user-1",
+        "order-id-1",
+        dependencies(repository, provider),
+      ),
+    (error: unknown) =>
+      expectBillingError(error, "PAYMENT_PROVIDER_UNAVAILABLE", 503) &&
+      error instanceof BillingError &&
+      !error.message.includes("do-not-leak"),
+  );
+  assert.deepEqual(repository.failCalls, ["PROVIDER_CREATE_FAILED"]);
+  assert.equal(repository.intentPayment, null);
 });
 
 test("createOrderPayment does not reveal whether another user's order exists", async () => {

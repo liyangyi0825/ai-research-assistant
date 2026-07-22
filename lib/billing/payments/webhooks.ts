@@ -638,6 +638,50 @@ function headerRecord(headers: Headers): Readonly<Record<string, string>> {
 
 type WebhookRouteContext = { params: Promise<{ provider: string }> };
 
+export const MAX_WEBHOOK_BODY_BYTES = 64 * 1024;
+
+function webhookBodyTooLarge(): BillingError {
+  return new BillingError(
+    "WEBHOOK_BODY_TOO_LARGE",
+    "The payment webhook body is too large.",
+    413,
+  );
+}
+
+async function readWebhookBody(request: Request): Promise<string> {
+  const declaredLength = request.headers.get("content-length");
+  if (/^\d+$/.test(declaredLength ?? "")) {
+    if (BigInt(declaredLength!) > BigInt(MAX_WEBHOOK_BODY_BYTES)) {
+      throw webhookBodyTooLarge();
+    }
+  }
+
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let byteLength = 0;
+  let body = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      byteLength += value.byteLength;
+      if (byteLength > MAX_WEBHOOK_BODY_BYTES) {
+        try {
+          await reader.cancel("webhook body limit exceeded");
+        } catch {
+          // Preserve the safe 413 even if the request source rejects cancellation.
+        }
+        throw webhookBodyTooLarge();
+      }
+      body += decoder.decode(value, { stream: true });
+    }
+    return body + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export function createPaymentWebhookPostHandler(
   dependencies: {
     getConfig: () => BillingConfig;
@@ -651,7 +695,6 @@ export function createPaymentWebhookPostHandler(
     request: Request,
     context: WebhookRouteContext,
   ): Promise<Response> {
-    const rawBody = await request.text();
     try {
       const { provider } = await context.params;
       const config = dependencies.getConfig();
@@ -665,6 +708,7 @@ export function createPaymentWebhookPostHandler(
           400,
         );
       }
+      const rawBody = await readWebhookBody(request);
       const result = await dependencies.processWebhook(
         provider,
         rawBody,
@@ -682,6 +726,7 @@ export type ConfirmMockOrderPaymentDependencies = {
   webhookRepository?: WebhookRepository;
   getConfig?: () => BillingConfig;
   getProvider?: (mode: "mock", config: BillingConfig) => PaymentProvider;
+  now?: () => Date;
 };
 
 function assertMockConfirmationAllowed(
@@ -763,16 +808,20 @@ export async function confirmMockOrderPayment(
       503,
     );
   }
-  const payment = await provider.queryPayment({ providerTransactionId });
-  if (payment.orderNumber !== order.orderNumber) {
-    throw new BillingError(
-      "ORDER_NOT_FOUND",
-      "The billing order was not found.",
-      404,
-    );
+  let storedPayment;
+  try {
+    storedPayment = await paymentRepository.claimMockPaymentConfirmation({
+      userId: user.id,
+      orderId: order.id,
+      providerTransactionId,
+      paidAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+    });
+  } catch (error) {
+    throw normalizeError(error);
   }
-  const callback = await provider.confirmPaymentAndCreateWebhook({
-    providerTransactionId,
+  const callback = await provider.createPaidPaymentWebhook({
+    orderNumber: order.orderNumber,
+    ...storedPayment,
   });
   return processPaymentWebhook("mock", callback.rawBody, callback.headers, {
     repository: dependencies.webhookRepository,

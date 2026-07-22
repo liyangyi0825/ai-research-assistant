@@ -56,6 +56,7 @@ const tables = [
   "billing_products",
   "billing_plan_entitlements",
   "billing_orders",
+  "billing_payment_intents",
   "billing_payments",
   "billing_subscriptions",
   "billing_user_entitlements",
@@ -73,6 +74,10 @@ const tables = [
 ] as const;
 
 const rpcNames = [
+  "billing_claim_payment_intent",
+  "billing_complete_payment_intent",
+  "billing_fail_payment_intent",
+  "billing_claim_mock_payment_confirmation",
   "billing_settle_paid_order",
   "billing_reserve_usage",
   "billing_finalize_usage",
@@ -142,6 +147,72 @@ test("orders, provider transactions, webhook events, and ledger operations are u
   assert.match(sql, /unique \(provider, provider_event_id\)/);
   assert.match(sql, /idempotency_key text not null unique/);
   assert.match(sql, /task_idempotency_key text not null unique/);
+});
+
+test("payment intents durably claim, complete, fail, and reuse one provider creation", () => {
+  const intent = sqlTable("billing_payment_intents");
+  const claim = sqlFunction("billing_claim_payment_intent");
+  const complete = sqlFunction("billing_complete_payment_intent");
+  const fail = sqlFunction("billing_fail_payment_intent");
+  const confirm = sqlFunction("billing_claim_mock_payment_confirmation");
+  const settle = sqlFunction("billing_settle_paid_order");
+  const rls = compactSql(rlsPath);
+  const types = projectFile("lib/billing/database.types.ts");
+
+  assert.match(intent, /order_id uuid not null unique/);
+  assert.match(intent, /request_idempotency_key text not null unique/);
+  assert.match(intent, /status text not null default 'creating'/);
+  assert.match(intent, /status in \('creating', 'created', 'failed'\)/);
+  assert.match(intent, /claim_token uuid/);
+  assert.match(intent, /claim_expires_at timestamptz/);
+  assert.match(intent, /provider_transaction_id text/);
+  assert.match(intent, /payment_token text/);
+  assert.match(intent, /payment_status text/);
+  assert.match(intent, /amount_minor bigint not null/);
+  assert.match(intent, /expires_at timestamptz not null/);
+
+  assert.match(claim, /from public\.billing_orders[\s\S]*?for update/);
+  assert.match(claim, /insert into public\.billing_payment_intents/);
+  assert.match(claim, /on conflict do nothing/);
+  assert.match(claim, /from public\.billing_payment_intents[\s\S]*?for update/);
+  assert.match(claim, /status = 'created'/);
+  assert.match(claim, /status = 'creating'[\s\S]*?claim_expires_at > p_now/);
+  assert.match(claim, /status in \('failed', 'creating'\)/);
+  assert.match(claim, /'status', 'claimed'/);
+  assert.match(claim, /'status', 'reuse'/);
+  assert.match(claim, /'status', 'in_progress'/);
+
+  assert.match(complete, /from public\.billing_payment_intents[\s\S]*?for update/);
+  assert.match(complete, /claim_token is distinct from p_claim_token/);
+  assert.match(complete, /update public\.billing_payment_intents[\s\S]*?status = 'created'/);
+  assert.match(complete, /provider_transaction_id = p_provider_transaction_id/);
+  assert.match(complete, /payment_token = p_payment_token/);
+  assert.match(complete, /payment_status = p_payment_status/);
+  assert.match(fail, /status = 'creating'[\s\S]*?claim_token is not distinct from p_claim_token/);
+  assert.match(fail, /set status = 'failed'/);
+
+  assert.match(confirm, /from public\.billing_payment_intents[\s\S]*?for update/);
+  assert.match(confirm, /provider is distinct from 'mock'/);
+  assert.match(confirm, /provider_transaction_id is distinct from p_provider_transaction_id/);
+  assert.match(confirm, /set payment_status = 'paid'[\s\S]*?paid_at = p_paid_at/);
+
+  assert.match(settle, /from public\.billing_payment_intents[\s\S]*?for update/);
+  assert.match(settle, /request_idempotency_key is distinct from p_request_idempotency_key/);
+  assert.match(settle, /update public\.billing_payment_intents[\s\S]*?payment_status = 'paid'/);
+
+  assert.match(rls, /alter table public\.billing_payment_intents enable row level security/);
+  assert.match(rls, /revoke all on table public\.billing_payment_intents from anon, authenticated/);
+  const clientSelectGrants = rls.match(/grant select on table[^;]+to (?:anon, authenticated|authenticated);/g) ?? [];
+  assert.ok(clientSelectGrants.length > 0);
+  for (const grant of clientSelectGrants) {
+    assert.doesNotMatch(grant, /public\.billing_payment_intents/);
+  }
+  assert.match(types, /BillingPaymentIntentRow = \{/);
+  assert.match(types, /billing_payment_intents: \{/);
+  assert.match(types, /billing_claim_payment_intent: \{/);
+  assert.match(types, /billing_complete_payment_intent: \{/);
+  assert.match(types, /billing_fail_payment_intent: \{/);
+  assert.match(types, /billing_claim_mock_payment_confirmation: \{/);
 });
 
 test("credit and quota balances cannot become negative and order snapshots are immutable", () => {

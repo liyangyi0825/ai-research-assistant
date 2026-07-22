@@ -8,7 +8,10 @@ import type { BillingUser } from "../../lib/billing/auth";
 import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
-import type { PaymentOrderSnapshot } from "../../lib/billing/payments/service";
+import type {
+  PaymentOrderSnapshot,
+  PaymentServiceRepository,
+} from "../../lib/billing/payments/service";
 import {
   confirmMockOrderPayment,
   createMockConfirmPostHandler,
@@ -450,7 +453,7 @@ test("a conditional FAILED update never overwrites a concurrently PROCESSED even
   assert.equal(repository.events.get("MOCK:mock-event-1")?.status, "PROCESSED");
 });
 
-test("the webhook route keeps request.text exact and rejects providers outside server mode", async () => {
+test("the webhook route preserves exact bytes and rejects providers outside server mode before reading", async () => {
   const rawBody = '{ "spaced": true }\n';
   let capturedBody = "";
   let capturedHeaders: Readonly<Record<string, string | undefined>> = {};
@@ -480,19 +483,110 @@ test("the webhook route keeps request.text exact and rejects providers outside s
   assert.equal(capturedBody, rawBody);
   assert.equal(capturedHeaders["x-mock-signature"], "safe-for-test");
 
-  const rejected = await handler(
-    new Request("http://localhost/api/billing/webhooks/alipay", {
+  const mismatchedRequest = new Request(
+    "http://localhost/api/billing/webhooks/alipay",
+    {
       method: "POST",
       body: "{}",
-    }),
+    },
+  );
+  let mismatchedBodyRead = false;
+  mismatchedRequest.text = async () => {
+    mismatchedBodyRead = true;
+    throw new Error("mismatched provider body must not be read");
+  };
+  const rejected = await handler(
+    mismatchedRequest,
     { params: Promise.resolve({ provider: "alipay" }) },
   );
   assert.equal(rejected.status, 400);
+  assert.equal(mismatchedBodyRead, false);
+});
+
+test("the webhook route rejects a declared body over 64 KiB before reading", async () => {
+  let processed = 0;
+  const handler = createPaymentWebhookPostHandler({
+    getConfig: () => config,
+    processWebhook: async () => {
+      processed += 1;
+      throw new Error("must not process an oversized webhook");
+    },
+  });
+  const request = new Request("http://localhost/api/billing/webhooks/mock", {
+    method: "POST",
+    headers: { "content-length": "65537" },
+    body: "not-read",
+  });
+  let bodyRead = false;
+  request.text = async () => {
+    bodyRead = true;
+    throw new Error("oversized body must not be read");
+  };
+
+  const response = await handler(request, {
+    params: Promise.resolve({ provider: "mock" }),
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal(bodyRead, false);
+  assert.equal(processed, 0);
+});
+
+test("the webhook route streams and cancels bodies whose real size exceeds 64 KiB", async () => {
+  for (const declaredLength of [undefined, "1"] as const) {
+    let cancelled = false;
+    let processed = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(40_000).fill(97));
+        controller.enqueue(new Uint8Array(30_000).fill(98));
+        controller.close();
+      },
+    });
+    const headers = new Headers();
+    if (declaredLength) headers.set("content-length", declaredLength);
+    const request = new Request(
+      "http://localhost/api/billing/webhooks/mock",
+      {
+        method: "POST",
+        headers,
+        body: stream,
+        duplex: "half",
+      } as RequestInit & { duplex: "half" },
+    );
+    const requestBody = request.body;
+    assert.ok(requestBody);
+    const getReader = requestBody.getReader.bind(requestBody);
+    (requestBody as unknown as { getReader: () => ReadableStreamDefaultReader<Uint8Array> }).getReader = () => {
+      const reader = getReader();
+      const cancel = reader.cancel.bind(reader);
+      reader.cancel = async (reason?: unknown) => {
+        cancelled = true;
+        return cancel(reason);
+      };
+      return reader;
+    };
+    const handler = createPaymentWebhookPostHandler({
+      getConfig: () => config,
+      processWebhook: async () => {
+        processed += 1;
+        throw new Error("must not process an oversized webhook");
+      },
+    });
+
+    const response = await handler(request, {
+      params: Promise.resolve({ provider: "mock" }),
+    });
+
+    assert.equal(response.status, 413);
+    assert.equal(cancelled, true);
+    assert.equal(processed, 0);
+  }
 });
 
 test("Mock confirmation creates a stable signed callback and settles only through the webhook pipeline", async () => {
-  const provider = mockProvider();
-  const payment = await provider.createPayment({
+  const creatingProvider = mockProvider();
+  const payment = await creatingProvider.createPayment({
     orderNumber: settlementOrder().orderNumber,
     amountMinor: 1_990,
     currency: "CNY",
@@ -500,6 +594,7 @@ test("Mock confirmation creates a stable signed callback and settles only throug
     idempotencyKey: `billing-payment:MOCK:${settlementOrder().orderNumber}`,
   });
   const webhookRepository = new MemoryWebhookRepository();
+  const confirmingProvider = mockProvider();
   const paymentOrder: PaymentOrderSnapshot = {
     id: "order-id-1",
     userId: "user-1",
@@ -516,14 +611,24 @@ test("Mock confirmation creates a stable signed callback and settles only throug
     payment.providerTransactionId,
     {
       paymentRepository: {
-        findOwnedOrder: async (userId, orderId) =>
+        findOwnedOrder: async (userId: string, orderId: string) =>
           userId === "user-1" && orderId === "order-id-1"
             ? paymentOrder
             : null,
-      },
+        claimMockPaymentConfirmation: async () => ({
+          providerTransactionId: payment.providerTransactionId,
+          status: "PAID" as const,
+          amountMinor: payment.amountMinor,
+          currency: payment.currency,
+          paymentToken: payment.paymentToken,
+          expiresAt: payment.expiresAt,
+          paidAt: now.toISOString(),
+        }),
+      } as unknown as PaymentServiceRepository,
       webhookRepository,
       getConfig: () => config,
-      getProvider: () => provider,
+      getProvider: () => confirmingProvider,
+      now: () => now,
     },
   );
 

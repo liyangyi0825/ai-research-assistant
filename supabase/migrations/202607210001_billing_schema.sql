@@ -98,6 +98,60 @@ CREATE TABLE public.billing_orders (
   )
 );
 
+-- Service-only payment creation state. Provider tokens stay behind the service role;
+-- callers receive them only through authenticated server routes.
+CREATE TABLE public.billing_payment_intents (
+  id UUID PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
+  order_id UUID NOT NULL UNIQUE REFERENCES public.billing_orders(id) ON DELETE RESTRICT,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
+  provider TEXT NOT NULL CHECK (provider IN ('MOCK', 'WECHAT', 'ALIPAY')),
+  request_idempotency_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'CREATING' CHECK (
+    status IN ('CREATING', 'CREATED', 'FAILED')
+  ),
+  claim_token UUID,
+  claim_expires_at TIMESTAMPTZ,
+  provider_transaction_id TEXT,
+  payment_token TEXT,
+  payment_status TEXT CHECK (
+    payment_status IS NULL OR payment_status IN ('PENDING', 'PAID', 'FAILED', 'CLOSED')
+  ),
+  amount_minor BIGINT NOT NULL CHECK (amount_minor >= 0),
+  currency TEXT NOT NULL DEFAULT 'CNY' CHECK (currency = 'CNY'),
+  expires_at TIMESTAMPTZ NOT NULL,
+  paid_at TIMESTAMPTZ,
+  last_error_code TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 1 CHECK (attempt_count > 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (provider, provider_transaction_id),
+  CHECK (
+    (status = 'CREATING'
+      AND claim_token IS NOT NULL
+      AND claim_expires_at IS NOT NULL
+      AND provider_transaction_id IS NULL
+      AND payment_token IS NULL
+      AND payment_status IS NULL
+      AND last_error_code IS NULL)
+    OR
+    (status = 'CREATED'
+      AND claim_token IS NULL
+      AND claim_expires_at IS NULL
+      AND provider_transaction_id IS NOT NULL
+      AND payment_token IS NOT NULL
+      AND payment_status IS NOT NULL
+      AND last_error_code IS NULL)
+    OR
+    (status = 'FAILED'
+      AND claim_token IS NULL
+      AND claim_expires_at IS NULL
+      AND provider_transaction_id IS NULL
+      AND payment_token IS NULL
+      AND payment_status IS NULL
+      AND NULLIF(btrim(last_error_code), '') IS NOT NULL)
+  )
+);
+
 CREATE TABLE public.billing_payments (
   id UUID PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   order_id UUID NOT NULL REFERENCES public.billing_orders(id) ON DELETE RESTRICT,
@@ -530,6 +584,7 @@ BEGIN
     'billing_products',
     'billing_plan_entitlements',
     'billing_orders',
+    'billing_payment_intents',
     'billing_payments',
     'billing_subscriptions',
     'billing_user_entitlements',

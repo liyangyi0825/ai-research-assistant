@@ -3,6 +3,7 @@ ALTER TABLE public.billing_plans ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_products ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_plan_entitlements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.billing_payment_intents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_user_entitlements ENABLE ROW LEVEL SECURITY;
@@ -22,6 +23,7 @@ REVOKE ALL ON TABLE public.billing_plans FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_products FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_plan_entitlements FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_orders FROM anon, authenticated;
+REVOKE ALL ON TABLE public.billing_payment_intents FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_payments FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_subscriptions FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_user_entitlements FROM anon, authenticated;
@@ -62,6 +64,7 @@ GRANT ALL ON TABLE
   public.billing_products,
   public.billing_plan_entitlements,
   public.billing_orders,
+  public.billing_payment_intents,
   public.billing_payments,
   public.billing_subscriptions,
   public.billing_user_entitlements,

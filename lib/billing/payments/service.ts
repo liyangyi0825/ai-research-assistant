@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { getSupabaseAdminClient } from "../../supabase";
 import { assertBillingAccess } from "../auth";
 import { getBillingConfig, type BillingConfig } from "../config";
@@ -26,6 +28,41 @@ export type PaymentServiceRepository = {
     userId: string,
     orderId: string,
   ): Promise<PaymentOrderSnapshot | null>;
+  claimPaymentIntent(input: ClaimPaymentIntentInput): Promise<PaymentIntentClaim>;
+  completePaymentIntent(input: CompletePaymentIntentInput): Promise<StoredPaymentResult>;
+  failPaymentIntent(
+    intentId: string,
+    claimToken: string,
+    errorCode: string,
+  ): Promise<void>;
+  claimMockPaymentConfirmation(input: {
+    userId: string;
+    orderId: string;
+    providerTransactionId: string;
+    paidAt: string;
+  }): Promise<StoredPaymentResult>;
+};
+
+export type StoredPaymentResult = Omit<PaymentResult, "orderNumber">;
+
+export type ClaimPaymentIntentInput = {
+  userId: string;
+  orderId: string;
+  provider: BillingProvider;
+  requestIdempotencyKey: string;
+  claimToken: string;
+  now: string;
+};
+
+export type PaymentIntentClaim =
+  | { status: "CLAIMED"; intentId: string }
+  | { status: "IN_PROGRESS" }
+  | { status: "REUSE"; payment: StoredPaymentResult };
+
+export type CompletePaymentIntentInput = {
+  intentId: string;
+  claimToken: string;
+  payment: PaymentResult;
 };
 
 type DatabaseResult = {
@@ -41,6 +78,7 @@ type DatabaseQuery = PromiseLike<DatabaseResult> & {
 
 export type PaymentServiceAdminClient = {
   from(table: string): DatabaseQuery;
+  rpc(name: string, args: Record<string, unknown>): Promise<DatabaseResult>;
 };
 
 export type CreateOrderPaymentDependencies = {
@@ -85,6 +123,51 @@ function requiredString(value: unknown): string {
     throw storageError();
   }
   return value;
+}
+
+function nullableString(value: unknown): string | null {
+  if (value === null) return null;
+  return requiredString(value);
+}
+
+function mapStoredPayment(value: unknown): StoredPaymentResult {
+  const row = record(value);
+  const status = row.payment_status;
+  const amountMinor = row.amount_minor;
+  if (
+    (status !== "PENDING" &&
+      status !== "PAID" &&
+      status !== "FAILED" &&
+      status !== "CLOSED" &&
+      status !== "REFUNDED") ||
+    typeof amountMinor !== "number" ||
+    !Number.isSafeInteger(amountMinor) ||
+    amountMinor < 0 ||
+    row.currency !== "CNY"
+  ) {
+    throw storageError();
+  }
+  return {
+    providerTransactionId: requiredString(row.provider_transaction_id),
+    status,
+    amountMinor,
+    currency: "CNY",
+    paymentToken: requiredString(row.payment_token),
+    expiresAt: requiredString(row.expires_at),
+    paidAt: nullableString(row.paid_at),
+  };
+}
+
+function mapPaymentIntentClaim(value: unknown): PaymentIntentClaim {
+  const row = record(value);
+  if (row.status === "CLAIMED") {
+    return { status: "CLAIMED", intentId: requiredString(row.intent_id) };
+  }
+  if (row.status === "IN_PROGRESS") return { status: "IN_PROGRESS" };
+  if (row.status === "REUSE") {
+    return { status: "REUSE", payment: mapStoredPayment(row) };
+  }
+  throw storageError();
 }
 
 function mapOrder(value: unknown): PaymentOrderSnapshot {
@@ -142,6 +225,72 @@ export function createPaymentServiceRepository(
         throw storageError();
       }
     },
+    async claimPaymentIntent(input) {
+      try {
+        const result = await client.rpc("billing_claim_payment_intent", {
+          p_user_id: input.userId,
+          p_order_id: input.orderId,
+          p_provider: input.provider,
+          p_request_idempotency_key: input.requestIdempotencyKey,
+          p_claim_token: input.claimToken,
+          p_now: input.now,
+        });
+        if (result.error) throw storageError();
+        return mapPaymentIntentClaim(result.data);
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
+    },
+    async completePaymentIntent(input) {
+      try {
+        const result = await client.rpc("billing_complete_payment_intent", {
+          p_intent_id: input.intentId,
+          p_claim_token: input.claimToken,
+          p_provider_transaction_id: input.payment.providerTransactionId,
+          p_payment_token: input.payment.paymentToken,
+          p_payment_status: input.payment.status,
+          p_expires_at: input.payment.expiresAt,
+          p_paid_at: input.payment.paidAt,
+        });
+        if (result.error) throw storageError();
+        return mapStoredPayment(result.data);
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
+    },
+    async failPaymentIntent(intentId, claimToken, errorCode) {
+      try {
+        const result = await client.rpc("billing_fail_payment_intent", {
+          p_intent_id: intentId,
+          p_claim_token: claimToken,
+          p_error_code: errorCode,
+        });
+        if (result.error) throw storageError();
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
+    },
+    async claimMockPaymentConfirmation(input) {
+      try {
+        const result = await client.rpc(
+          "billing_claim_mock_payment_confirmation",
+          {
+            p_user_id: input.userId,
+            p_order_id: input.orderId,
+            p_provider_transaction_id: input.providerTransactionId,
+            p_paid_at: input.paidAt,
+          },
+        );
+        if (result.error) throw storageError();
+        return mapStoredPayment(result.data);
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
+    },
   };
 }
 
@@ -190,6 +339,35 @@ function assertPayable(order: PaymentOrderSnapshot, now: Date): void {
   }
 }
 
+function paymentFromStored(
+  orderNumber: string,
+  payment: StoredPaymentResult,
+): PaymentResult {
+  return { orderNumber, ...payment };
+}
+
+function assertCreatedPayment(
+  order: PaymentOrderSnapshot,
+  payment: PaymentResult,
+): void {
+  if (
+    payment.orderNumber !== order.orderNumber ||
+    payment.status !== "PENDING" ||
+    payment.amountMinor !== order.amountMinor ||
+    payment.currency !== order.currency ||
+    payment.expiresAt !== order.expiresAt ||
+    payment.paidAt !== null ||
+    !payment.providerTransactionId.trim() ||
+    !payment.paymentToken.trim()
+  ) {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "The payment provider returned an invalid response.",
+      503,
+    );
+  }
+}
+
 export async function createOrderPayment(
   userId: string,
   orderId: string,
@@ -213,7 +391,8 @@ export async function createOrderPayment(
     );
   }
 
-  assertPayable(order, (dependencies.now ?? (() => new Date()))());
+  const now = (dependencies.now ?? (() => new Date()))();
+  assertPayable(order, now);
   const config = (dependencies.getConfig ?? getBillingConfig)();
   assertBillingAccess(
     {
@@ -232,15 +411,73 @@ export async function createOrderPayment(
     );
   }
   const provider = (dependencies.getProvider ?? getPaymentProvider)(mode, config);
+  const requestIdempotencyKey = paymentRequestIdempotencyKey(
+    order.provider,
+    order.orderNumber,
+  );
+  const claimToken = randomUUID();
+  let claim: PaymentIntentClaim;
+  try {
+    claim = await repository.claimPaymentIntent({
+      userId,
+      orderId: order.id,
+      provider: order.provider,
+      requestIdempotencyKey,
+      claimToken,
+      now: now.toISOString(),
+    });
+  } catch (error) {
+    if (error instanceof BillingError) throw error;
+    throw storageError();
+  }
+  if (claim.status === "REUSE") {
+    return paymentFromStored(order.orderNumber, claim.payment);
+  }
+  if (claim.status === "IN_PROGRESS") {
+    throw new BillingError(
+      "PAYMENT_CREATION_IN_PROGRESS",
+      "Payment creation is already in progress. Please retry shortly.",
+      409,
+    );
+  }
 
-  return provider.createPayment({
-    orderNumber: order.orderNumber,
-    amountMinor: order.amountMinor,
-    currency: order.currency,
-    expiresAt: order.expiresAt,
-    idempotencyKey: paymentRequestIdempotencyKey(
-      order.provider,
-      order.orderNumber,
-    ),
-  });
+  let payment: PaymentResult;
+  try {
+    payment = await provider.createPayment({
+      orderNumber: order.orderNumber,
+      amountMinor: order.amountMinor,
+      currency: order.currency,
+      expiresAt: order.expiresAt,
+      idempotencyKey: requestIdempotencyKey,
+    });
+    assertCreatedPayment(order, payment);
+  } catch {
+    try {
+      await repository.failPaymentIntent(
+        claim.intentId,
+        claimToken,
+        "PROVIDER_CREATE_FAILED",
+      );
+    } catch {
+      // The claim lease expires, so a storage outage cannot permanently wedge it.
+    }
+    throw new BillingError(
+      "PAYMENT_PROVIDER_UNAVAILABLE",
+      "The payment provider is temporarily unavailable.",
+      503,
+    );
+  }
+
+  let persisted: StoredPaymentResult;
+  try {
+    persisted = await repository.completePaymentIntent({
+      intentId: claim.intentId,
+      claimToken,
+      payment,
+    });
+  } catch (error) {
+    if (error instanceof BillingError) throw error;
+    throw storageError();
+  }
+  return paymentFromStored(order.orderNumber, persisted);
 }
