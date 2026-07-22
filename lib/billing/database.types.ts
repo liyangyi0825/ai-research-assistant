@@ -200,14 +200,14 @@ export type BillingWebhookEventRow = {
   id: UUID;
   order_id: UUID | null;
   user_id: UUID | null;
-  order_number: string;
+  order_number: string | null;
   provider: "MOCK" | "WECHAT" | "ALIPAY";
   provider_event_id: string;
-  provider_transaction_id: string;
-  request_idempotency_key: string;
-  amount_minor: number;
-  currency: "CNY";
-  paid_at: Timestamp;
+  provider_transaction_id: string | null;
+  request_idempotency_key: string | null;
+  amount_minor: number | null;
+  currency: "CNY" | null;
+  paid_at: Timestamp | null;
   signature_valid: boolean;
   status: "RECEIVED" | "PROCESSING" | "PROCESSED" | "FAILED";
   payload_summary: Json;
@@ -520,13 +520,7 @@ export type Database = {
         Row: BillingWebhookEventRow;
         Insert: Insert<
           BillingWebhookEventRow,
-          | "order_number"
-          | "provider"
-          | "provider_event_id"
-          | "provider_transaction_id"
-          | "request_idempotency_key"
-          | "amount_minor"
-          | "paid_at"
+          "provider" | "provider_event_id"
         >;
         Update: Update<BillingWebhookEventRow>;
         Relationships: [

@@ -222,14 +222,14 @@ CREATE TABLE public.billing_webhook_events (
   id UUID PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   order_id UUID REFERENCES public.billing_orders(id) ON DELETE RESTRICT,
   user_id UUID REFERENCES auth.users(id) ON DELETE RESTRICT,
-  order_number TEXT NOT NULL,
+  order_number TEXT,
   provider TEXT NOT NULL CHECK (provider IN ('MOCK', 'WECHAT', 'ALIPAY')),
   provider_event_id TEXT NOT NULL,
-  provider_transaction_id TEXT NOT NULL,
-  request_idempotency_key TEXT NOT NULL,
-  amount_minor BIGINT NOT NULL CHECK (amount_minor >= 0),
-  currency TEXT NOT NULL DEFAULT 'CNY' CHECK (currency = 'CNY'),
-  paid_at TIMESTAMPTZ NOT NULL,
+  provider_transaction_id TEXT,
+  request_idempotency_key TEXT,
+  amount_minor BIGINT CHECK (amount_minor IS NULL OR amount_minor >= 0),
+  currency TEXT CHECK (currency IS NULL OR currency = 'CNY'),
+  paid_at TIMESTAMPTZ,
   signature_valid BOOLEAN NOT NULL DEFAULT FALSE,
   status TEXT NOT NULL DEFAULT 'RECEIVED' CHECK (
     status IN ('RECEIVED', 'PROCESSING', 'PROCESSED', 'FAILED')
@@ -243,6 +243,42 @@ CREATE TABLE public.billing_webhook_events (
   CHECK (
     status <> 'FAILED'
     OR NULLIF(btrim(error_code), '') IS NOT NULL
+  ),
+  CHECK (
+    (
+      status IN ('RECEIVED', 'PROCESSING', 'PROCESSED')
+      AND signature_valid IS TRUE
+      AND order_number IS NOT NULL
+      AND provider_transaction_id IS NOT NULL
+      AND request_idempotency_key IS NOT NULL
+      AND amount_minor IS NOT NULL
+      AND currency IS NOT NULL
+      AND paid_at IS NOT NULL
+    )
+    OR
+    (
+      status = 'FAILED'
+      AND (
+        (
+          signature_valid IS TRUE
+          AND order_number IS NOT NULL
+          AND provider_transaction_id IS NOT NULL
+          AND request_idempotency_key IS NOT NULL
+          AND amount_minor IS NOT NULL
+          AND currency IS NOT NULL
+          AND paid_at IS NOT NULL
+        )
+        OR
+        (
+          order_number IS NULL
+          AND provider_transaction_id IS NULL
+          AND request_idempotency_key IS NULL
+          AND amount_minor IS NULL
+          AND currency IS NULL
+          AND paid_at IS NULL
+        )
+      )
+    )
   )
 );
 

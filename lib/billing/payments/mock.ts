@@ -31,6 +31,11 @@ type StoredRefund = {
   result: RefundResult;
 };
 
+export type SignedPaymentWebhook = {
+  rawBody: string;
+  headers: Readonly<Record<string, string>>;
+};
+
 function requiredString(value: string, code: string, message: string): string {
   const normalized = value.trim();
 
@@ -98,6 +103,10 @@ export class MockPaymentProvider implements PaymentProvider {
   private readonly paymentsByOrder = new Map<string, string>();
   private readonly createRequests = new Map<string, string>();
   private readonly refunds = new Map<string, StoredRefund>();
+  private readonly confirmationWebhooks = new Map<
+    string,
+    SignedPaymentWebhook
+  >();
 
   constructor(options: MockPaymentProviderOptions = {}) {
     this.#secret = options.secret ?? randomBytes(32).toString("base64url");
@@ -299,6 +308,47 @@ export class MockPaymentProvider implements PaymentProvider {
     payment.status = "PAID";
     payment.paidAt = confirmationNow.toISOString();
     return clonePayment(payment);
+  }
+
+  async confirmPaymentAndCreateWebhook(
+    input: PaymentReferenceInput,
+  ): Promise<SignedPaymentWebhook> {
+    const existing = this.confirmationWebhooks.get(
+      input.providerTransactionId.trim(),
+    );
+    if (existing) {
+      return { rawBody: existing.rawBody, headers: { ...existing.headers } };
+    }
+
+    const payment = await this.confirmPayment(input);
+    if (!payment.paidAt) {
+      throw new BillingError(
+        "INVALID_PAYMENT_STATE",
+        "A paid timestamp is required for mock confirmation.",
+        409,
+      );
+    }
+
+    const event: PaymentWebhookEvent = {
+      eventId: `mock_event_${payment.providerTransactionId}`,
+      eventType: "PAYMENT.PAID",
+      providerTransactionId: payment.providerTransactionId,
+      orderNumber: payment.orderNumber,
+      amountMinor: payment.amountMinor,
+      currency: payment.currency,
+      occurredAt: payment.paidAt,
+    };
+    const rawBody = JSON.stringify(event);
+    const webhook: SignedPaymentWebhook = {
+      rawBody,
+      headers: {
+        "x-mock-signature": `sha256=${createHmac("sha256", this.#secret)
+          .update(rawBody)
+          .digest("hex")}`,
+      },
+    };
+    this.confirmationWebhooks.set(payment.providerTransactionId, webhook);
+    return { rawBody, headers: { ...webhook.headers } };
   }
 
   private normalizeCreateInput(input: CreatePaymentInput): CreatePaymentInput {

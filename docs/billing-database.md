@@ -20,10 +20,12 @@
 
 支付回调必须按以下顺序处理：
 
-1. 验签并解析非敏感字段。
-2. 以 `RECEIVED` 状态先写入 `billing_webhook_events`，同时保存 Provider、事件 ID、交易 ID、支付请求幂等键、金额、币种和支付时间。
-3. 调用 `billing_settle_paid_order`；RPC 会锁定已持久化事件和订单，并在同一事务内完成支付、权益/额度、订单与事件状态更新。
-4. 若 RPC 抛错，在该失败事务之外用独立数据库语句把原事件标记为 `FAILED` 并写入安全的 `error_code`。该更新必须带 `WHERE status = 'RECEIVED'` 条件；若更新 0 行，必须重新读取事件并保留已提交的终态。数据库触发器同时禁止覆盖 `PROCESSED`/`FAILED` 终态或修改已接收载荷。不得把完整回调载荷或密钥写入错误字段。
+1. 用 `request.text()` 一次性读取原始载荷，并计算 SHA-256；验签前不得信任或记录载荷中的订单号、金额等业务字段。
+2. 先对原始载荷验签。无效签名以 `rejected:<sha256(raw_body)>` 作为内部 Provider 事件 ID，写入 `FAILED` 审计；业务字段全部为 `NULL`，`payload_summary` 仅保存 `payload_hash`，不保存原文、签名或敏感请求头。
+3. 验签成功后才解析非敏感业务字段。解析失败同样使用 `rejected:<sha256(raw_body)>` 记录 hash-only `FAILED` 审计，并标记签名结果。
+4. 对完整且已验签事件，以 `RECEIVED` 状态先写入 `billing_webhook_events`，同时保存 Provider、事件 ID、交易 ID、支付请求幂等键、金额、币种和支付时间。
+5. 调用保持 9 参数签名的 `billing_settle_paid_order`；RPC 会锁定已持久化事件和订单，并在同一事务内完成支付、权益/额度、订单与事件状态更新。
+6. 若 RPC 抛错，在该失败事务之外用独立数据库语句把原事件标记为 `FAILED` 并写入安全的 `error_code`。该更新必须带 `WHERE status = 'RECEIVED'` 条件；若更新 0 行，必须重新读取事件并保留已提交的终态。数据库触发器同时禁止覆盖 `PROCESSED`/`FAILED` 终态或修改已接收载荷。不得把完整回调载荷或密钥写入错误字段。
 
 同一 Provider 与事件 ID 的重放必须携带完全相同的交易 ID、支付请求幂等键、金额、币种和支付时间；任何差异都按载荷冲突拒绝。额度发放流水键包含 Provider 命名空间，避免不同 Provider 的相同事件 ID 冲突。
 

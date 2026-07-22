@@ -347,6 +347,40 @@ test("settlement consumes a pre-persisted webhook event and preserves failure au
     /before update on public\.billing_webhook_events[\s\S]*?billing_validate_webhook_event_update/,
   );
   assert.match(guide, /where status = [`']received[`']/);
+  assert.match(guide, /rejected:<sha256\(raw_body\)>/);
+  assert.match(guide, /payload_hash/);
+});
+
+test("rejected webhooks keep only a payload hash while payable events stay complete", () => {
+  const event = sqlTable("billing_webhook_events");
+  const types = projectFile("lib/billing/database.types.ts");
+
+  for (const nullableBusinessField of [
+    "order_number text",
+    "provider_transaction_id text",
+    "request_idempotency_key text",
+    "amount_minor bigint",
+    "currency text",
+    "paid_at timestamptz",
+  ]) {
+    assert.match(event, new RegExp(nullableBusinessField));
+    assert.doesNotMatch(event, new RegExp(`${nullableBusinessField} not null`));
+  }
+
+  assert.match(
+    event,
+    /status in \('received', 'processing', 'processed'\)[\s\S]*?signature_valid is true[\s\S]*?order_number is not null[\s\S]*?provider_transaction_id is not null[\s\S]*?request_idempotency_key is not null[\s\S]*?amount_minor is not null[\s\S]*?currency is not null[\s\S]*?paid_at is not null/,
+  );
+  assert.match(
+    event,
+    /status = 'failed'[\s\S]*?order_number is null[\s\S]*?provider_transaction_id is null[\s\S]*?request_idempotency_key is null[\s\S]*?amount_minor is null[\s\S]*?currency is null[\s\S]*?paid_at is null/,
+  );
+  assert.match(types, /order_number: string \| null/);
+  assert.match(types, /provider_transaction_id: string \| null/);
+  assert.match(types, /request_idempotency_key: string \| null/);
+  assert.match(types, /amount_minor: number \| null/);
+  assert.match(types, /currency: "CNY" \| null/);
+  assert.match(types, /paid_at: Timestamp \| null/);
 });
 
 test("settlement grants the immutable entitlement snapshot stored on the order", () => {
@@ -412,8 +446,10 @@ test("webhook replay validates request idempotency and paid timestamp", () => {
   const event = sqlTable("billing_webhook_events");
   const settle = sqlFunction("billing_settle_paid_order");
 
-  assert.match(event, /request_idempotency_key text not null/);
-  assert.match(event, /paid_at timestamptz not null/);
+  assert.match(event, /request_idempotency_key text/);
+  assert.match(event, /paid_at timestamptz/);
+  assert.match(event, /request_idempotency_key is not null/);
+  assert.match(event, /paid_at is not null/);
   assert.match(
     settle,
     /v_existing_event\.request_idempotency_key is distinct from p_request_idempotency_key/,
@@ -528,7 +564,11 @@ test("database types include the hardened order, webhook, and audit columns", ()
   assert.match(types, /paid_at: Timestamp;/);
   assert.match(
     types,
-    /billing_webhook_events: \{[\s\S]*?Insert: Insert<[\s\S]*?\| "provider_transaction_id"[\s\S]*?\| "request_idempotency_key"[\s\S]*?\| "amount_minor"[\s\S]*?\| "paid_at"/,
+    /billing_webhook_events: \{[\s\S]*?Insert: Insert<[\s\S]*?"provider" \| "provider_event_id"/,
+  );
+  assert.match(
+    types,
+    /BillingWebhookEventRow = \{[\s\S]*?provider_transaction_id: string \| null;[\s\S]*?request_idempotency_key: string \| null;[\s\S]*?amount_minor: number \| null;[\s\S]*?paid_at: Timestamp \| null;/,
   );
 });
 
