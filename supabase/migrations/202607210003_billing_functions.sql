@@ -1148,6 +1148,47 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION public.billing_assert_usage_continuation(
+  p_user_id UUID,
+  p_task_idempotency_key TEXT,
+  p_feature_key TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_record public.billing_usage_records%ROWTYPE;
+BEGIN
+  IF p_user_id IS NULL
+    OR NULLIF(btrim(p_task_idempotency_key), '') IS NULL
+    OR NULLIF(btrim(p_feature_key), '') IS NULL THEN
+    RAISE EXCEPTION 'continuation user, task key, and feature are required'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  SELECT *
+  INTO v_record
+  FROM public.billing_usage_records
+  WHERE user_id = p_user_id
+    AND task_idempotency_key = p_task_idempotency_key
+    AND feature_key = btrim(p_feature_key)
+    AND status = 'FINALIZED';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'finalized usage continuation not found'
+      USING ERRCODE = 'no_data_found';
+  END IF;
+
+  RETURN jsonb_build_object(
+    'status', 'FINALIZED',
+    'usage_record_id', v_record.id,
+    'idempotent', TRUE
+  );
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.billing_adjust_credit(
   p_user_id UUID,
   p_amount BIGINT,
@@ -1451,6 +1492,11 @@ TO service_role;
 REVOKE ALL ON FUNCTION public.billing_release_usage(UUID, TEXT)
 FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.billing_release_usage(UUID, TEXT)
+TO service_role;
+
+REVOKE ALL ON FUNCTION public.billing_assert_usage_continuation(UUID, TEXT, TEXT)
+FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.billing_assert_usage_continuation(UUID, TEXT, TEXT)
 TO service_role;
 
 REVOKE ALL ON FUNCTION public.billing_adjust_credit(

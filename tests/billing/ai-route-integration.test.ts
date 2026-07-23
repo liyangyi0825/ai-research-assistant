@@ -74,3 +74,37 @@ test("translate-page remains outside this conflict-sensitive integration batch",
     false,
   );
 });
+
+test("multi-stage AI routes and pages share one server-verified root operation key", async () => {
+  const adapter = await source("lib/billing/ai-usage.ts");
+  const conceptRoute = await source("app/api/concept-explorer/ai/route.ts");
+  const pptRoute = await source("app/api/ppt/generate-section/route.ts");
+  const conceptPage = await source("app/concept-explorer/page.tsx");
+  const pptPage = await source("app/ppt/page.tsx");
+
+  assert.doesNotMatch(adapter, /\blegacyUnmetered\b|\bskipLegacyUsage\b/);
+  assert.doesNotMatch(conceptRoute, /\bskipLegacyUsage\b/);
+  assert.doesNotMatch(pptRoute, /\blegacyUnmetered\b/);
+
+  assert.match(
+    conceptRoute,
+    /\{\s*continuation:\s*block\s*!==\s*1\s*\}/,
+  );
+  assert.match(
+    pptRoute,
+    /\{\s*continuation:\s*Boolean\(batchIndex\s*&&\s*batchIndex\s*!==\s*0\)\s*\}/,
+  );
+
+  const conceptAdapterIndex = conceptRoute.indexOf("return await withAiUsage");
+  const emptyBlockTwoIndex = conceptRoute.indexOf("summaries: []");
+  assert.ok(conceptAdapterIndex >= 0);
+  assert.ok(
+    emptyBlockTwoIndex > conceptAdapterIndex,
+    "block 2 empty responses must not bypass continuation verification",
+  );
+
+  assert.match(conceptPage, /crypto\.randomUUID\(\)/);
+  assert.match(conceptPage, /"Idempotency-Key":\s*rootKey/);
+  assert.match(pptPage, /crypto\.randomUUID\(\)/);
+  assert.match(pptPage, /"Idempotency-Key":\s*rootKey/);
+});

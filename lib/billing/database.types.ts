@@ -766,6 +766,14 @@ export type Database = {
         Args: { p_user_id: UUID; p_task_idempotency_key: string };
         Returns: Json;
       };
+      billing_assert_usage_continuation: {
+        Args: {
+          p_user_id: UUID;
+          p_task_idempotency_key: string;
+          p_feature_key: string;
+        };
+        Returns: Json;
+      };
       billing_adjust_credit: {
         Args: {
           p_user_id: UUID;

@@ -82,6 +82,7 @@ const rpcNames = [
   "billing_reserve_usage",
   "billing_finalize_usage",
   "billing_release_usage",
+  "billing_assert_usage_continuation",
   "billing_adjust_credit",
   "billing_consume_order_rate_limit",
 ] as const;
@@ -655,6 +656,29 @@ test("usage RPCs reserve, finalize, and release atomically by one task key", () 
   assert.match(sql, /set status = 'finalized'/);
   assert.match(sql, /set status = 'released'/);
   assert.match(sql, /insert into public\.billing_credit_ledger/);
+});
+
+test("usage continuation RPC proves one finalized root for the same user and feature", () => {
+  const continuation = sqlFunction("billing_assert_usage_continuation");
+  const types = projectFile("lib/billing/database.types.ts");
+
+  assert.match(continuation, /from public\.billing_usage_records/);
+  assert.match(continuation, /user_id = p_user_id/);
+  assert.match(
+    continuation,
+    /task_idempotency_key = p_task_idempotency_key/,
+  );
+  assert.match(continuation, /feature_key = btrim\(p_feature_key\)/);
+  assert.match(continuation, /status = 'finalized'/);
+  assert.match(
+    continuation,
+    /raise exception 'finalized usage continuation not found'/,
+  );
+  assert.doesNotMatch(continuation, /\b(?:insert|update|delete)\b/);
+  assert.match(
+    types,
+    /billing_assert_usage_continuation: \{[\s\S]*?p_user_id: UUID;[\s\S]*?p_task_idempotency_key: string;[\s\S]*?p_feature_key: string;/,
+  );
 });
 
 test("credit adjustment rejects negative outcomes and is idempotent", () => {

@@ -9,6 +9,7 @@ import {
   ResearchUsageService,
   type ResearchUsageInput,
 } from "./research-usage";
+import { UsageQuotaService } from "./usage-quota";
 
 export type AiTokenUsage = {
   tokensInput: number;
@@ -21,7 +22,6 @@ export type AiUsageContext = {
   readonly userId: string | null;
   setTokenUsage(input: AiTokenUsage): void;
   markFailed(error: unknown): void;
-  skipLegacyUsage(): void;
 };
 
 type LegacyUsageResult = {
@@ -40,12 +40,21 @@ type ResearchUsageRunner = {
   run<T>(input: ResearchUsageInput, task: () => T | Promise<T>): Promise<T>;
 };
 
+type AiUsageContinuationVerifier = {
+  assertFinalized(
+    userId: string,
+    taskKey: string,
+    featureKey: string,
+  ): Promise<unknown>;
+};
+
 export type AiUsageRunnerDependencies = {
   getConfig: () => BillingConfig;
   requireUser: () => Promise<BillingUser>;
   checkLegacy: (feature: UsageActionType) => Promise<LegacyUsageResult>;
   insertLegacy: (usage: LegacyUsageRecord) => Promise<unknown>;
   research: ResearchUsageRunner;
+  continuations: AiUsageContinuationVerifier;
   randomUUID: () => string;
 };
 
@@ -58,7 +67,7 @@ export type AiUsageRunner = (
 ) => Promise<Response>;
 
 export type AiUsageOptions = {
-  legacyUnmetered?: boolean;
+  continuation?: boolean;
 };
 
 const defaultDependencies: AiUsageRunnerDependencies = {
@@ -67,13 +76,27 @@ const defaultDependencies: AiUsageRunnerDependencies = {
   checkLegacy: checkUsageLimit,
   insertLegacy: insertUsageRecord,
   research: new ResearchUsageService(),
+  continuations: new UsageQuotaService(),
   randomUUID,
 };
 
 const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 
-function taskKey(request: Request, feature: UsageActionType, createId: () => string) {
+function taskKey(
+  request: Request,
+  feature: UsageActionType,
+  userId: string,
+  createId: () => string,
+  requireClientKey = false,
+) {
   const clientKey = request.headers.get("Idempotency-Key");
+  if (clientKey === null && requireClientKey) {
+    throw new BillingError(
+      "MISSING_CONTINUATION_KEY",
+      "Idempotency-Key is required for continuation requests.",
+      400,
+    );
+  }
   if (clientKey !== null && !SAFE_IDEMPOTENCY_KEY.test(clientKey)) {
     throw new BillingError(
       "INVALID_IDEMPOTENCY_KEY",
@@ -81,7 +104,7 @@ function taskKey(request: Request, feature: UsageActionType, createId: () => str
       400,
     );
   }
-  return `ai:${feature}:${clientKey ?? createId()}`;
+  return `ai:${userId}:${feature}:${clientKey ?? createId()}`;
 }
 
 function researchInput(
@@ -89,10 +112,17 @@ function researchInput(
   feature: UsageActionType,
   userId: string,
   createId: () => string,
+  requireClientKey = false,
 ): ResearchUsageInput {
   return {
     userId,
-    taskKey: taskKey(request, feature, createId),
+    taskKey: taskKey(
+      request,
+      feature,
+      userId,
+      createId,
+      requireClientKey,
+    ),
     featureKey: feature,
     quotaUnits: 1,
     creditAmount: 0,
@@ -103,7 +133,6 @@ function usageContext(userId: string | null): {
   context: AiUsageContext;
   tokens: () => Required<AiTokenUsage>;
   failure: () => unknown;
-  recordsLegacyUsage: () => boolean;
 } {
   let current: Required<AiTokenUsage> = {
     tokensInput: 0,
@@ -112,7 +141,6 @@ function usageContext(userId: string | null): {
     cacheReadTokens: 0,
   };
   let taskFailure: unknown;
-  let recordLegacyUsage = true;
   return {
     context: {
       userId,
@@ -127,13 +155,9 @@ function usageContext(userId: string | null): {
       markFailed(error) {
         taskFailure = error;
       },
-      skipLegacyUsage() {
-        recordLegacyUsage = false;
-      },
     },
     tokens: () => current,
     failure: () => taskFailure,
-    recordsLegacyUsage: () => recordLegacyUsage,
   };
 }
 
@@ -162,6 +186,33 @@ function copyResponse(response: Response, body: ReadableStream<Uint8Array>): Res
   });
 }
 
+function providerStreamFailure(): BillingError {
+  return new BillingError(
+    "RESEARCH_PROVIDER_STREAM_FAILED",
+    "The AI provider reported a stream failure.",
+    502,
+  );
+}
+
+function hasProviderErrorEvent(line: string): boolean {
+  const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
+  if (!normalized.startsWith("data:")) return false;
+
+  const raw = normalized.slice(5).trim();
+  if (!raw || raw === "[DONE]") return false;
+
+  try {
+    const event = JSON.parse(raw) as unknown;
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      return false;
+    }
+    const record = event as Record<string, unknown>;
+    return record.type === "error" || record.error != null;
+  } catch {
+    return false;
+  }
+}
+
 function guardStreamingResponse(
   response: Response,
   failure: () => unknown,
@@ -169,15 +220,32 @@ function guardStreamingResponse(
   if (!isStreamingResponse(response) || !response.body) return response;
 
   const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let detectedFailure: BillingError | undefined;
+  const inspect = (value: Uint8Array | undefined, done = false) => {
+    buffer += value
+      ? decoder.decode(value, { stream: !done })
+      : decoder.decode();
+    const lines = buffer.split("\n");
+    buffer = done ? "" : (lines.pop() ?? "");
+    if (!detectedFailure && lines.some(hasProviderErrorEvent)) {
+      detectedFailure = providerStreamFailure();
+    }
+  };
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
         const next = await reader.read();
         if (!next.done) {
+          inspect(next.value);
           controller.enqueue(next.value);
           return;
         }
-        const error = failure();
+        inspect(undefined, true);
+        const explicitFailure = failure();
+        const error =
+          explicitFailure !== undefined ? explicitFailure : detectedFailure;
         if (error !== undefined) {
           controller.error(taskFailure(error));
           return;
@@ -256,20 +324,35 @@ async function runLegacy(
   };
   if (
     response.ok &&
-    usage.recordsLegacyUsage() &&
     isStreamingResponse(response)
   ) {
-    return settleLegacyStream(response, usage.failure, record);
+    return settleLegacyStream(
+      guardStreamingResponse(response, usage.failure),
+      usage.failure,
+      record,
+    );
   }
   if (
     response.ok &&
     legacy.userId &&
-    usage.recordsLegacyUsage() &&
     usage.failure() === undefined
   ) {
     await record();
   }
   return response;
+}
+
+async function runContinuation(
+  userId: string | null,
+  task: (context: AiUsageContext) => Promise<Response>,
+): Promise<Response> {
+  const usage = usageContext(userId);
+  const response = await task(usage.context);
+  const failure = usage.failure();
+  if (!isStreamingResponse(response) && response.ok && failure !== undefined) {
+    throw taskFailure(failure);
+  }
+  return guardStreamingResponse(response, usage.failure);
 }
 
 export function createAiUsageRunner(
@@ -279,8 +362,15 @@ export function createAiUsageRunner(
     try {
       const config = dependencies.getConfig();
       if (!config.featureEnabled) {
-        if (options?.legacyUnmetered) {
-          return await task(usageContext(null).context);
+        if (options?.continuation) {
+          taskKey(
+            request,
+            feature,
+            "legacy",
+            dependencies.randomUUID,
+            true,
+          );
+          return await runContinuation(null, task);
         }
         return await runLegacy(
           dependencies,
@@ -291,11 +381,26 @@ export function createAiUsageRunner(
       }
 
       const user = await dependencies.requireUser();
+      const input = researchInput(
+        request,
+        feature,
+        user.id,
+        dependencies.randomUUID,
+        options?.continuation === true,
+      );
+      if (options?.continuation) {
+        await dependencies.continuations.assertFinalized(
+          user.id,
+          input.taskKey,
+          feature,
+        );
+        return await runContinuation(user.id, task);
+      }
       const usage = usageContext(user.id);
       const result = await dependencies.research.run<
         Response | { response: Response }
       >(
-        researchInput(request, feature, user.id, dependencies.randomUUID),
+        input,
         async () => {
           const response = await task(usage.context);
           const failure = usage.failure();

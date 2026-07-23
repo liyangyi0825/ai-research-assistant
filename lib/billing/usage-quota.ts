@@ -19,6 +19,11 @@ export type BillingUsageRpcAdapter = {
   reserve(input: UsageReservationInput): Promise<UsageRpcResult>;
   finalize(userId: string, taskKey: string): Promise<UsageRpcResult>;
   release(userId: string, taskKey: string): Promise<UsageRpcResult>;
+  assertFinalized(
+    userId: string,
+    taskKey: string,
+    featureKey: string,
+  ): Promise<UsageRpcResult>;
 };
 
 type UsageRpcDatabaseResult = {
@@ -114,6 +119,13 @@ function mapRpcError(error: { code?: string; message: string }): BillingError {
     return new BillingError(
       "USAGE_IDEMPOTENCY_CONFLICT",
       "The research task key was already used with different usage data.",
+      409,
+    );
+  }
+  if (message.includes("finalized usage continuation not found")) {
+    return new BillingError(
+      "INVALID_USAGE_CONTINUATION",
+      "This continuation does not match a completed research task.",
       409,
     );
   }
@@ -213,6 +225,18 @@ export function createBillingUsageRpcAdapter(
         ["RELEASED"],
       );
     },
+    assertFinalized(userId, taskKey, featureKey) {
+      return rpc(
+        client,
+        "billing_assert_usage_continuation",
+        {
+          p_user_id: userId,
+          p_task_idempotency_key: taskKey,
+          p_feature_key: featureKey,
+        },
+        ["FINALIZED"],
+      );
+    },
   };
 }
 
@@ -233,6 +257,9 @@ const supabaseUsageRpcAdapter: BillingUsageRpcAdapter = {
   },
   release(userId, taskKey) {
     return defaultAdapter().release(userId, taskKey);
+  },
+  assertFinalized(userId, taskKey, featureKey) {
+    return defaultAdapter().assertFinalized(userId, taskKey, featureKey);
   },
 };
 
@@ -256,6 +283,18 @@ export class UsageQuotaService {
     return this.adapter.release(
       requiredString(userId, "A user ID is required."),
       requiredString(taskKey, "A stable task idempotency key is required."),
+    );
+  }
+
+  assertFinalized(
+    userId: string,
+    taskKey: string,
+    featureKey: string,
+  ): Promise<UsageRpcResult> {
+    return this.adapter.assertFinalized(
+      requiredString(userId, "A user ID is required."),
+      requiredString(taskKey, "A stable task idempotency key is required."),
+      requiredString(featureKey, "A feature key is required."),
     );
   }
 }

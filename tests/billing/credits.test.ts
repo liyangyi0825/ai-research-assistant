@@ -219,3 +219,43 @@ test("finalize and release retries use the same task key and accept idempotent r
     ],
   );
 });
+
+test("continuation verification delegates the full user, task, and feature tuple to one RPC", async () => {
+  const client = new InMemoryRpcClient([
+    {
+      data: {
+        status: "FINALIZED",
+        usage_record_id: "usage-1",
+        idempotent: true,
+      },
+      error: null,
+    },
+  ]);
+  const adapter = createBillingUsageRpcAdapter(client) as ReturnType<
+    typeof createBillingUsageRpcAdapter
+  > & {
+    assertFinalized(
+      userId: string,
+      taskKey: string,
+      featureKey: string,
+    ): Promise<unknown>;
+  };
+
+  await adapter.assertFinalized(
+    "user-1",
+    "ai:user-1:concept_explore:operation-1",
+    "concept_explore",
+  );
+
+  assert.deepEqual(client.calls, [
+    {
+      name: "billing_assert_usage_continuation",
+      args: {
+        p_user_id: "user-1",
+        p_task_idempotency_key:
+          "ai:user-1:concept_explore:operation-1",
+        p_feature_key: "concept_explore",
+      },
+    },
+  ]);
+});

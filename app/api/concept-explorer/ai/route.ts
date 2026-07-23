@@ -156,10 +156,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "参数错误" }, { status: 400 });
     }
 
-    if (block === 2 && (!Array.isArray(papers) || papers.length === 0)) {
-      return NextResponse.json({ summaries: [] });
-    }
-
     return await withAiUsage(
       req,
       "concept_explore",
@@ -171,6 +167,10 @@ export async function POST(req: NextRequest) {
 
     // 区块 2：批量生成论文关联说明，非流式，直接返回 JSON
     if (block === 2) {
+      if (!Array.isArray(papers) || papers.length === 0) {
+        return NextResponse.json({ summaries: [] });
+      }
+
       const relevanceRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -214,8 +214,6 @@ export async function POST(req: NextRequest) {
     }
 
     const prompt = buildPrompt(block, concept.trim(), papers, originText, conceptsText);
-
-    if (block !== 1) usage.skipLegacyUsage();
 
     const maxTokens = 8000;
 
@@ -324,6 +322,7 @@ export async function POST(req: NextRequest) {
       },
     });
       },
+      { continuation: block !== 1 },
     );
   } catch (error) {
     console.error("概念探索 AI 异常:", error);

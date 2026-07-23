@@ -67,6 +67,7 @@ export default function PptPage() {
   const [restoredTotalSlides, setRestoredTotalSlides] = useState<number | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const pptIdRef = useRef<string | null>(null);
+  const pptGenerationRootKeyRef = useRef<string | null>(null);
   const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
 
   // 获取当前用户 ID（浏览器端，不走 API）
@@ -291,13 +292,14 @@ export default function PptPage() {
   }
 
   // 依次生成从 startIndex 开始的各批，某一批失败就停下（已生成的批次保留在 results 里），等待用户点重试
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function runBatchesFrom(
     startIndex: number,
     batches: SlideOutlineItem[][],
     fullOutline: SlideOutlineItem[],
     scene: "defense" | "meeting",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resultsSoFar: (any[] | null)[],
+    rootKey: string,
   ) {
     const results = [...resultsSoFar];
 
@@ -313,7 +315,10 @@ export default function PptPage() {
 
         const res = await fetch("/api/ppt/generate-section", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": rootKey,
+          },
           body: JSON.stringify({
             paperContent: extractedText,
             outlineSlides,
@@ -362,6 +367,8 @@ export default function PptPage() {
 
   function handleGenerateFromOutline() {
     if (!outline || !pptScene) return;
+    const rootKey = crypto.randomUUID();
+    pptGenerationRootKeyRef.current = rootKey;
     const batches = chunkOutline(outline);
     const emptyResults = new Array(batches.length).fill(null);
     setOutlineBatches(batches);
@@ -370,12 +377,25 @@ export default function PptPage() {
     setPptError("");
     setPptContent(null);
     setPptStatus("loading");
-    runBatchesFrom(0, batches, outline, pptScene, emptyResults);
+    runBatchesFrom(0, batches, outline, pptScene, emptyResults, rootKey);
   }
 
   function handleRetryBatch(index: number) {
     if (!pptScene || outlineBatches.length === 0) return;
-    runBatchesFrom(index, outlineBatches, outline ?? [], pptScene, batchSlides);
+    const rootKey =
+      index === 0
+        ? crypto.randomUUID()
+        : pptGenerationRootKeyRef.current;
+    if (!rootKey) return;
+    pptGenerationRootKeyRef.current = rootKey;
+    runBatchesFrom(
+      index,
+      outlineBatches,
+      outline ?? [],
+      pptScene,
+      batchSlides,
+      rootKey,
+    );
   }
 
   async function handlePptDownload() {

@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { BillingConfig } from "../../lib/billing/config";
+import { BillingError } from "../../lib/billing/errors";
 import {
   createAiUsageRunner,
   type AiUsageRunnerDependencies,
@@ -66,6 +67,11 @@ function dependencies(
       async run<T>(input: ResearchUsageInput, task: () => T | Promise<T>) {
         void input;
         return task();
+      },
+    },
+    continuations: {
+      async assertFinalized() {
+        throw new Error("continuation verification was not expected");
       },
     },
     randomUUID: () => "00000000-0000-4000-8000-000000000001",
@@ -158,33 +164,7 @@ test("legacy denial preserves each route's existing quota response and skips wor
   assert.equal(taskRan, false);
 });
 
-test("multi-stage routes can preserve an unmetered legacy continuation without branching on billing", async () => {
-  let records = 0;
-  const runner = createAiUsageRunner(
-    dependencies({
-      insertLegacy: async () => {
-        records += 1;
-      },
-    }),
-  );
-
-  const response = await runner(
-    request(),
-    "concept_explore",
-    () => Response.json({ error: "limit" }, { status: 429 }),
-    async (usage) => {
-      (
-        usage as typeof usage & { skipLegacyUsage(): void }
-      ).skipLegacyUsage();
-      return Response.json({ continuation: "ok" });
-    },
-  );
-
-  assert.equal(response.status, 200);
-  assert.equal(records, 0);
-});
-
-test("legacy-unmetered continuations bypass old checks while staying inside the adapter", async () => {
+test("billing-disabled continuations require a root key and skip legacy checks and records", async () => {
   const events: string[] = [];
   const runner = createAiUsageRunner(
     dependencies({
@@ -199,17 +179,31 @@ test("legacy-unmetered continuations bypass old checks while staying inside the 
   );
 
   const response = await runner(
-    request(),
+    request("operation-root"),
     "ppt_generate",
     () => Response.json({ error: "limit" }, { status: 429 }),
     async (usage) => {
       events.push(`task:${usage.userId}`);
       return Response.json({ continuation: "ok" });
     },
-    { legacyUnmetered: true },
+    { continuation: true },
   );
 
   assert.equal(response.status, 200);
+  assert.deepEqual(events, ["task:null"]);
+
+  const missingKeyResponse = await runner(
+    request(),
+    "ppt_generate",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => Response.json({ continuation: "unexpected" }),
+    { continuation: true },
+  );
+
+  assert.equal(missingKeyResponse.status, 400);
+  assert.deepEqual(await missingKeyResponse.json(), {
+    error: "Idempotency-Key is required for continuation requests.",
+  });
   assert.deepEqual(events, ["task:null"]);
 });
 
@@ -254,11 +248,133 @@ test("billing enabled authenticates on the server and reserves the centralized f
   assert.deepEqual(events, ["auth", "research", "task:server-user"]);
   assert.deepEqual(receivedInput, {
     userId: "server-user",
-    taskKey: "ai:chat:retry-key_123",
+    taskKey: "ai:server-user:chat:retry-key_123",
     featureKey: "chat",
     quotaUnits: 1,
     creditAmount: 0,
   });
+});
+
+test("task keys namespace the same client key by authenticated user", async () => {
+  const taskKeys: string[] = [];
+  const userIds = ["user-a", "user-b"];
+  const runner = createAiUsageRunner(
+    dependencies({
+      getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
+      requireUser: async () => ({
+        id: userIds.shift() ?? "unexpected-user",
+        email: null,
+        isAdmin: false,
+      }),
+      research: {
+        async run<T>(input: ResearchUsageInput, task: () => T | Promise<T>) {
+          taskKeys.push(input.taskKey);
+          return task();
+        },
+      },
+    }),
+  );
+
+  for (let index = 0; index < 2; index += 1) {
+    await runner(
+      request("shared-client-key"),
+      "chat",
+      () => Response.json({ error: "limit" }, { status: 429 }),
+      async () => Response.json({ answer: "ok" }),
+    );
+  }
+
+  assert.deepEqual(taskKeys, [
+    "ai:user-a:chat:shared-client-key",
+    "ai:user-b:chat:shared-client-key",
+  ]);
+});
+
+test("billing-enabled continuations execute only after server-side finalized-root proof", async () => {
+  const events: string[] = [];
+  const runner = createAiUsageRunner(
+    dependencies({
+      getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
+      requireUser: async () => {
+        events.push("auth");
+        return { id: "server-user", email: null, isAdmin: false };
+      },
+      research: {
+        async run() {
+          events.push("unexpected-reservation");
+          throw new Error("continuations must not reserve again");
+        },
+      },
+      continuations: {
+        async assertFinalized(userId, taskKey, featureKey) {
+          events.push(
+            `verify:${userId}:${taskKey}:${featureKey}`,
+          );
+        },
+      },
+    }),
+  );
+
+  const response = await runner(
+    request("concept-operation"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async (usage) => {
+      events.push(`task:${usage.userId}`);
+      return Response.json({ continuation: "ok" });
+    },
+    { continuation: true },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { continuation: "ok" });
+  assert.deepEqual(events, [
+    "auth",
+    "verify:server-user:ai:server-user:concept_explore:concept-operation:concept_explore",
+    "task:server-user",
+  ]);
+});
+
+test("a continuation with no finalized root is rejected before task execution", async () => {
+  const events: string[] = [];
+  const runner = createAiUsageRunner(
+    dependencies({
+      getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
+      continuations: {
+        async assertFinalized() {
+          events.push("verify");
+          throw new BillingError(
+            "INVALID_USAGE_CONTINUATION",
+            "This continuation does not match a completed research task.",
+            409,
+          );
+        },
+      },
+      research: {
+        async run() {
+          events.push("unexpected-reservation");
+          throw new Error("continuations must not reserve");
+        },
+      },
+    }),
+  );
+
+  const response = await runner(
+    request("unknown-operation"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => {
+      events.push("unexpected-task");
+      return Response.json({ continuation: "unexpected" });
+    },
+    { continuation: true },
+  );
+
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: "This continuation does not match a completed research task.",
+  });
+  assert.deepEqual(events, ["verify"]);
 });
 
 test("missing task keys use an unpredictable server UUID", async () => {
@@ -284,7 +400,7 @@ test("missing task keys use an unpredictable server UUID", async () => {
 
   assert.equal(
     (receivedInput as ResearchUsageInput | null)?.taskKey,
-    "ai:chat:00000000-0000-4000-8000-000000000001",
+    "ai:server-user:chat:00000000-0000-4000-8000-000000000001",
   );
 });
 
@@ -427,6 +543,41 @@ test("a stream-marked serialization failure is delivered then releases the reser
   const first = await reader.read();
   assert.equal(new TextDecoder().decode(first.value), 'data: {"error":"格式异常"}\n\n');
   await assert.rejects(reader.read(), /serialization failed/);
+  assert.deepEqual(events, ["entitlement", "reserve", "release"]);
+});
+
+test("a cross-chunk SSE provider error event is delivered then releases the reservation", async () => {
+  const events: string[] = [];
+  const runner = createAiUsageRunner(enabledStreamDependencies(events));
+  const encoder = new TextEncoder();
+
+  const response = await runner(
+    request(),
+    "chat",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"type":"err'));
+            controller.enqueue(
+              encoder.encode('or","error":{"message":"provider failed"}}\n\n'),
+            );
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+  );
+
+  const reader = response.body!.getReader();
+  const first = await reader.read();
+  const second = await reader.read();
+  assert.equal(
+    new TextDecoder().decode(first.value) + new TextDecoder().decode(second.value),
+    'data: {"type":"error","error":{"message":"provider failed"}}\n\n',
+  );
+  await assert.rejects(reader.read(), /AI provider reported a stream failure/);
   assert.deepEqual(events, ["entitlement", "reserve", "release"]);
 });
 

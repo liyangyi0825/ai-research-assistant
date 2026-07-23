@@ -185,7 +185,7 @@ ${paperExcerpt}`;
         { status: 429 },
       ),
       generateBatch,
-      { legacyUnmetered: Boolean(batchIndex && batchIndex !== 0) },
+      { continuation: Boolean(batchIndex && batchIndex !== 0) },
     );
 
   } catch (error) {
