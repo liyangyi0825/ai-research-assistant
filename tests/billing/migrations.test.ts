@@ -828,3 +828,11 @@ test("database guide only documents local or isolated test database execution", 
   assert.match(guide, /禁止.*线上数据库/);
   assert.doesNotMatch(guide, /(?:project-ref|db[_ -]?password|postgres(?:ql)?:\/\/)/i);
 });
+
+test("user refund and invoice requests are unique per owned order", () => {
+  const refundRequests = sqlTable("billing_refund_requests");
+  const invoiceRequests = sqlTable("billing_invoice_requests");
+
+  assert.match(refundRequests, /unique \(user_id, order_id\)/);
+  assert.match(invoiceRequests, /unique \(user_id, order_id\)/);
+});

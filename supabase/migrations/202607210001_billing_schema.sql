@@ -399,7 +399,8 @@ CREATE TABLE public.billing_refund_requests (
   review_note TEXT,
   reviewed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, order_id)
 );
 
 CREATE TABLE public.billing_refunds (
@@ -437,7 +438,8 @@ CREATE TABLE public.billing_invoice_requests (
   ),
   issued_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, order_id)
 );
 
 CREATE TABLE public.billing_admins (
