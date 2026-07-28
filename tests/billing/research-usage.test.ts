@@ -107,6 +107,95 @@ test("ResearchUsageService checks entitlement, atomically reserves, runs, then f
   ]);
 });
 
+test("ResearchUsageService can atomically finalize and provision root continuations", async () => {
+  const events: string[] = [];
+  const research = new ResearchUsageService({
+    entitlements: new InMemoryEntitlements(events),
+    usage: new InMemoryUsage(events),
+  });
+
+  const result = await research.run(
+    input(),
+    async () => {
+      events.push("task");
+      return "answer";
+    },
+    {
+      finalize: async () => {
+        events.push("finalize-and-provision");
+      },
+    },
+  );
+
+  assert.equal(result, "answer");
+  assert.equal(events.includes("finalize-and-provision"), true);
+  assert.equal(events.some((event) => event.startsWith("finalize:")), false);
+});
+
+test("ResearchUsageService releases a root when atomic continuation provisioning fails", async () => {
+  const events: string[] = [];
+  const research = new ResearchUsageService({
+    entitlements: new InMemoryEntitlements(events),
+    usage: new InMemoryUsage(events),
+  });
+
+  await assert.rejects(
+    research.run(
+      input(),
+      async () => {
+        events.push("task");
+        return "answer";
+      },
+      {
+        finalize: async () => {
+          events.push("finalize-and-provision");
+          throw new Error("continuation provisioning failed");
+        },
+      },
+    ),
+    /continuation provisioning failed/,
+  );
+
+  assert.equal(
+    events.at(-1),
+    "release:user-1:research:user-1:request-1",
+  );
+});
+
+test("ResearchUsageService releases a streamed root when atomic continuation provisioning fails", async () => {
+  const events: string[] = [];
+  const research = new ResearchUsageService({
+    entitlements: new InMemoryEntitlements(events),
+    usage: new InMemoryUsage(events),
+  });
+  const encoder = new TextEncoder();
+
+  const response = await research.run(
+    input(),
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode("done"));
+            controller.close();
+          },
+        }),
+      ),
+    {
+      finalize: async () => {
+        events.push("finalize-and-provision");
+        throw new Error("continuation provisioning failed");
+      },
+    },
+  );
+
+  await assert.rejects(response.text(), /continuation provisioning failed/);
+  assert.equal(
+    events.at(-1),
+    "release:user-1:research:user-1:request-1",
+  );
+});
+
 test("ResearchUsageService releases reservations for synchronous throws and async rejection", async () => {
   for (const task of [
     () => {

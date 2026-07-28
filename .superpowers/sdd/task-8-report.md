@@ -80,3 +80,42 @@
 - 目标 ESLint：通过。
 - `git diff --check`：通过。
 - **`app/api/translate-page/route.ts` 仍未修改。**
+
+## Finite Continuation 修复（2026-07-23）
+
+- 用有限、operation-bound、payload-bound 的 continuation stage 表替换可无限复用的
+  `FINALIZED` root assertion：
+  - root 成功后仅 provision 服务端声明的有限 stage；
+  - paid root 的 usage finalize 与 stage provision 在同一 RPC 事务中完成；
+  - 若 atomic finalize+provision 回调失败，服务层会补偿 release 仍处于
+    `RESERVED` 的 root；非流式与流式收尾均覆盖；
+  - billing disabled 的 legacy root 使用已认证 legacy user，在既有 usage 结算后
+    provision 同一状态机，不对 continuation 重复记账。
+- 每个 continuation 都通过 service-role-only RPC 原子执行
+  `AVAILABLE -> CLAIMED -> COMPLETED`，失败或取消时回到 `AVAILABLE`：
+  - claim 使用行锁、claim token 与 lease 阻止并发重复执行；
+  - 首次 claim 绑定 canonical SHA-256 request hash，release 后仍保持 sticky；
+  - completed replay、未过期的 claimed replay、跨 operation/stage 和不同 payload
+    都在 AI task 执行前拒绝。
+- Concept Explorer root 只 provision `block:2`、`block:3`、`block:4`。
+- PPT section generation：
+  - 服务端从完整大纲按每批 4 页派生 canonical slice，最多 20 批；
+  - batch 0 预绑定 `batch:1..N-1` 的 canonical request hash；
+  - 后续请求必须提交与服务端派生 slice 完全一致的内容；
+  - `ppt/generate-content` 与 `ppt/generate-section` 使用独立 operation key；
+  - 页面不再提交可篡改的 `userNotes`，备注从 canonical outline slice 派生；
+  - batch 0 重试生成新 root，后续批次重试沿用原 root。
+
+## Finite Continuation TDD / 验证
+
+- migration/RPC、adapter、ResearchUsageService、route policy 与 canonical hash 行为均由
+  finite continuation 测试覆盖，包括 completed replay 不执行、claimed 并发不执行、
+  sticky hash、provider failure release、root provision failure compensation 和 legacy
+  状态机。
+- 定向 finite/adapter/route/migration/RPC 测试：77/77 通过。
+- `npm.cmd run test:billing`：170/170 通过。
+- `npm.cmd test`：173/173 通过。
+- `npm.cmd run typecheck`：通过。
+- 目标 ESLint：通过。
+- 未连接线上数据库，未 push，未 deploy。
+- **`app/api/translate-page/route.ts` 仍未修改。**

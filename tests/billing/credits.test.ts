@@ -220,42 +220,144 @@ test("finalize and release retries use the same task key and accept idempotent r
   );
 });
 
-test("continuation verification delegates the full user, task, and feature tuple to one RPC", async () => {
+test("continuation lifecycle delegates the bound operation, stage, hash, and claim token", async () => {
   const client = new InMemoryRpcClient([
     {
       data: {
-        status: "FINALIZED",
+        status: "PROVISIONED",
         usage_record_id: "usage-1",
-        idempotent: true,
+        continuation_count: 1,
+      },
+      error: null,
+    },
+    {
+      data: {
+        status: "CLAIMED",
+        continuation_id: "continuation-1",
+        claim_token: "claim-1",
+        idempotent: false,
+      },
+      error: null,
+    },
+    {
+      data: {
+        status: "COMPLETED",
+        continuation_id: "continuation-1",
+        idempotent: false,
+      },
+      error: null,
+    },
+    {
+      data: {
+        status: "AVAILABLE",
+        continuation_id: "continuation-1",
+        idempotent: false,
       },
       error: null,
     },
   ]);
-  const adapter = createBillingUsageRpcAdapter(client) as ReturnType<
-    typeof createBillingUsageRpcAdapter
-  > & {
-    assertFinalized(
-      userId: string,
-      taskKey: string,
-      featureKey: string,
-    ): Promise<unknown>;
+  const adapter = createBillingUsageRpcAdapter(client);
+  const root = {
+    userId: "user-1",
+    taskKey: "ai:user-1:concept_explorer:operation-1",
+    featureKey: "concept_explore",
+    operationKey: "concept_explorer",
+  };
+  const stage = {
+    ...root,
+    stageKey: "block:2",
+    requestHash: "a".repeat(64),
   };
 
-  await adapter.assertFinalized(
-    "user-1",
-    "ai:user-1:concept_explore:operation-1",
-    "concept_explore",
-  );
+  await adapter.provision({
+    ...root,
+    stages: [{ stageKey: "block:2", requestHash: "a".repeat(64) }],
+    finalizeUsage: true,
+  });
+  await adapter.claim(stage);
+  await adapter.complete({ ...stage, claimToken: "claim-1" });
+  await adapter.releaseContinuation({ ...stage, claimToken: "claim-1" });
 
   assert.deepEqual(client.calls, [
     {
-      name: "billing_assert_usage_continuation",
+      name: "billing_provision_usage_continuations",
       args: {
         p_user_id: "user-1",
-        p_task_idempotency_key:
-          "ai:user-1:concept_explore:operation-1",
+        p_root_task_idempotency_key:
+          "ai:user-1:concept_explorer:operation-1",
         p_feature_key: "concept_explore",
+        p_operation_key: "concept_explorer",
+        p_stages: [
+          { stage_key: "block:2", request_hash: "a".repeat(64) },
+        ],
+        p_finalize_usage: true,
+      },
+    },
+    {
+      name: "billing_claim_usage_continuation",
+      args: {
+        p_user_id: "user-1",
+        p_root_task_idempotency_key:
+          "ai:user-1:concept_explorer:operation-1",
+        p_feature_key: "concept_explore",
+        p_operation_key: "concept_explorer",
+        p_stage_key: "block:2",
+        p_request_hash: "a".repeat(64),
+        p_lease_seconds: 300,
+      },
+    },
+    {
+      name: "billing_complete_usage_continuation",
+      args: {
+        p_user_id: "user-1",
+        p_root_task_idempotency_key:
+          "ai:user-1:concept_explorer:operation-1",
+        p_feature_key: "concept_explore",
+        p_operation_key: "concept_explorer",
+        p_stage_key: "block:2",
+        p_request_hash: "a".repeat(64),
+        p_claim_token: "claim-1",
+      },
+    },
+    {
+      name: "billing_release_usage_continuation",
+      args: {
+        p_user_id: "user-1",
+        p_root_task_idempotency_key:
+          "ai:user-1:concept_explorer:operation-1",
+        p_feature_key: "concept_explore",
+        p_operation_key: "concept_explorer",
+        p_stage_key: "block:2",
+        p_request_hash: "a".repeat(64),
+        p_claim_token: "claim-1",
       },
     },
   ]);
+});
+
+test("continuation payload mismatch is a safe 409 conflict", async () => {
+  const client = new InMemoryRpcClient([
+    {
+      data: null,
+      error: { code: "23505", message: "continuation request payload mismatch" },
+    },
+  ]);
+  const adapter = createBillingUsageRpcAdapter(client);
+
+  await assert.rejects(
+    adapter.claim({
+      userId: "user-1",
+      taskKey: "ai:user-1:concept_explorer:operation-1",
+      featureKey: "concept_explore",
+      operationKey: "concept_explorer",
+      stageKey: "block:2",
+      requestHash: "b".repeat(64),
+    }),
+    (error) =>
+      expectBillingError(
+        error,
+        "USAGE_CONTINUATION_PAYLOAD_CONFLICT",
+        409,
+      ),
+  );
 });

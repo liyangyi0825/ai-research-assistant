@@ -75,10 +75,12 @@ test("translate-page remains outside this conflict-sensitive integration batch",
   );
 });
 
-test("multi-stage AI routes and pages share one server-verified root operation key", async () => {
+test("multi-stage AI routes use finite server-derived continuation policies", async () => {
   const adapter = await source("lib/billing/ai-usage.ts");
+  const policy = await source("lib/billing/ai-continuation.ts");
   const conceptRoute = await source("app/api/concept-explorer/ai/route.ts");
   const pptRoute = await source("app/api/ppt/generate-section/route.ts");
+  const pptContentRoute = await source("app/api/ppt/generate-content/route.ts");
   const conceptPage = await source("app/concept-explorer/page.tsx");
   const pptPage = await source("app/ppt/page.tsx");
 
@@ -86,13 +88,17 @@ test("multi-stage AI routes and pages share one server-verified root operation k
   assert.doesNotMatch(conceptRoute, /\bskipLegacyUsage\b/);
   assert.doesNotMatch(pptRoute, /\blegacyUnmetered\b/);
 
-  assert.match(
-    conceptRoute,
-    /\{\s*continuation:\s*block\s*!==\s*1\s*\}/,
-  );
-  assert.match(
+  assert.match(conceptRoute, /conceptContinuationPolicy\(/);
+  assert.match(pptRoute, /pptSectionContinuationPolicy\(/);
+  assert.match(pptContentRoute, /operationKey:\s*AI_CONTINUATION_OPERATIONS\.pptContent/);
+  assert.match(policy, /stageKey:\s*`block:\$\{block\}`/);
+  assert.match(policy, /MAX_PPT_BATCHES\s*=\s*20/);
+  assert.match(policy, /input\.allOutline\.slice\(/);
+  assert.match(policy, /requestHash:\s*requestHashFor\(index\)/);
+  assert.doesNotMatch(pptRoute, /Boolean\(batchIndex/);
+  assert.doesNotMatch(
     pptRoute,
-    /\{\s*continuation:\s*Boolean\(batchIndex\s*&&\s*batchIndex\s*!==\s*0\)\s*\}/,
+    /paperContent,\s*outlineSlides,\s*allOutline,\s*scene,\s*userNotes/,
   );
 
   const conceptAdapterIndex = conceptRoute.indexOf("return await withAiUsage");
@@ -107,4 +113,5 @@ test("multi-stage AI routes and pages share one server-verified root operation k
   assert.match(conceptPage, /"Idempotency-Key":\s*rootKey/);
   assert.match(pptPage, /crypto\.randomUUID\(\)/);
   assert.match(pptPage, /"Idempotency-Key":\s*rootKey/);
+  assert.doesNotMatch(pptPage, /\buserNotes:\s*userNotes/);
 });

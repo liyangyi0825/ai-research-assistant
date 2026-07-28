@@ -3,6 +3,7 @@
 // 输出：{ pptContent: PptContent } 结构化 JSON，供前端预览和后续生成 PPTX 文件使用
 
 import { NextRequest, NextResponse } from "next/server";
+import { AI_CONTINUATION_OPERATIONS } from "@/lib/billing/ai-continuation";
 import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 
@@ -448,6 +449,7 @@ ${keyContent}`;
       },
     });
       },
+      { operationKey: AI_CONTINUATION_OPERATIONS.pptContent },
     );
 
   } catch (error) {

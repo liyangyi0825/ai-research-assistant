@@ -3,7 +3,9 @@
 // 输出：{ slides: Slide[] } —— 只生成这一批（3-4页）幻灯片的完整正文内容
 // 分批生成的目的：避免一次性生成全部页面导致 AI 输出被截断、结构混乱
 import { NextRequest, NextResponse } from "next/server";
+import { pptSectionContinuationPolicy } from "@/lib/billing/ai-continuation";
 import { withAiUsage, type AiUsageContext } from "@/lib/billing/ai-usage";
+import { BillingError } from "@/lib/billing/errors";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import type { PptScene, Slide } from "@/app/api/ppt/generate-content/route";
 import type { SlideOutlineItem } from "@/app/api/ppt/generate-outline/route";
@@ -35,14 +37,13 @@ export async function POST(req: NextRequest) {
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
     const {
-      paperContent, outlineSlides, allOutline, scene, userNotes, batchIndex,
+      paperContent, outlineSlides, allOutline, scene, batchIndex,
     } = (await req.json()) as {
       paperContent: string;
       outlineSlides: SlideOutlineItem[];
       allOutline: SlideOutlineItem[];
       scene: PptScene;
       templateId?: string;
-      userNotes?: string;
       batchIndex?: number;
     };
 
@@ -51,6 +52,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "本批大纲为空" }, { status: 400 });
     }
     if (!["defense", "meeting"].includes(scene)) return NextResponse.json({ error: "场景参数错误" }, { status: 400 });
+
+    const continuationPolicy = pptSectionContinuationPolicy({
+      paperContent,
+      outlineSlides,
+      allOutline,
+      scene,
+      batchIndex,
+    });
+    const { userNotes } = continuationPolicy;
 
     const generateBatch = async (usage?: AiUsageContext) => {
 
@@ -185,10 +195,20 @@ ${paperExcerpt}`;
         { status: 429 },
       ),
       generateBatch,
-      { continuation: Boolean(batchIndex && batchIndex !== 0) },
+      {
+        operationKey: continuationPolicy.operationKey,
+        continuation: continuationPolicy.continuation,
+        continuationStages:
+          continuationPolicy.batchIndex === 0
+            ? continuationPolicy.continuationStages
+            : undefined,
+      },
     );
 
   } catch (error) {
+    if (error instanceof BillingError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     const msg = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: `请求失败：${msg.slice(0, 120)}` }, { status: 500 });
   }

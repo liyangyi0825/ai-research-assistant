@@ -1148,10 +1148,13 @@ BEGIN
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION public.billing_assert_usage_continuation(
+CREATE OR REPLACE FUNCTION public.billing_provision_usage_continuations(
   p_user_id UUID,
-  p_task_idempotency_key TEXT,
-  p_feature_key TEXT
+  p_root_task_idempotency_key TEXT,
+  p_feature_key TEXT,
+  p_operation_key TEXT,
+  p_stages JSONB,
+  p_finalize_usage BOOLEAN DEFAULT TRUE
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -1159,32 +1162,322 @@ SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
 DECLARE
-  v_record public.billing_usage_records%ROWTYPE;
+  v_finalize_result JSONB;
+  v_usage_record_id UUID;
+  v_stage JSONB;
+  v_stage_key TEXT;
+  v_request_hash TEXT;
+  v_count INTEGER := 0;
 BEGIN
   IF p_user_id IS NULL
-    OR NULLIF(btrim(p_task_idempotency_key), '') IS NULL
-    OR NULLIF(btrim(p_feature_key), '') IS NULL THEN
-    RAISE EXCEPTION 'continuation user, task key, and feature are required'
+    OR NULLIF(btrim(p_root_task_idempotency_key), '') IS NULL
+    OR NULLIF(btrim(p_feature_key), '') IS NULL
+    OR NULLIF(btrim(p_operation_key), '') IS NULL
+    OR p_stages IS NULL
+    OR jsonb_typeof(p_stages) <> 'array'
+    OR jsonb_array_length(p_stages) = 0
+    OR jsonb_array_length(p_stages) > 32 THEN
+    RAISE EXCEPTION 'invalid continuation provision request'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  IF btrim(p_operation_key) !~ '^[a-z0-9][a-z0-9._:-]{2,63}$' THEN
+    RAISE EXCEPTION 'invalid continuation operation key'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  IF p_finalize_usage THEN
+    v_finalize_result := public.billing_finalize_usage(
+      p_user_id,
+      p_root_task_idempotency_key
+    );
+    v_usage_record_id := (v_finalize_result ->> 'usage_record_id')::UUID;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM public.billing_usage_records
+      WHERE id = v_usage_record_id
+        AND user_id = p_user_id
+        AND task_idempotency_key = p_root_task_idempotency_key
+        AND feature_key = btrim(p_feature_key)
+        AND status = 'FINALIZED'
+    ) THEN
+      RAISE EXCEPTION 'finalized usage continuation root not found'
+        USING ERRCODE = 'no_data_found';
+    END IF;
+  END IF;
+
+  FOR v_stage IN SELECT value FROM jsonb_array_elements(p_stages)
+  LOOP
+    IF jsonb_typeof(v_stage) <> 'object' THEN
+      RAISE EXCEPTION 'invalid continuation stage'
+        USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    v_stage_key := btrim(v_stage ->> 'stage_key');
+    v_request_hash := lower(NULLIF(btrim(v_stage ->> 'request_hash'), ''));
+    IF v_stage_key IS NULL
+      OR v_stage_key !~ '^[a-z0-9][a-z0-9._:-]{1,63}$'
+      OR (v_request_hash IS NOT NULL AND v_request_hash !~ '^[0-9a-f]{64}$') THEN
+      RAISE EXCEPTION 'invalid continuation stage'
+        USING ERRCODE = 'invalid_parameter_value';
+    END IF;
+
+    INSERT INTO public.billing_usage_continuations (
+      root_usage_record_id,
+      user_id,
+      root_task_idempotency_key,
+      feature_key,
+      operation_key,
+      stage_key,
+      request_hash
+    )
+    VALUES (
+      v_usage_record_id,
+      p_user_id,
+      p_root_task_idempotency_key,
+      btrim(p_feature_key),
+      btrim(p_operation_key),
+      v_stage_key,
+      v_request_hash
+    );
+    v_count := v_count + 1;
+  END LOOP;
+
+  RETURN jsonb_build_object(
+    'status', 'PROVISIONED',
+    'usage_record_id', v_usage_record_id,
+    'continuation_count', v_count
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.billing_claim_usage_continuation(
+  p_user_id UUID,
+  p_root_task_idempotency_key TEXT,
+  p_feature_key TEXT,
+  p_operation_key TEXT,
+  p_stage_key TEXT,
+  p_request_hash TEXT,
+  p_lease_seconds INTEGER DEFAULT 300
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_continuation public.billing_usage_continuations%ROWTYPE;
+BEGIN
+  IF p_user_id IS NULL
+    OR NULLIF(btrim(p_root_task_idempotency_key), '') IS NULL
+    OR NULLIF(btrim(p_feature_key), '') IS NULL
+    OR NULLIF(btrim(p_operation_key), '') IS NULL
+    OR NULLIF(btrim(p_stage_key), '') IS NULL
+    OR lower(p_request_hash) !~ '^[0-9a-f]{64}$'
+    OR p_lease_seconds < 15
+    OR p_lease_seconds > 900 THEN
+    RAISE EXCEPTION 'invalid continuation claim request'
       USING ERRCODE = 'invalid_parameter_value';
   END IF;
 
   SELECT *
-  INTO v_record
-  FROM public.billing_usage_records
+  INTO v_continuation
+  FROM public.billing_usage_continuations
   WHERE user_id = p_user_id
-    AND task_idempotency_key = p_task_idempotency_key
+    AND root_task_idempotency_key = p_root_task_idempotency_key
     AND feature_key = btrim(p_feature_key)
-    AND status = 'FINALIZED';
+    AND operation_key = btrim(p_operation_key)
+    AND stage_key = btrim(p_stage_key)
+  FOR UPDATE;
 
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'finalized usage continuation not found'
+  IF NOT FOUND OR (
+    v_continuation.root_usage_record_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.billing_usage_records
+      WHERE id = v_continuation.root_usage_record_id
+        AND user_id = p_user_id
+        AND status = 'FINALIZED'
+    )
+  ) THEN
+    RAISE EXCEPTION 'usage continuation stage not found'
       USING ERRCODE = 'no_data_found';
   END IF;
 
+  IF v_continuation.request_hash IS NOT NULL
+    AND v_continuation.request_hash IS DISTINCT FROM lower(p_request_hash) THEN
+    RAISE EXCEPTION 'continuation request payload mismatch'
+      USING ERRCODE = 'unique_violation';
+  END IF;
+
+  IF v_continuation.status = 'COMPLETED' THEN
+    RETURN jsonb_build_object(
+      'status', 'COMPLETED',
+      'continuation_id', v_continuation.id,
+      'claim_token', NULL,
+      'idempotent', TRUE
+    );
+  END IF;
+
+  IF v_continuation.status = 'CLAIMED'
+    AND v_continuation.lease_expires_at > now() THEN
+    RETURN jsonb_build_object(
+      'status', 'CLAIMED',
+      'continuation_id', v_continuation.id,
+      'claim_token', NULL,
+      'idempotent', TRUE
+    );
+  END IF;
+
+  UPDATE public.billing_usage_continuations
+  SET status = 'CLAIMED',
+      request_hash = lower(p_request_hash),
+      claim_token = extensions.gen_random_uuid(),
+      lease_expires_at = now() + make_interval(secs => p_lease_seconds),
+      claimed_at = now(),
+      updated_at = now()
+  WHERE id = v_continuation.id
+  RETURNING * INTO v_continuation;
+
   RETURN jsonb_build_object(
-    'status', 'FINALIZED',
-    'usage_record_id', v_record.id,
-    'idempotent', TRUE
+    'status', 'CLAIMED',
+    'continuation_id', v_continuation.id,
+    'claim_token', v_continuation.claim_token,
+    'idempotent', FALSE
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.billing_complete_usage_continuation(
+  p_user_id UUID,
+  p_root_task_idempotency_key TEXT,
+  p_feature_key TEXT,
+  p_operation_key TEXT,
+  p_stage_key TEXT,
+  p_request_hash TEXT,
+  p_claim_token UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_continuation public.billing_usage_continuations%ROWTYPE;
+BEGIN
+  SELECT *
+  INTO v_continuation
+  FROM public.billing_usage_continuations
+  WHERE user_id = p_user_id
+    AND root_task_idempotency_key = p_root_task_idempotency_key
+    AND feature_key = btrim(p_feature_key)
+    AND operation_key = btrim(p_operation_key)
+    AND stage_key = btrim(p_stage_key)
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'usage continuation stage not found'
+      USING ERRCODE = 'no_data_found';
+  END IF;
+  IF v_continuation.request_hash IS DISTINCT FROM lower(p_request_hash) THEN
+    RAISE EXCEPTION 'continuation request payload mismatch'
+      USING ERRCODE = 'unique_violation';
+  END IF;
+  IF v_continuation.status = 'COMPLETED' THEN
+    RETURN jsonb_build_object(
+      'status', 'COMPLETED',
+      'continuation_id', v_continuation.id,
+      'idempotent', TRUE
+    );
+  END IF;
+  IF v_continuation.status <> 'CLAIMED'
+    OR v_continuation.claim_token IS DISTINCT FROM p_claim_token THEN
+    RAISE EXCEPTION 'continuation claim token mismatch'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+
+  UPDATE public.billing_usage_continuations
+  SET status = 'COMPLETED',
+      claim_token = NULL,
+      lease_expires_at = NULL,
+      completed_at = now(),
+      updated_at = now()
+  WHERE id = v_continuation.id
+  RETURNING * INTO v_continuation;
+
+  RETURN jsonb_build_object(
+    'status', 'COMPLETED',
+    'continuation_id', v_continuation.id,
+    'idempotent', FALSE
+  );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.billing_release_usage_continuation(
+  p_user_id UUID,
+  p_root_task_idempotency_key TEXT,
+  p_feature_key TEXT,
+  p_operation_key TEXT,
+  p_stage_key TEXT,
+  p_request_hash TEXT,
+  p_claim_token UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_continuation public.billing_usage_continuations%ROWTYPE;
+BEGIN
+  SELECT *
+  INTO v_continuation
+  FROM public.billing_usage_continuations
+  WHERE user_id = p_user_id
+    AND root_task_idempotency_key = p_root_task_idempotency_key
+    AND feature_key = btrim(p_feature_key)
+    AND operation_key = btrim(p_operation_key)
+    AND stage_key = btrim(p_stage_key)
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'usage continuation stage not found'
+      USING ERRCODE = 'no_data_found';
+  END IF;
+  IF v_continuation.request_hash IS DISTINCT FROM lower(p_request_hash) THEN
+    RAISE EXCEPTION 'continuation request payload mismatch'
+      USING ERRCODE = 'unique_violation';
+  END IF;
+  IF v_continuation.status = 'AVAILABLE' THEN
+    RETURN jsonb_build_object(
+      'status', 'AVAILABLE',
+      'continuation_id', v_continuation.id,
+      'idempotent', TRUE
+    );
+  END IF;
+  IF v_continuation.status = 'COMPLETED' THEN
+    RAISE EXCEPTION 'usage continuation is already completed'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+  IF v_continuation.claim_token IS DISTINCT FROM p_claim_token THEN
+    RAISE EXCEPTION 'continuation claim token mismatch'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+
+  UPDATE public.billing_usage_continuations
+  SET status = 'AVAILABLE',
+      request_hash = v_continuation.request_hash,
+      claim_token = NULL,
+      lease_expires_at = NULL,
+      updated_at = now()
+  WHERE id = v_continuation.id
+  RETURNING * INTO v_continuation;
+
+  RETURN jsonb_build_object(
+    'status', 'AVAILABLE',
+    'continuation_id', v_continuation.id,
+    'idempotent', FALSE
   );
 END;
 $$;
@@ -1494,10 +1787,33 @@ FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.billing_release_usage(UUID, TEXT)
 TO service_role;
 
-REVOKE ALL ON FUNCTION public.billing_assert_usage_continuation(UUID, TEXT, TEXT)
-FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.billing_assert_usage_continuation(UUID, TEXT, TEXT)
-TO service_role;
+REVOKE ALL ON FUNCTION public.billing_provision_usage_continuations(
+  UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN
+) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.billing_provision_usage_continuations(
+  UUID, TEXT, TEXT, TEXT, JSONB, BOOLEAN
+) TO service_role;
+
+REVOKE ALL ON FUNCTION public.billing_claim_usage_continuation(
+  UUID, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER
+) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.billing_claim_usage_continuation(
+  UUID, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER
+) TO service_role;
+
+REVOKE ALL ON FUNCTION public.billing_complete_usage_continuation(
+  UUID, TEXT, TEXT, TEXT, TEXT, TEXT, UUID
+) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.billing_complete_usage_continuation(
+  UUID, TEXT, TEXT, TEXT, TEXT, TEXT, UUID
+) TO service_role;
+
+REVOKE ALL ON FUNCTION public.billing_release_usage_continuation(
+  UUID, TEXT, TEXT, TEXT, TEXT, TEXT, UUID
+) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.billing_release_usage_continuation(
+  UUID, TEXT, TEXT, TEXT, TEXT, TEXT, UUID
+) TO service_role;
 
 REVOKE ALL ON FUNCTION public.billing_adjust_credit(
   UUID, BIGINT, TEXT, TEXT, UUID, TEXT

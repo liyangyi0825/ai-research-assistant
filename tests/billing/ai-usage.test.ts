@@ -13,6 +13,7 @@ import {
   ResearchUsageService,
   type ResearchEntitlementAuthorizer,
   type ResearchUsageInput,
+  type ResearchUsageRunOptions,
   type ResearchUsageReservationService,
 } from "../../lib/billing/research-usage";
 import type {
@@ -70,8 +71,17 @@ function dependencies(
       },
     },
     continuations: {
-      async assertFinalized() {
-        throw new Error("continuation verification was not expected");
+      async provision() {
+        throw new Error("continuation provisioning was not expected");
+      },
+      async claim() {
+        throw new Error("continuation claim was not expected");
+      },
+      async complete() {
+        throw new Error("continuation completion was not expected");
+      },
+      async release() {
+        throw new Error("continuation release was not expected");
       },
     },
     randomUUID: () => "00000000-0000-4000-8000-000000000001",
@@ -164,17 +174,26 @@ test("legacy denial preserves each route's existing quota response and skips wor
   assert.equal(taskRan, false);
 });
 
-test("billing-disabled continuations require a root key and skip legacy checks and records", async () => {
+test("billing-disabled continuations use the same finite stage lifecycle without a second record", async () => {
   const events: string[] = [];
+  const continuations = new AtomicContinuationHarness();
+  continuations.seed({
+    userId: "legacy-user",
+    taskKey: "ai:legacy-user:ppt_generate_sections:operation-root",
+    featureKey: "ppt_generate",
+    operationKey: "ppt_generate_sections",
+    stageKey: "batch:1",
+  });
   const runner = createAiUsageRunner(
     dependencies({
       checkLegacy: async () => {
         events.push("legacy-check");
-        throw new Error("continuations must preserve the old unchecked path");
+        return { allowed: false, used: 30, limit: 30, userId: "legacy-user" };
       },
       insertLegacy: async () => {
         events.push("legacy-record");
       },
+      continuations,
     }),
   );
 
@@ -186,25 +205,41 @@ test("billing-disabled continuations require a root key and skip legacy checks a
       events.push(`task:${usage.userId}`);
       return Response.json({ continuation: "ok" });
     },
-    { continuation: true },
+    {
+      operationKey: "ppt_generate_sections",
+      continuation: {
+        stageKey: "batch:1",
+        requestHash: "a".repeat(64),
+      },
+    },
   );
 
   assert.equal(response.status, 200);
-  assert.deepEqual(events, ["task:null"]);
+  assert.deepEqual(events, ["legacy-check", "task:legacy-user"]);
 
   const missingKeyResponse = await runner(
     request(),
     "ppt_generate",
     () => Response.json({ error: "limit" }, { status: 429 }),
     async () => Response.json({ continuation: "unexpected" }),
-    { continuation: true },
+    {
+      operationKey: "ppt_generate_sections",
+      continuation: {
+        stageKey: "batch:2",
+        requestHash: "b".repeat(64),
+      },
+    },
   );
 
   assert.equal(missingKeyResponse.status, 400);
   assert.deepEqual(await missingKeyResponse.json(), {
     error: "Idempotency-Key is required for continuation requests.",
   });
-  assert.deepEqual(events, ["task:null"]);
+  assert.deepEqual(events, [
+    "legacy-check",
+    "task:legacy-user",
+    "legacy-check",
+  ]);
 });
 
 test("billing enabled authenticates on the server and reserves the centralized feature tuple", async () => {
@@ -255,6 +290,73 @@ test("billing enabled authenticates on the server and reserves the centralized f
   });
 });
 
+test("a billed multi-stage root atomically finalizes and provisions only its finite stages", async () => {
+  const events: string[] = [];
+  const runner = createAiUsageRunner(
+    dependencies({
+      getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
+      research: {
+        async run<T>(
+          input: ResearchUsageInput,
+          task: () => T | Promise<T>,
+          options?: ResearchUsageRunOptions,
+        ) {
+          events.push(`research:${input.taskKey}`);
+          const result = await task();
+          await options?.finalize?.();
+          return result;
+        },
+      },
+      continuations: {
+        async provision(input) {
+          events.push(`provision:${JSON.stringify(input)}`);
+        },
+        async claim() {
+          throw new Error("unexpected claim");
+        },
+        async complete() {
+          throw new Error("unexpected complete");
+        },
+        async release() {
+          throw new Error("unexpected release");
+        },
+      },
+    }),
+  );
+
+  const response = await runner(
+    request("concept-operation"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => Response.json({ root: "ok" }),
+    {
+      operationKey: "concept_explorer",
+      continuationStages: [
+        { stageKey: "block:2" },
+        { stageKey: "block:3" },
+        { stageKey: "block:4" },
+      ],
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(events, [
+    "research:ai:server-user:concept_explorer:concept-operation",
+    `provision:${JSON.stringify({
+      userId: "server-user",
+      taskKey: "ai:server-user:concept_explorer:concept-operation",
+      featureKey: "concept_explore",
+      operationKey: "concept_explorer",
+      stages: [
+        { stageKey: "block:2" },
+        { stageKey: "block:3" },
+        { stageKey: "block:4" },
+      ],
+      finalizeUsage: true,
+    })}`,
+  ]);
+});
+
 test("task keys namespace the same client key by authenticated user", async () => {
   const taskKeys: string[] = [];
   const userIds = ["user-a", "user-b"];
@@ -290,8 +392,16 @@ test("task keys namespace the same client key by authenticated user", async () =
   ]);
 });
 
-test("billing-enabled continuations execute only after server-side finalized-root proof", async () => {
+test("billing-enabled continuations claim and complete one operation-bound stage", async () => {
   const events: string[] = [];
+  const harness = new AtomicContinuationHarness();
+  harness.seed({
+    userId: "server-user",
+    taskKey: "ai:server-user:concept_explorer:concept-operation",
+    featureKey: "concept_explore",
+    operationKey: "concept_explorer",
+    stageKey: "block:2",
+  });
   const runner = createAiUsageRunner(
     dependencies({
       getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
@@ -306,10 +416,19 @@ test("billing-enabled continuations execute only after server-side finalized-roo
         },
       },
       continuations: {
-        async assertFinalized(userId, taskKey, featureKey) {
-          events.push(
-            `verify:${userId}:${taskKey}:${featureKey}`,
-          );
+        provision(input) {
+          return harness.provision(input);
+        },
+        async claim(input) {
+          events.push(`claim:${input.operationKey}:${input.stageKey}`);
+          return harness.claim(input);
+        },
+        async complete(input) {
+          events.push(`complete:${input.operationKey}:${input.stageKey}`);
+          return harness.complete(input);
+        },
+        release(input) {
+          return harness.release(input);
         },
       },
     }),
@@ -323,31 +442,47 @@ test("billing-enabled continuations execute only after server-side finalized-roo
       events.push(`task:${usage.userId}`);
       return Response.json({ continuation: "ok" });
     },
-    { continuation: true },
+    {
+      operationKey: "concept_explorer",
+      continuation: {
+        stageKey: "block:2",
+        requestHash: "a".repeat(64),
+      },
+    },
   );
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { continuation: "ok" });
   assert.deepEqual(events, [
     "auth",
-    "verify:server-user:ai:server-user:concept_explore:concept-operation:concept_explore",
+    "claim:concept_explorer:block:2",
     "task:server-user",
+    "complete:concept_explorer:block:2",
   ]);
 });
 
-test("a continuation with no finalized root is rejected before task execution", async () => {
+test("a continuation with no provisioned stage is rejected before task execution", async () => {
   const events: string[] = [];
   const runner = createAiUsageRunner(
     dependencies({
       getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
       continuations: {
-        async assertFinalized() {
-          events.push("verify");
+        async claim() {
+          events.push("claim");
           throw new BillingError(
             "INVALID_USAGE_CONTINUATION",
-            "This continuation does not match a completed research task.",
+            "This continuation stage is not available for this operation.",
             409,
           );
+        },
+        async provision() {
+          throw new Error("unexpected provision");
+        },
+        async complete() {
+          throw new Error("unexpected complete");
+        },
+        async release() {
+          throw new Error("unexpected release");
         },
       },
       research: {
@@ -367,14 +502,395 @@ test("a continuation with no finalized root is rejected before task execution", 
       events.push("unexpected-task");
       return Response.json({ continuation: "unexpected" });
     },
-    { continuation: true },
+    {
+      operationKey: "concept_explorer",
+      continuation: {
+        stageKey: "block:2",
+        requestHash: "a".repeat(64),
+      },
+    },
   );
 
   assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), {
-    error: "This continuation does not match a completed research task.",
+    error: "This continuation stage is not available for this operation.",
   });
-  assert.deepEqual(events, ["verify"]);
+  assert.deepEqual(events, ["claim"]);
+});
+
+type ContinuationSeed = {
+  userId: string;
+  taskKey: string;
+  featureKey: string;
+  operationKey: string;
+  stageKey: string;
+  requestHash?: string;
+};
+
+class AtomicContinuationHarness {
+  private readonly rows = new Map<
+    string,
+    ContinuationSeed & {
+      status: "AVAILABLE" | "CLAIMED" | "COMPLETED";
+      claimToken: string | null;
+    }
+  >();
+  private claimSequence = 0;
+
+  seed(input: ContinuationSeed) {
+    this.rows.set(this.key(input), {
+      ...input,
+      status: "AVAILABLE",
+      claimToken: null,
+    });
+  }
+
+  async provision(input: {
+    userId: string;
+    taskKey: string;
+    featureKey: string;
+    operationKey: string;
+    stages: readonly { stageKey: string; requestHash?: string }[];
+  }) {
+    for (const stage of input.stages) this.seed({ ...input, ...stage });
+    return { status: "PROVISIONED" as const, continuationCount: input.stages.length };
+  }
+
+  async claim(input: ContinuationSeed) {
+    const row = this.rows.get(this.key(input));
+    if (!row) {
+      throw new BillingError(
+        "INVALID_USAGE_CONTINUATION",
+        "This continuation stage is not available for this operation.",
+        409,
+      );
+    }
+    if (row.requestHash && row.requestHash !== input.requestHash) {
+      throw new BillingError(
+        "USAGE_CONTINUATION_PAYLOAD_CONFLICT",
+        "This continuation stage was already bound to different request data.",
+        409,
+      );
+    }
+    row.requestHash ??= input.requestHash;
+    if (row.status === "COMPLETED") {
+      return {
+        status: "COMPLETED" as const,
+        continuationId: this.key(input),
+        claimToken: null,
+        idempotent: true,
+      };
+    }
+    if (row.status === "CLAIMED") {
+      return {
+        status: "CLAIMED" as const,
+        continuationId: this.key(input),
+        claimToken: null,
+        idempotent: true,
+      };
+    }
+    row.status = "CLAIMED";
+    row.claimToken = `claim-${++this.claimSequence}`;
+    return {
+      status: "CLAIMED" as const,
+      continuationId: this.key(input),
+      claimToken: row.claimToken,
+      idempotent: false,
+    };
+  }
+
+  async complete(input: ContinuationSeed & { claimToken: string }) {
+    const row = this.rows.get(this.key(input));
+    assert.ok(row);
+    assert.equal(row.claimToken, input.claimToken);
+    row.status = "COMPLETED";
+    row.claimToken = null;
+    return {
+      status: "COMPLETED" as const,
+      continuationId: this.key(input),
+      idempotent: false,
+    };
+  }
+
+  async release(input: ContinuationSeed & { claimToken: string }) {
+    const row = this.rows.get(this.key(input));
+    assert.ok(row);
+    assert.equal(row.claimToken, input.claimToken);
+    row.status = "AVAILABLE";
+    row.claimToken = null;
+    return {
+      status: "AVAILABLE" as const,
+      continuationId: this.key(input),
+      idempotent: false,
+    };
+  }
+
+  private key(input: ContinuationSeed) {
+    return [
+      input.userId,
+      input.taskKey,
+      input.featureKey,
+      input.operationKey,
+      input.stageKey,
+    ].join("|");
+  }
+}
+
+function finiteContinuationRunner(continuations: AtomicContinuationHarness) {
+  return createAiUsageRunner(
+    dependencies({
+      getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
+      continuations,
+      research: {
+        async run() {
+          throw new Error("continuations must not reserve again");
+        },
+      },
+    }),
+  );
+}
+
+const finiteSeed = {
+  userId: "server-user",
+  taskKey: "ai:server-user:concept_explorer:operation-root",
+  featureKey: "concept_explore",
+  operationKey: "concept_explorer",
+  stageKey: "block:2",
+};
+
+test("a completed continuation stage replays without executing the task twice", async () => {
+  const continuations = new AtomicContinuationHarness();
+  continuations.seed(finiteSeed);
+  const runner = finiteContinuationRunner(continuations);
+  let executions = 0;
+  const execute = () =>
+    runner(
+      request("operation-root"),
+      "concept_explore",
+      () => Response.json({ error: "limit" }, { status: 429 }),
+      async () => {
+        executions += 1;
+        return Response.json({ summaries: ["ok"] });
+      },
+      {
+        operationKey: "concept_explorer",
+        continuation: {
+          stageKey: "block:2",
+          requestHash: "a".repeat(64),
+        },
+      },
+    );
+
+  assert.equal((await execute()).status, 200);
+  const replay = await execute();
+  assert.equal(replay.status, 409);
+  assert.deepEqual(await replay.json(), {
+    error: "This continuation stage has already completed.",
+  });
+  assert.equal(executions, 1);
+});
+
+test("a claimed continuation rejects concurrent execution", async () => {
+  const continuations = new AtomicContinuationHarness();
+  continuations.seed(finiteSeed);
+  const runner = finiteContinuationRunner(continuations);
+  let finishTask!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    finishTask = resolve;
+  });
+  let executions = 0;
+
+  const first = runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => {
+      executions += 1;
+      await gate;
+      return Response.json({ summaries: ["ok"] });
+    },
+    {
+      operationKey: "concept_explorer",
+      continuation: {
+        stageKey: "block:2",
+        requestHash: "a".repeat(64),
+      },
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const concurrent = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => {
+      executions += 1;
+      return Response.json({ summaries: ["duplicate"] });
+    },
+    {
+      operationKey: "concept_explorer",
+      continuation: {
+        stageKey: "block:2",
+        requestHash: "a".repeat(64),
+      },
+    },
+  );
+  assert.equal(concurrent.status, 409);
+  assert.deepEqual(await concurrent.json(), {
+    error: "This continuation stage is already in progress.",
+  });
+  assert.equal(executions, 1);
+
+  finishTask();
+  assert.equal((await first).status, 200);
+});
+
+test("continuations reject cross-operation roots and changed retry payloads", async () => {
+  const continuations = new AtomicContinuationHarness();
+  continuations.seed(finiteSeed);
+  const runner = finiteContinuationRunner(continuations);
+  let executions = 0;
+
+  const crossOperation = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => {
+      executions += 1;
+      return Response.json({ unexpected: true });
+    },
+    {
+      operationKey: "ppt_generate_content",
+      continuation: {
+        stageKey: "block:2",
+        requestHash: "a".repeat(64),
+      },
+    },
+  );
+  assert.equal(crossOperation.status, 409);
+
+  const failed = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => Response.json({ error: "provider failed" }, { status: 502 }),
+    {
+      operationKey: "concept_explorer",
+      continuation: {
+        stageKey: "block:2",
+        requestHash: "a".repeat(64),
+      },
+    },
+  );
+  assert.equal(failed.status, 502);
+
+  const changedPayload = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => {
+      executions += 1;
+      return Response.json({ unexpected: true });
+    },
+    {
+      operationKey: "concept_explorer",
+      continuation: {
+        stageKey: "block:2",
+        requestHash: "b".repeat(64),
+      },
+    },
+  );
+  assert.equal(changedPayload.status, 409);
+  assert.deepEqual(await changedPayload.json(), {
+    error: "This continuation stage was already bound to different request data.",
+  });
+  assert.equal(executions, 0);
+});
+
+test("continuation streams complete only on clean close and release on provider failure", async () => {
+  const continuations = new AtomicContinuationHarness();
+  continuations.seed(finiteSeed);
+  const runner = finiteContinuationRunner(continuations);
+  const encoder = new TextEncoder();
+  const options = {
+    operationKey: "concept_explorer",
+    continuation: {
+      stageKey: "block:2",
+      requestHash: "a".repeat(64),
+    },
+  };
+
+  const response = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode("data: ok\n\n"));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    options,
+  );
+
+  const whileClaimed = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => Response.json({ unexpected: true }),
+    options,
+  );
+  assert.equal(whileClaimed.status, 409);
+  assert.equal(await response.text(), "data: ok\n\n");
+  const afterComplete = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => Response.json({ unexpected: true }),
+    options,
+  );
+  assert.equal(afterComplete.status, 409);
+
+  continuations.seed({ ...finiteSeed, stageKey: "block:3" });
+  const retryableOptions = {
+    operationKey: "concept_explorer",
+    continuation: {
+      stageKey: "block:3",
+      requestHash: "b".repeat(64),
+    },
+  };
+  const failed = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode('data: {"type":"error","error":"failed"}\n\n'),
+            );
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    retryableOptions,
+  );
+  await assert.rejects(failed.text(), /provider reported a stream failure/i);
+
+  const retry = await runner(
+    request("operation-root"),
+    "concept_explore",
+    () => Response.json({ error: "limit" }, { status: 429 }),
+    async () => Response.json({ retry: "ok" }),
+    retryableOptions,
+  );
+  assert.equal(retry.status, 200);
 });
 
 test("missing task keys use an unpredictable server UUID", async () => {

@@ -308,10 +308,6 @@ export default function PptPage() {
       setBatchErrors(prev => prev.map((e, idx) => idx === i ? null : e));
       try {
         const outlineSlides = batches[i];
-        const userNotes = outlineSlides
-          .filter(s => s.note?.trim())
-          .map(s => `《${s.title}》：${s.note}`)
-          .join("；");
 
         const res = await fetch("/api/ppt/generate-section", {
           method: "POST",
@@ -325,7 +321,6 @@ export default function PptPage() {
             allOutline: fullOutline,
             scene,
             templateId,
-            userNotes: userNotes || undefined,
             batchIndex: i,
           }),
         });

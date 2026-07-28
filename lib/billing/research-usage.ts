@@ -33,6 +33,10 @@ type ResearchUsageDependencies = {
   usage?: ResearchUsageReservationService;
 };
 
+export type ResearchUsageRunOptions = {
+  finalize?: () => Promise<void>;
+};
+
 function isTaskFailure(value: unknown): value is ResearchTaskFailure {
   return (
     !!value &&
@@ -80,6 +84,18 @@ async function releaseThenThrow(
 ): Promise<never> {
   await usage.release(input.userId, input.taskKey);
   throw error;
+}
+
+async function finalizeOrRelease(
+  usage: ResearchUsageReservationService,
+  input: ResearchUsageInput,
+  finalize: () => Promise<void>,
+): Promise<void> {
+  try {
+    await finalize();
+  } catch (error) {
+    return releaseThenThrow(usage, input, error);
+  }
 }
 
 function settleStream<T>(
@@ -141,6 +157,7 @@ export class ResearchUsageService {
   async run<T>(
     rawInput: ResearchUsageInput,
     task: () => T | Promise<T | ResearchTaskFailure>,
+    options: ResearchUsageRunOptions = {},
   ): Promise<T> {
     const input = normalizeUsageReservation(rawInput);
     await this.entitlements.requireEntitlement(input.userId, input.featureKey);
@@ -148,6 +165,14 @@ export class ResearchUsageService {
     if (reservation.idempotent || reservation.status !== "RESERVED") {
       throw replayError(reservation.status);
     }
+    const finalize =
+      options.finalize ??
+      (async () => {
+        await this.usage.finalize(input.userId, input.taskKey);
+      });
+    const settle = async () => {
+      await finalizeOrRelease(this.usage, input, finalize);
+    };
 
     let result: T | ResearchTaskFailure;
     try {
@@ -168,9 +193,7 @@ export class ResearchUsageService {
       if (result.body) {
         const body = settleStream(
           result.body,
-          async () => {
-            await this.usage.finalize(input.userId, input.taskKey);
-          },
+          settle,
           async () => {
             await this.usage.release(input.userId, input.taskKey);
           },
@@ -186,16 +209,14 @@ export class ResearchUsageService {
     if (result instanceof ReadableStream) {
       return settleStream(
         result,
-        async () => {
-          await this.usage.finalize(input.userId, input.taskKey);
-        },
+        settle,
         async () => {
           await this.usage.release(input.userId, input.taskKey);
         },
       ) as T;
     }
 
-    await this.usage.finalize(input.userId, input.taskKey);
+    await settle();
     return result;
   }
 }

@@ -61,3 +61,23 @@ supabase migration up --local
 ## 回滚原则
 
 账务和审计记录不可作为普通发布回滚的一部分删除。首期 migration 采用向前修复：若隔离测试发现问题，新增后续修复 migration；应用侧先关闭 Billing 功能并停止新订单，再修复数据库代码。
+## Finite AI continuations
+
+Multi-stage AI work uses `billing_usage_continuations`, which is not readable or
+writable by `anon` or `authenticated`. Server code provisions at most 32 explicit
+stage rows through `billing_provision_usage_continuations`. For paid roots that RPC
+calls `billing_finalize_usage` and inserts the stage rows in the same transaction;
+legacy roots use the same finite rows with `p_finalize_usage = false`.
+
+Each continuation is bound to the root user, task key, billing feature, operation
+key, stage key, and a canonical SHA-256 request hash. The service-role-only
+`billing_claim_usage_continuation`, `billing_complete_usage_continuation`, and
+`billing_release_usage_continuation` RPCs lock the stage row before transitions.
+`CLAIMED` leases prevent concurrent execution, `COMPLETED` is a terminal replay,
+and release retains the request hash so only the identical failed request can retry.
+
+The Concept Explorer provisions only `block:2`, `block:3`, and `block:4`. PPT
+section generation derives four-slide batches from the submitted complete outline,
+limits an operation to 20 batches, and prebinds `batch:1..N-1` hashes during batch
+zero. PPT content generation and PPT section generation use different operation
+keys.

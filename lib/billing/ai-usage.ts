@@ -8,8 +8,16 @@ import { BillingError } from "./errors";
 import {
   ResearchUsageService,
   type ResearchUsageInput,
+  type ResearchUsageRunOptions,
 } from "./research-usage";
-import { UsageQuotaService } from "./usage-quota";
+import {
+  UsageQuotaService,
+  type ContinuationClaimResult,
+  type ContinuationRootInput,
+  type ContinuationSettlementInput,
+  type ContinuationStageInput,
+  type ContinuationStageProvision,
+} from "./usage-quota";
 
 export type AiTokenUsage = {
   tokensInput: number;
@@ -37,15 +45,18 @@ type LegacyUsageRecord = AiTokenUsage & {
 };
 
 type ResearchUsageRunner = {
-  run<T>(input: ResearchUsageInput, task: () => T | Promise<T>): Promise<T>;
+  run<T>(
+    input: ResearchUsageInput,
+    task: () => T | Promise<T>,
+    options?: ResearchUsageRunOptions,
+  ): Promise<T>;
 };
 
-type AiUsageContinuationVerifier = {
-  assertFinalized(
-    userId: string,
-    taskKey: string,
-    featureKey: string,
-  ): Promise<unknown>;
+type AiUsageContinuationLifecycle = {
+  provision(input: ContinuationRootInput): Promise<unknown>;
+  claim(input: ContinuationStageInput): Promise<ContinuationClaimResult>;
+  complete(input: ContinuationSettlementInput): Promise<unknown>;
+  release(input: ContinuationSettlementInput): Promise<unknown>;
 };
 
 export type AiUsageRunnerDependencies = {
@@ -54,7 +65,7 @@ export type AiUsageRunnerDependencies = {
   checkLegacy: (feature: UsageActionType) => Promise<LegacyUsageResult>;
   insertLegacy: (usage: LegacyUsageRecord) => Promise<unknown>;
   research: ResearchUsageRunner;
-  continuations: AiUsageContinuationVerifier;
+  continuations: AiUsageContinuationLifecycle;
   randomUUID: () => string;
 };
 
@@ -67,24 +78,59 @@ export type AiUsageRunner = (
 ) => Promise<Response>;
 
 export type AiUsageOptions = {
-  continuation?: boolean;
+  operationKey?: string;
+  continuation?: {
+    stageKey: string;
+    requestHash: string;
+  };
+  continuationStages?: readonly ContinuationStageProvision[];
 };
 
+const usageQuota = new UsageQuotaService();
 const defaultDependencies: AiUsageRunnerDependencies = {
   getConfig: getBillingConfig,
   requireUser: requireBillingUser,
   checkLegacy: checkUsageLimit,
   insertLegacy: insertUsageRecord,
   research: new ResearchUsageService(),
-  continuations: new UsageQuotaService(),
+  continuations: {
+    provision(input) {
+      return usageQuota.provision(input);
+    },
+    claim(input) {
+      return usageQuota.claim(input);
+    },
+    complete(input) {
+      return usageQuota.complete(input);
+    },
+    release(input) {
+      return usageQuota.releaseContinuation(input);
+    },
+  },
   randomUUID,
 };
 
 const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
+const SAFE_OPERATION_KEY = /^[a-z0-9][a-z0-9._:-]{2,63}$/;
+
+function operationKey(
+  feature: UsageActionType,
+  options: AiUsageOptions | undefined,
+): string {
+  const value = options?.operationKey ?? feature;
+  if (!SAFE_OPERATION_KEY.test(value)) {
+    throw new BillingError(
+      "INVALID_AI_OPERATION",
+      "The AI operation key is invalid.",
+      400,
+    );
+  }
+  return value;
+}
 
 function taskKey(
   request: Request,
-  feature: UsageActionType,
+  operation: string,
   userId: string,
   createId: () => string,
   requireClientKey = false,
@@ -104,12 +150,13 @@ function taskKey(
       400,
     );
   }
-  return `ai:${userId}:${feature}:${clientKey ?? createId()}`;
+  return `ai:${userId}:${operation}:${clientKey ?? createId()}`;
 }
 
 function researchInput(
   request: Request,
   feature: UsageActionType,
+  operation: string,
   userId: string,
   createId: () => string,
   requireClientKey = false,
@@ -118,7 +165,7 @@ function researchInput(
     userId,
     taskKey: taskKey(
       request,
-      feature,
+      operation,
       userId,
       createId,
       requireClientKey,
@@ -301,26 +348,209 @@ function settleLegacyStream(
   return copyResponse(response, body);
 }
 
-async function runLegacy(
-  dependencies: AiUsageRunnerDependencies,
+function settleContinuationStream(
+  response: Response,
+  complete: () => Promise<void>,
+  release: () => Promise<void>,
+): Response {
+  if (!isStreamingResponse(response) || !response.body) return response;
+
+  const reader = response.body.getReader();
+  let settled = false;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (!next.done) {
+          controller.enqueue(next.value);
+          return;
+        }
+        if (!settled) {
+          settled = true;
+          await complete();
+        }
+        controller.close();
+      } catch (error) {
+        if (!settled) {
+          settled = true;
+          try {
+            await release();
+          } catch (releaseError) {
+            controller.error(releaseError);
+            return;
+          }
+        }
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        if (!settled) {
+          settled = true;
+          await release();
+        }
+      }
+    },
+  });
+  return copyResponse(response, body);
+}
+
+function continuationStageInput(
+  userId: string,
+  rootTaskKey: string,
   feature: UsageActionType,
-  legacyLimitResponse: (usage: { used: number; limit: number }) => Response,
+  operation: string,
+  continuation: NonNullable<AiUsageOptions["continuation"]>,
+): ContinuationStageInput {
+  return {
+    userId,
+    taskKey: rootTaskKey,
+    featureKey: feature,
+    operationKey: operation,
+    stageKey: continuation.stageKey,
+    requestHash: continuation.requestHash,
+  };
+}
+
+async function runClaimedContinuation(
+  dependencies: AiUsageRunnerDependencies,
+  input: ContinuationStageInput,
   task: (context: AiUsageContext) => Promise<Response>,
 ): Promise<Response> {
+  const claim = await dependencies.continuations.claim(input);
+  if (claim.status === "COMPLETED") {
+    throw new BillingError(
+      "USAGE_CONTINUATION_REPLAY",
+      "This continuation stage has already completed.",
+      409,
+    );
+  }
+  if (claim.idempotent || claim.claimToken === null) {
+    throw new BillingError(
+      "USAGE_CONTINUATION_IN_PROGRESS",
+      "This continuation stage is already in progress.",
+      409,
+    );
+  }
+
+  const settlement: ContinuationSettlementInput = {
+    ...input,
+    claimToken: claim.claimToken,
+  };
+  const complete = async () => {
+    await dependencies.continuations.complete(settlement);
+  };
+  const release = async () => {
+    await dependencies.continuations.release(settlement);
+  };
+  const usage = usageContext(input.userId);
+  let response: Response;
+  try {
+    response = await task(usage.context);
+  } catch (error) {
+    await release();
+    throw error;
+  }
+
+  if (!response.ok) {
+    await release();
+    return response;
+  }
+
+  const guarded = guardStreamingResponse(response, usage.failure);
+  if (isStreamingResponse(guarded)) {
+    return settleContinuationStream(guarded, complete, release);
+  }
+  const failure = usage.failure();
+  if (failure !== undefined) {
+    await release();
+    throw taskFailure(failure);
+  }
+  await complete();
+  return guarded;
+}
+
+async function runLegacy(
+  dependencies: AiUsageRunnerDependencies,
+  request: Request,
+  feature: UsageActionType,
+  operation: string,
+  legacyLimitResponse: (usage: { used: number; limit: number }) => Response,
+  task: (context: AiUsageContext) => Promise<Response>,
+  options: AiUsageOptions | undefined,
+): Promise<Response> {
   const legacy = await dependencies.checkLegacy(feature);
+  if (options?.continuation) {
+    if (!legacy.userId) {
+      throw new BillingError(
+        "USAGE_CONTINUATION_AUTH_REQUIRED",
+        "A signed-in user is required for continuation requests.",
+        401,
+      );
+    }
+    const rootTaskKey = taskKey(
+      request,
+      operation,
+      legacy.userId,
+      dependencies.randomUUID,
+      true,
+    );
+    return runClaimedContinuation(
+      dependencies,
+      continuationStageInput(
+        legacy.userId,
+        rootTaskKey,
+        feature,
+        operation,
+        options.continuation,
+      ),
+      task,
+    );
+  }
   if (!legacy.allowed) {
     return legacyLimitResponse(legacy);
   }
 
+  const stages = options?.continuationStages ?? [];
+  if (stages.length > 0 && !legacy.userId) {
+    throw new BillingError(
+      "USAGE_CONTINUATION_AUTH_REQUIRED",
+      "A signed-in user is required to start a multi-stage AI operation.",
+      401,
+    );
+  }
+  const rootTaskKey =
+    stages.length > 0 && legacy.userId
+      ? taskKey(
+          request,
+          operation,
+          legacy.userId,
+          dependencies.randomUUID,
+          true,
+        )
+      : undefined;
   const usage = usageContext(legacy.userId);
   const response = await task(usage.context);
-  const record = async () => {
-    if (!legacy.userId) return;
-    await dependencies.insertLegacy({
-      userId: legacy.userId,
-      actionType: feature,
-      ...usage.tokens(),
-    });
+  const finalize = async () => {
+    if (legacy.userId) {
+      await dependencies.insertLegacy({
+        userId: legacy.userId,
+        actionType: feature,
+        ...usage.tokens(),
+      });
+    }
+    if (legacy.userId && rootTaskKey && stages.length > 0) {
+      await dependencies.continuations.provision({
+        userId: legacy.userId,
+        taskKey: rootTaskKey,
+        featureKey: feature,
+        operationKey: operation,
+        stages,
+        finalizeUsage: false,
+      });
+    }
   };
   if (
     response.ok &&
@@ -329,7 +559,7 @@ async function runLegacy(
     return settleLegacyStream(
       guardStreamingResponse(response, usage.failure),
       usage.failure,
-      record,
+      finalize,
     );
   }
   if (
@@ -337,22 +567,9 @@ async function runLegacy(
     legacy.userId &&
     usage.failure() === undefined
   ) {
-    await record();
+    await finalize();
   }
   return response;
-}
-
-async function runContinuation(
-  userId: string | null,
-  task: (context: AiUsageContext) => Promise<Response>,
-): Promise<Response> {
-  const usage = usageContext(userId);
-  const response = await task(usage.context);
-  const failure = usage.failure();
-  if (!isStreamingResponse(response) && response.ok && failure !== undefined) {
-    throw taskFailure(failure);
-  }
-  return guardStreamingResponse(response, usage.failure);
 }
 
 export function createAiUsageRunner(
@@ -360,43 +577,66 @@ export function createAiUsageRunner(
 ): AiUsageRunner {
   return async (request, feature, legacyLimitResponse, task, options) => {
     try {
+      if (options?.continuation && options.continuationStages) {
+        throw new BillingError(
+          "INVALID_CONTINUATION_POLICY",
+          "An AI request cannot be both a root and a continuation stage.",
+          400,
+        );
+      }
+      const operation = operationKey(feature, options);
       const config = dependencies.getConfig();
       if (!config.featureEnabled) {
-        if (options?.continuation) {
-          taskKey(
-            request,
-            feature,
-            "legacy",
-            dependencies.randomUUID,
-            true,
-          );
-          return await runContinuation(null, task);
-        }
         return await runLegacy(
           dependencies,
+          request,
           feature,
+          operation,
           legacyLimitResponse,
           task,
+          options,
         );
       }
 
       const user = await dependencies.requireUser();
+      const stages = options?.continuationStages ?? [];
       const input = researchInput(
         request,
         feature,
+        operation,
         user.id,
         dependencies.randomUUID,
-        options?.continuation === true,
+        options?.continuation !== undefined || stages.length > 0,
       );
       if (options?.continuation) {
-        await dependencies.continuations.assertFinalized(
-          user.id,
-          input.taskKey,
-          feature,
+        return await runClaimedContinuation(
+          dependencies,
+          continuationStageInput(
+            user.id,
+            input.taskKey,
+            feature,
+            operation,
+            options.continuation,
+          ),
+          task,
         );
-        return await runContinuation(user.id, task);
       }
       const usage = usageContext(user.id);
+      const settlementOptions: ResearchUsageRunOptions =
+        stages.length === 0
+          ? {}
+          : {
+              finalize: async () => {
+                await dependencies.continuations.provision({
+                  userId: user.id,
+                  taskKey: input.taskKey,
+                  featureKey: feature,
+                  operationKey: operation,
+                  stages,
+                  finalizeUsage: true,
+                });
+              },
+            };
       const result = await dependencies.research.run<
         Response | { response: Response }
       >(
@@ -412,6 +652,7 @@ export function createAiUsageRunner(
           }
           return { response };
         },
+        settlementOptions,
       );
       return result instanceof Response ? result : result.response;
     } catch (error) {

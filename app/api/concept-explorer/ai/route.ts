@@ -2,7 +2,9 @@
 // 路径：POST /api/concept-explorer/ai
 
 import { NextRequest, NextResponse } from "next/server";
+import { conceptContinuationPolicy } from "@/lib/billing/ai-continuation";
 import { withAiUsage } from "@/lib/billing/ai-usage";
+import { BillingError } from "@/lib/billing/errors";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import { insertSearchHistory } from "@/lib/supabase";
 import type { Paper } from "../papers/route";
@@ -155,6 +157,14 @@ export async function POST(req: NextRequest) {
     if (!concept?.trim() || ![1, 2, 3, 4].includes(block)) {
       return NextResponse.json({ error: "参数错误" }, { status: 400 });
     }
+    const normalizedConcept = concept.trim();
+    const continuationPolicy = conceptContinuationPolicy({
+      block,
+      concept: normalizedConcept,
+      papers,
+      originText,
+      conceptsText,
+    });
 
     return await withAiUsage(
       req,
@@ -182,7 +192,7 @@ export async function POST(req: NextRequest) {
           model: "deepseek-v4-pro",
           max_tokens: 2000,
           temperature: 0.1,
-          messages: [{ role: "user", content: buildRelevancePrompt(concept.trim(), papers) }],
+          messages: [{ role: "user", content: buildRelevancePrompt(normalizedConcept, papers) }],
         }),
       });
 
@@ -213,7 +223,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ summaries });
     }
 
-    const prompt = buildPrompt(block, concept.trim(), papers, originText, conceptsText);
+    const prompt = buildPrompt(block, normalizedConcept, papers, originText, conceptsText);
 
     const maxTokens = 8000;
 
@@ -249,7 +259,7 @@ export async function POST(req: NextRequest) {
 
     // block=1 时保存搜索历史（整个探索流程只保存一次）
     if (block === 1 && usage.userId) {
-      insertSearchHistory({ userId: usage.userId, type: "concept_explore", query: concept.trim() });
+      insertSearchHistory({ userId: usage.userId, type: "concept_explore", query: normalizedConcept });
     }
 
     void (async () => {
@@ -322,9 +332,12 @@ export async function POST(req: NextRequest) {
       },
     });
       },
-      { continuation: block !== 1 },
+      continuationPolicy,
     );
   } catch (error) {
+    if (error instanceof BillingError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     console.error("概念探索 AI 异常:", error);
     return NextResponse.json({ error: "请求失败，请重试" }, { status: 500 });
   }

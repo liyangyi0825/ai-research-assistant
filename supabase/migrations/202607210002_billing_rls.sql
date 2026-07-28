@@ -9,6 +9,7 @@ ALTER TABLE public.billing_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_user_entitlements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_usage_quotas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_usage_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.billing_usage_continuations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_credit_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_credit_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_webhook_events ENABLE ROW LEVEL SECURITY;
@@ -29,6 +30,7 @@ REVOKE ALL ON TABLE public.billing_subscriptions FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_user_entitlements FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_usage_quotas FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_usage_records FROM anon, authenticated;
+REVOKE ALL ON TABLE public.billing_usage_continuations FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_credit_accounts FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_credit_ledger FROM anon, authenticated;
 REVOKE ALL ON TABLE public.billing_webhook_events FROM anon, authenticated;
@@ -70,6 +72,7 @@ GRANT ALL ON TABLE
   public.billing_user_entitlements,
   public.billing_usage_quotas,
   public.billing_usage_records,
+  public.billing_usage_continuations,
   public.billing_credit_accounts,
   public.billing_credit_ledger,
   public.billing_webhook_events,

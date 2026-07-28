@@ -254,6 +254,53 @@ CREATE TABLE public.billing_usage_records (
   CHECK (quota_units > 0 OR credit_amount > 0)
 );
 
+CREATE TABLE public.billing_usage_continuations (
+  id UUID PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
+  root_usage_record_id UUID REFERENCES public.billing_usage_records(id) ON DELETE RESTRICT,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE RESTRICT,
+  root_task_idempotency_key TEXT NOT NULL,
+  feature_key TEXT NOT NULL,
+  operation_key TEXT NOT NULL,
+  stage_key TEXT NOT NULL,
+  request_hash TEXT CHECK (
+    request_hash IS NULL OR request_hash ~ '^[0-9a-f]{64}$'
+  ),
+  status TEXT NOT NULL DEFAULT 'AVAILABLE' CHECK (
+    status IN ('AVAILABLE', 'CLAIMED', 'COMPLETED')
+  ),
+  claim_token UUID,
+  lease_expires_at TIMESTAMPTZ,
+  claimed_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (
+    user_id,
+    root_task_idempotency_key,
+    feature_key,
+    operation_key,
+    stage_key
+  ),
+  CHECK (
+    (status = 'AVAILABLE' AND claim_token IS NULL AND lease_expires_at IS NULL)
+    OR
+    (
+      status = 'CLAIMED'
+      AND claim_token IS NOT NULL
+      AND lease_expires_at IS NOT NULL
+      AND request_hash IS NOT NULL
+    )
+    OR
+    (
+      status = 'COMPLETED'
+      AND claim_token IS NULL
+      AND lease_expires_at IS NULL
+      AND request_hash IS NOT NULL
+      AND completed_at IS NOT NULL
+    )
+  )
+);
+
 CREATE TABLE public.billing_credit_ledger (
   id UUID PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES public.billing_credit_accounts(id) ON DELETE RESTRICT,
@@ -592,6 +639,7 @@ BEGIN
     'billing_user_entitlements',
     'billing_usage_quotas',
     'billing_usage_records',
+    'billing_usage_continuations',
     'billing_credit_accounts',
     'billing_webhook_events',
     'billing_refund_requests',

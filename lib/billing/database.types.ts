@@ -192,6 +192,24 @@ export type BillingUsageRecordRow = {
   updated_at: Timestamp;
 };
 
+export type BillingUsageContinuationRow = {
+  id: UUID;
+  root_usage_record_id: UUID | null;
+  user_id: UUID;
+  root_task_idempotency_key: string;
+  feature_key: string;
+  operation_key: string;
+  stage_key: string;
+  request_hash: string | null;
+  status: "AVAILABLE" | "CLAIMED" | "COMPLETED";
+  claim_token: UUID | null;
+  lease_expires_at: Timestamp | null;
+  claimed_at: Timestamp | null;
+  completed_at: Timestamp | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
 export type BillingCreditAccountRow = {
   id: UUID;
   user_id: UUID;
@@ -542,6 +560,27 @@ export type Database = {
           },
         ];
       };
+      billing_usage_continuations: {
+        Row: BillingUsageContinuationRow;
+        Insert: Insert<
+          BillingUsageContinuationRow,
+          | "user_id"
+          | "root_task_idempotency_key"
+          | "feature_key"
+          | "operation_key"
+          | "stage_key"
+        >;
+        Update: Update<BillingUsageContinuationRow>;
+        Relationships: [
+          {
+            foreignKeyName: "billing_usage_continuations_root_usage_record_id_fkey";
+            columns: ["root_usage_record_id"];
+            isOneToOne: false;
+            referencedRelation: "billing_usage_records";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       billing_credit_accounts: {
         Row: BillingCreditAccountRow;
         Insert: Insert<BillingCreditAccountRow, "user_id">;
@@ -766,11 +805,50 @@ export type Database = {
         Args: { p_user_id: UUID; p_task_idempotency_key: string };
         Returns: Json;
       };
-      billing_assert_usage_continuation: {
+      billing_provision_usage_continuations: {
         Args: {
           p_user_id: UUID;
-          p_task_idempotency_key: string;
+          p_root_task_idempotency_key: string;
           p_feature_key: string;
+          p_operation_key: string;
+          p_stages: Json;
+          p_finalize_usage?: boolean;
+        };
+        Returns: Json;
+      };
+      billing_claim_usage_continuation: {
+        Args: {
+          p_user_id: UUID;
+          p_root_task_idempotency_key: string;
+          p_feature_key: string;
+          p_operation_key: string;
+          p_stage_key: string;
+          p_request_hash: string;
+          p_lease_seconds?: number;
+        };
+        Returns: Json;
+      };
+      billing_complete_usage_continuation: {
+        Args: {
+          p_user_id: UUID;
+          p_root_task_idempotency_key: string;
+          p_feature_key: string;
+          p_operation_key: string;
+          p_stage_key: string;
+          p_request_hash: string;
+          p_claim_token: UUID;
+        };
+        Returns: Json;
+      };
+      billing_release_usage_continuation: {
+        Args: {
+          p_user_id: UUID;
+          p_root_task_idempotency_key: string;
+          p_feature_key: string;
+          p_operation_key: string;
+          p_stage_key: string;
+          p_request_hash: string;
+          p_claim_token: UUID;
         };
         Returns: Json;
       };

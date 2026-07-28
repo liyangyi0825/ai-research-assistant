@@ -62,6 +62,7 @@ const tables = [
   "billing_user_entitlements",
   "billing_usage_quotas",
   "billing_usage_records",
+  "billing_usage_continuations",
   "billing_credit_accounts",
   "billing_credit_ledger",
   "billing_webhook_events",
@@ -82,7 +83,10 @@ const rpcNames = [
   "billing_reserve_usage",
   "billing_finalize_usage",
   "billing_release_usage",
-  "billing_assert_usage_continuation",
+  "billing_provision_usage_continuations",
+  "billing_claim_usage_continuation",
+  "billing_complete_usage_continuation",
+  "billing_release_usage_continuation",
   "billing_adjust_credit",
   "billing_consume_order_rate_limit",
 ] as const;
@@ -658,26 +662,73 @@ test("usage RPCs reserve, finalize, and release atomically by one task key", () 
   assert.match(sql, /insert into public\.billing_credit_ledger/);
 });
 
-test("usage continuation RPC proves one finalized root for the same user and feature", () => {
-  const continuation = sqlFunction("billing_assert_usage_continuation");
+test("usage continuations are finite, operation-bound, and payload-bound", () => {
+  const continuation = sqlTable("billing_usage_continuations");
   const types = projectFile("lib/billing/database.types.ts");
 
-  assert.match(continuation, /from public\.billing_usage_records/);
-  assert.match(continuation, /user_id = p_user_id/);
   assert.match(
     continuation,
-    /task_idempotency_key = p_task_idempotency_key/,
+    /root_usage_record_id uuid references public\.billing_usage_records\(id\) on delete restrict/,
   );
-  assert.match(continuation, /feature_key = btrim\(p_feature_key\)/);
-  assert.match(continuation, /status = 'finalized'/);
+  assert.match(continuation, /root_task_idempotency_key text not null/);
+  assert.match(continuation, /operation_key text not null/);
+  assert.match(continuation, /stage_key text not null/);
+  assert.match(continuation, /request_hash text/);
   assert.match(
     continuation,
-    /raise exception 'finalized usage continuation not found'/,
+    /status in \('available', 'claimed', 'completed'\)/,
   );
-  assert.doesNotMatch(continuation, /\b(?:insert|update|delete)\b/);
+  assert.match(continuation, /claim_token uuid/);
+  assert.match(continuation, /lease_expires_at timestamptz/);
+  assert.match(
+    continuation,
+    /unique \(\s*user_id,\s*root_task_idempotency_key,\s*feature_key,\s*operation_key,\s*stage_key\s*\)/,
+  );
   assert.match(
     types,
-    /billing_assert_usage_continuation: \{[\s\S]*?p_user_id: UUID;[\s\S]*?p_task_idempotency_key: string;[\s\S]*?p_feature_key: string;/,
+    /billing_usage_continuations: \{[\s\S]*?Row: BillingUsageContinuationRow;/,
+  );
+});
+
+test("continuation RPCs atomically provision, claim, complete, and release finite stages", () => {
+  const provision = sqlFunction("billing_provision_usage_continuations");
+  const claim = sqlFunction("billing_claim_usage_continuation");
+  const complete = sqlFunction("billing_complete_usage_continuation");
+  const release = sqlFunction("billing_release_usage_continuation");
+  const types = projectFile("lib/billing/database.types.ts");
+
+  assert.match(provision, /jsonb_array_length\(p_stages\) > 32/);
+  assert.match(provision, /public\.billing_finalize_usage\(/);
+  assert.match(provision, /insert into public\.billing_usage_continuations/);
+  assert.match(provision, /stage ->> 'stage_key'/);
+  assert.match(provision, /stage ->> 'request_hash'/);
+
+  assert.match(claim, /from public\.billing_usage_continuations[\s\S]*?for update/);
+  assert.match(claim, /operation_key = btrim\(p_operation_key\)/);
+  assert.match(claim, /stage_key = btrim\(p_stage_key\)/);
+  assert.match(claim, /request_hash is distinct from lower\(p_request_hash\)/);
+  assert.match(claim, /raise exception 'continuation request payload mismatch'/);
+  assert.match(claim, /v_continuation\.status = 'completed'/);
+  assert.match(claim, /v_continuation\.lease_expires_at > now\(\)/);
+  assert.match(claim, /set status = 'claimed'/);
+  assert.match(claim, /claim_token = extensions\.gen_random_uuid\(\)/);
+
+  assert.match(complete, /from public\.billing_usage_continuations[\s\S]*?for update/);
+  assert.match(complete, /claim_token is distinct from p_claim_token/);
+  assert.match(complete, /set status = 'completed'/);
+
+  assert.match(release, /from public\.billing_usage_continuations[\s\S]*?for update/);
+  assert.match(release, /claim_token is distinct from p_claim_token/);
+  assert.match(release, /set status = 'available'/);
+  assert.match(release, /request_hash = v_continuation\.request_hash/);
+
+  assert.match(
+    types,
+    /billing_provision_usage_continuations: \{[\s\S]*?p_stages: Json;[\s\S]*?p_finalize_usage\?: boolean;/,
+  );
+  assert.match(
+    types,
+    /billing_claim_usage_continuation: \{[\s\S]*?p_operation_key: string;[\s\S]*?p_stage_key: string;[\s\S]*?p_request_hash: string;/,
   );
 });
 
