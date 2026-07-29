@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertBillingAccess,
   requireBillingAdmin,
+  requireBillingActor,
   requireBillingUser,
   type BillingAuthDependencies,
   type BillingUser,
@@ -102,6 +103,44 @@ test("requireBillingAdmin does not let ADMIN_EMAIL reactivate a disabled databas
       ),
     (error: unknown) => expectBillingError(error, "BILLING_ADMIN_REQUIRED", 403),
   );
+});
+
+test("requireBillingActor resolves active database and bootstrap administrators once at the server boundary", async () => {
+  const databaseAdmin = await requireBillingActor(
+    dependencies({
+      findAdmin: async () => ({ role: "BILLING_REVIEWER", isActive: true }),
+    }),
+  );
+  const bootstrapAdmin = await requireBillingActor(
+    dependencies({
+      adminEmail: " STUDENT@example.com ",
+    }),
+  );
+
+  assert.deepEqual(databaseAdmin, {
+    ...regularUser,
+    isAdmin: true,
+    role: "BILLING_REVIEWER",
+  });
+  assert.deepEqual(bootstrapAdmin, {
+    ...regularUser,
+    isAdmin: true,
+    role: "BILLING_ADMIN",
+  });
+});
+
+test("requireBillingActor keeps an inactive database administrator non-admin even when bootstrap email matches", async () => {
+  const actor = await requireBillingActor(
+    dependencies({
+      findAdmin: async () => ({
+        role: "BILLING_ADMIN",
+        isActive: false,
+      }),
+      adminEmail: "student@example.com",
+    }),
+  );
+
+  assert.deepEqual(actor, regularUser);
 });
 
 test("assertBillingAccess rejects billing writes while the server feature flag is disabled", () => {

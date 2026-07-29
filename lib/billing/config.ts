@@ -2,6 +2,8 @@ import { BillingError } from "./errors";
 
 export type PaymentMode = "mock" | "wechat" | "alipay";
 
+export const BILLING_AGREEMENT_VERSION = "billing-member-v1";
+
 export type BillingConfig = {
   featureEnabled: boolean;
   paymentMode: PaymentMode;

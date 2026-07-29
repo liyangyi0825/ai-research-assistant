@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
-import type { BillingUser } from "../../lib/billing/auth";
+import {
+  assertBillingAccess,
+  type BillingUser,
+} from "../../lib/billing/auth";
 import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
-import type { BillingOrder } from "../../lib/billing/repositories";
 import type {
   BillingSummary,
   BillingUserPageRepository,
@@ -52,35 +54,6 @@ function user(overrides: Partial<BillingUser> = {}): BillingUser {
     id: "user-1",
     email: "student@example.edu.cn",
     isAdmin: false,
-    ...overrides,
-  };
-}
-
-function order(overrides: Partial<BillingOrder> = {}): BillingOrder {
-  return {
-    id: "order-1",
-    orderNumber: "BILL-ORDER-1",
-    userId: "user-1",
-    productId: "product-1",
-    provider: "MOCK",
-    status: "PAID",
-    amountMinor: 3990,
-    currency: "CNY",
-    snapshotProductName: "科研月度方案",
-    snapshotProductType: "SUBSCRIPTION",
-    snapshotPlanId: "plan-1",
-    snapshotDurationDays: 30,
-    snapshotCreditGrant: 1200,
-    snapshotEntitlementVersion: "research-v1",
-    snapshotEntitlements: [],
-    snapshotDetails: {},
-    acceptedAgreementVersion: "billing-v1",
-    expiresAt: "2026-07-28T09:30:00.000Z",
-    paidAt: "2026-07-28T09:02:00.000Z",
-    closedAt: null,
-    refundStatus: "NONE",
-    createdAt: "2026-07-28T09:00:00.000Z",
-    updatedAt: "2026-07-28T09:02:00.000Z",
     ...overrides,
   };
 }
@@ -133,22 +106,19 @@ function repository(
     async getSummary() {
       return summary();
     },
-    async findUserOrder() {
-      return order();
-    },
-    async upsertRefundRequest(input) {
+    async requestRefund(input) {
       return {
         id: "refund-request-1",
         orderId: input.orderId,
         status: "PENDING",
-        requestedAmountMinor: input.requestedAmountMinor,
-        currency: input.currency,
+        requestedAmountMinor: 3990,
+        currency: "CNY",
         reasonCode: input.reasonCode,
         details: input.details,
         createdAt: "2026-07-28T10:00:00.000Z",
       };
     },
-    async upsertInvoiceRequest(input) {
+    async requestInvoice(input) {
       return {
         id: "invoice-request-1",
         orderId: input.orderId,
@@ -156,8 +126,8 @@ function repository(
         titleType: input.titleType,
         invoiceTitle: input.invoiceTitle,
         taxIdentifier: input.taxIdentifier,
-        amountMinor: input.amountMinor,
-        currency: input.currency,
+        amountMinor: 3990,
+        currency: "CNY",
         deliveryEmail: input.deliveryEmail,
         createdAt: "2026-07-28T10:00:00.000Z",
       };
@@ -208,6 +178,11 @@ test("pricing and checkout use backend products without embedded prices or quota
 
   const orderRequest = checkout.slice(checkout.indexOf("/api/billing/orders"));
   assert.doesNotMatch(orderRequest, /\b(?:amount|currency|userId)\s*:/);
+  assert.match(
+    orderRequest,
+    /acceptedAgreementVersion:\s*availability\.agreementVersion/,
+  );
+  assert.doesNotMatch(checkout, /["']billing-member-v1["']/);
 });
 
 test("disabled billing has no purchase action and production mock confirmation is gated", async () => {
@@ -249,13 +224,9 @@ test("availability fails closed and only enables production mock for a test user
   const events: string[] = [];
   const disabled = createBillingAvailabilityGetHandler({
     getConfig: () => billingConfig(),
-    requireUser: async () => {
+    requireActor: async () => {
       events.push("unexpected-auth");
       return user();
-    },
-    requireAdmin: async () => {
-      events.push("unexpected-admin");
-      return { ...user(), isAdmin: true, role: "BILLING_ADMIN" };
     },
   });
 
@@ -265,6 +236,7 @@ test("availability fails closed and only enables production mock for a test user
     available: false,
     paymentMode: null,
     mockConfirmationAllowed: false,
+    agreementVersion: null,
   });
   assert.deepEqual(events, []);
 
@@ -275,15 +247,13 @@ test("availability fails closed and only enables production mock for a test user
         isProduction: true,
         testUserIds: ["allowed-user"],
       }),
-    requireUser: async () => user(),
-    requireAdmin: async () => {
-      throw new BillingError("BILLING_ADMIN_REQUIRED", "denied", 403);
-    },
+    requireActor: async () => user(),
   });
   assert.deepEqual(await (await productionUser()).json(), {
     available: false,
     paymentMode: null,
     mockConfirmationAllowed: false,
+    agreementVersion: null,
   });
 
   const productionTestUser = createBillingAvailabilityGetHandler({
@@ -293,15 +263,33 @@ test("availability fails closed and only enables production mock for a test user
         isProduction: true,
         testUserIds: ["user-1"],
       }),
-    requireUser: async () => user(),
-    requireAdmin: async () => {
-      throw new Error("whitelisted users must not need admin lookup");
-    },
+    requireActor: async () => user(),
   });
   assert.deepEqual(await (await productionTestUser()).json(), {
     available: true,
     paymentMode: "mock",
     mockConfirmationAllowed: true,
+    agreementVersion: "billing-member-v1",
+  });
+
+  const productionAdmin = createBillingAvailabilityGetHandler({
+    getConfig: () =>
+      billingConfig({
+        featureEnabled: true,
+        isProduction: true,
+        testUserIds: ["allowed-user"],
+      }),
+    requireActor: async () => ({
+      ...user(),
+      isAdmin: true,
+      role: "BILLING_ADMIN",
+    }),
+  });
+  assert.deepEqual(await (await productionAdmin()).json(), {
+    available: true,
+    paymentMode: "mock",
+    mockConfirmationAllowed: true,
+    agreementVersion: "billing-member-v1",
   });
 });
 
@@ -346,7 +334,7 @@ test("refund handler rejects client authority fields and validates reason input"
   const { createRefundPostHandler } = await userPagesModule();
   const submitted: unknown[] = [];
   const handler = createRefundPostHandler({
-    requireUser: async () => user(),
+    requireActor: async () => user(),
     getConfig: () => billingConfig({ featureEnabled: true }),
     assertAccess: () => undefined,
     submitRefund: async (input) => {
@@ -425,46 +413,9 @@ test("refund handler rejects client authority fields and validates reason input"
   ]);
 });
 
-test("refund service verifies ownership and state and derives money from the order", async () => {
+test("refund service delegates ownership, state, and money derivation to the atomic repository operation", async () => {
   const { submitRefundRequest } = await userPagesModule();
-
-  await assert.rejects(
-    submitRefundRequest(
-      {
-        userId: "user-1",
-        orderId: "missing",
-        reasonCode: "NO_LONGER_NEEDED",
-        details: "",
-      },
-      { repository: repository({ findUserOrder: async () => null }) },
-    ),
-    (error) =>
-      error instanceof BillingError &&
-      error.code === "ORDER_NOT_FOUND" &&
-      error.status === 404,
-  );
-
-  await assert.rejects(
-    submitRefundRequest(
-      {
-        userId: "user-1",
-        orderId: "order-1",
-        reasonCode: "NO_LONGER_NEEDED",
-        details: "",
-      },
-      {
-        repository: repository({
-          findUserOrder: async () => order({ status: "PENDING" }),
-        }),
-      },
-    ),
-    (error) =>
-      error instanceof BillingError &&
-      error.code === "REFUND_NOT_ALLOWED" &&
-      error.status === 409,
-  );
-
-  let upsertInput: unknown;
+  let requestInput: unknown;
   const result = await submitRefundRequest(
     {
       userId: "user-1",
@@ -474,14 +425,14 @@ test("refund service verifies ownership and state and derives money from the ord
     },
     {
       repository: repository({
-        upsertRefundRequest: async (input) => {
-          upsertInput = input;
+        requestRefund: async (input) => {
+          requestInput = input;
           return {
             id: "refund-request-1",
             orderId: input.orderId,
             status: "PENDING",
-            requestedAmountMinor: input.requestedAmountMinor,
-            currency: input.currency,
+            requestedAmountMinor: 3990,
+            currency: "CNY",
             reasonCode: input.reasonCode,
             details: input.details,
             createdAt: "2026-07-28T10:00:00.000Z",
@@ -492,11 +443,9 @@ test("refund service verifies ownership and state and derives money from the ord
   );
 
   assert.equal(result.status, "PENDING");
-  assert.deepEqual(upsertInput, {
+  assert.deepEqual(requestInput, {
     userId: "user-1",
     orderId: "order-1",
-    requestedAmountMinor: 3990,
-    currency: "CNY",
     reasonCode: "SERVICE_ISSUE",
     details: "服务结果未满足研究任务需要。",
   });
@@ -506,7 +455,7 @@ test("invoice handler validates enum, title, tax identifier, and email", async (
   const { createInvoicePostHandler } = await userPagesModule();
   const submitted: unknown[] = [];
   const handler = createInvoicePostHandler({
-    requireUser: async () => user(),
+    requireActor: async () => user(),
     getConfig: () => billingConfig({ featureEnabled: true }),
     assertAccess: () => undefined,
     submitInvoice: async (input) => {
@@ -592,32 +541,84 @@ test("invoice handler validates enum, title, tax identifier, and email", async (
   ]);
 });
 
-test("invoice service verifies ownership and paid state and derives money from the order", async () => {
-  const { submitInvoiceRequest } = await userPagesModule();
+test("refund and invoice routes use the resolved actor for a production Mock administrator", async () => {
+  const {
+    createRefundPostHandler,
+    createInvoicePostHandler,
+  } = await userPagesModule();
+  const admin = {
+    ...user(),
+    isAdmin: true as const,
+    role: "BILLING_ADMIN" as const,
+  };
+  const productionMock = billingConfig({
+    featureEnabled: true,
+    isProduction: true,
+    testUserIds: ["different-test-user"],
+  });
+  const refund = createRefundPostHandler({
+    requireActor: async () => admin,
+    getConfig: () => productionMock,
+    assertAccess: assertBillingAccess,
+    submitRefund: async (input) => ({
+      id: "refund-request-admin",
+      orderId: input.orderId,
+      status: "PENDING",
+      requestedAmountMinor: 3990,
+      currency: "CNY",
+      reasonCode: input.reasonCode,
+      details: input.details,
+      createdAt: "2026-07-29T01:00:00.000Z",
+    }),
+  });
+  const invoice = createInvoicePostHandler({
+    requireActor: async () => admin,
+    getConfig: () => productionMock,
+    assertAccess: assertBillingAccess,
+    submitInvoice: async (input) => ({
+      id: "invoice-request-admin",
+      orderId: input.orderId,
+      status: "PENDING",
+      titleType: input.titleType,
+      invoiceTitle: input.invoiceTitle,
+      taxIdentifier: input.taxIdentifier,
+      amountMinor: 3990,
+      currency: "CNY",
+      deliveryEmail: input.deliveryEmail,
+      createdAt: "2026-07-29T01:00:00.000Z",
+    }),
+  });
 
-  await assert.rejects(
-    submitInvoiceRequest(
-      {
-        userId: "user-1",
+  const refundResponse = await refund(
+    new Request("http://localhost/api/billing/refunds", {
+      method: "POST",
+      body: JSON.stringify({
+        orderId: "order-1",
+        reasonCode: "NO_LONGER_NEEDED",
+        details: "",
+      }),
+    }),
+  );
+  const invoiceResponse = await invoice(
+    new Request("http://localhost/api/billing/invoices", {
+      method: "POST",
+      body: JSON.stringify({
         orderId: "order-1",
         titleType: "PERSONAL",
         invoiceTitle: "张同学",
         taxIdentifier: null,
         deliveryEmail: "student@example.edu.cn",
-      },
-      {
-        repository: repository({
-          findUserOrder: async () => order({ status: "REFUNDED" }),
-        }),
-      },
-    ),
-    (error) =>
-      error instanceof BillingError &&
-      error.code === "INVOICE_NOT_ALLOWED" &&
-      error.status === 409,
+      }),
+    }),
   );
 
-  let upsertInput: unknown;
+  assert.equal(refundResponse.status, 202);
+  assert.equal(invoiceResponse.status, 202);
+});
+
+test("invoice service delegates ownership, state, and money derivation to the atomic repository operation", async () => {
+  const { submitInvoiceRequest } = await userPagesModule();
+  let requestInput: unknown;
   const result = await submitInvoiceRequest(
     {
       userId: "user-1",
@@ -629,8 +630,8 @@ test("invoice service verifies ownership and paid state and derives money from t
     },
     {
       repository: repository({
-        upsertInvoiceRequest: async (input) => {
-          upsertInput = input;
+        requestInvoice: async (input) => {
+          requestInput = input;
           return {
             id: "invoice-request-1",
             orderId: input.orderId,
@@ -638,8 +639,8 @@ test("invoice service verifies ownership and paid state and derives money from t
             titleType: input.titleType,
             invoiceTitle: input.invoiceTitle,
             taxIdentifier: input.taxIdentifier,
-            amountMinor: input.amountMinor,
-            currency: input.currency,
+            amountMinor: 3990,
+            currency: "CNY",
             deliveryEmail: input.deliveryEmail,
             createdAt: "2026-07-28T10:00:00.000Z",
           };
@@ -649,31 +650,100 @@ test("invoice service verifies ownership and paid state and derives money from t
   );
 
   assert.equal(result.status, "PENDING");
-  assert.deepEqual(upsertInput, {
+  assert.deepEqual(requestInput, {
     userId: "user-1",
     orderId: "order-1",
     titleType: "PERSONAL",
     invoiceTitle: "张同学",
     taxIdentifier: null,
-    amountMinor: 3990,
-    currency: "CNY",
     deliveryEmail: "student@example.edu.cn",
   });
 });
 
-test("refund and invoice repositories use unique upsert conflicts and own-order filters", async () => {
-  const contents = await source("lib/billing/user-pages.ts");
+test("refund and invoice repositories delegate one atomic request to service-role RPCs", async () => {
+  const { createBillingUserPageRepository } = await userPagesModule();
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const client = {
+    from() {
+      throw new Error("after-sales writes must not read or upsert tables");
+    },
+    async rpc(name: string, args: Record<string, unknown>) {
+      calls.push({ name, args });
+      if (name === "billing_request_refund") {
+        return {
+          data: {
+            id: "refund-request-1",
+            order_id: "order-1",
+            status: "PENDING",
+            requested_amount_minor: 3990,
+            currency: "CNY",
+            reason: JSON.stringify({
+              reasonCode: "SERVICE_ISSUE",
+              details: "服务结果未满足研究任务需要。",
+            }),
+            created_at: "2026-07-29T01:00:00.000Z",
+          },
+          error: null,
+        };
+      }
+      return {
+        data: {
+          id: "invoice-request-1",
+          order_id: "order-1",
+          status: "PENDING",
+          invoice_title: "张同学",
+          tax_identifier: null,
+          amount_minor: 3990,
+          currency: "CNY",
+          delivery_email: "student@example.edu.cn",
+          created_at: "2026-07-29T01:00:00.000Z",
+        },
+        error: null,
+      };
+    },
+  };
+  const atomicRepository = createBillingUserPageRepository(client);
 
-  assert.match(contents, /upsert\(/);
-  assert.match(contents, /onConflict:\s*["']user_id,order_id["']/);
-  assert.match(contents, /ignoreDuplicates:\s*true/);
-  assert.match(contents, /\.eq\(["']user_id["'],\s*userId\)/);
-  assert.match(
-    contents,
-    /\.eq\(["']order_id["'],\s*(?:orderId|request\.orderId)\)/,
-  );
-  assert.doesNotMatch(contents, /requested_amount_minor:\s*(?:input|body)\./);
-  assert.doesNotMatch(contents, /amount_minor:\s*(?:input|body)\.amount/);
+  const refund = await atomicRepository.requestRefund({
+    userId: "user-1",
+    orderId: "order-1",
+    reasonCode: "SERVICE_ISSUE",
+    details: "服务结果未满足研究任务需要。",
+  });
+  const invoice = await atomicRepository.requestInvoice({
+    userId: "user-1",
+    orderId: "order-1",
+    titleType: "PERSONAL",
+    invoiceTitle: "张同学",
+    taxIdentifier: null,
+    deliveryEmail: "student@example.edu.cn",
+  });
+
+  assert.equal(refund.requestedAmountMinor, 3990);
+  assert.equal(invoice.amountMinor, 3990);
+  assert.deepEqual(calls, [
+    {
+      name: "billing_request_refund",
+      args: {
+        p_user_id: "user-1",
+        p_order_id: "order-1",
+        p_reason: JSON.stringify({
+          reasonCode: "SERVICE_ISSUE",
+          details: "服务结果未满足研究任务需要。",
+        }),
+      },
+    },
+    {
+      name: "billing_request_invoice",
+      args: {
+        p_user_id: "user-1",
+        p_order_id: "order-1",
+        p_invoice_title: "张同学",
+        p_tax_identifier: null,
+        p_delivery_email: "student@example.edu.cn",
+      },
+    },
+  ]);
 });
 
 test("refund and invoice writes fail closed on repository errors", async () => {
@@ -682,10 +752,10 @@ test("refund and invoice writes fail closed on repository errors", async () => {
     submitInvoiceRequest,
   } = await userPagesModule();
   const failing = repository({
-    upsertRefundRequest: async () => {
+    requestRefund: async () => {
       throw new Error("database host=secret");
     },
-    upsertInvoiceRequest: async () => {
+    requestInvoice: async () => {
       throw new Error("database host=secret");
     },
   });

@@ -647,7 +647,7 @@ test("Mock confirm route requires an authenticated admin or allowlisted owner an
   };
   let confirmations = 0;
   const handler = createMockConfirmPostHandler({
-    requireUser: async () => user,
+    requireActor: async () => user,
     getConfig: () => config,
     assertAccess: () => undefined,
     confirmPayment: async () => {
@@ -688,7 +688,7 @@ test("Mock confirm route requires an authenticated admin or allowlisted owner an
   assert.equal(confirmations, 1);
 
   const forbidden = createMockConfirmPostHandler({
-    requireUser: async () => ({ ...user, id: "not-allowlisted" }),
+    requireActor: async () => ({ ...user, id: "not-allowlisted" }),
     getConfig: () => config,
     assertAccess: () => undefined,
     confirmPayment: async () => {
@@ -709,20 +709,16 @@ test("Mock confirm route requires an authenticated admin or allowlisted owner an
 });
 
 test("Mock confirm route elevates an authenticated database administrator before production access checks", async () => {
-  const regularIdentity: BillingUser = {
+  const adminIdentity = {
     id: "admin-user",
     email: "admin@example.com",
-    isAdmin: false,
+    isAdmin: true as const,
+    role: "BILLING_ADMIN" as const,
   };
-  const adminIdentity: BillingUser = { ...regularIdentity, isAdmin: true };
   const events: string[] = [];
   const handler = createMockConfirmPostHandler({
-    requireUser: async () => {
-      events.push("auth");
-      return regularIdentity;
-    },
-    requireAdmin: async () => {
-      events.push("admin");
+    requireActor: async () => {
+      events.push("actor");
       return adminIdentity;
     },
     getConfig: () => ({ ...config, isProduction: true, testUserIds: [] }),
@@ -754,5 +750,5 @@ test("Mock confirm route elevates an authenticated database administrator before
   );
 
   assert.equal(response.status, 200);
-  assert.deepEqual(events, ["auth", "admin", "access", "confirm"]);
+  assert.deepEqual(events, ["actor", "access", "confirm"]);
 });

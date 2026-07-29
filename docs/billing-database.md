@@ -1,18 +1,23 @@
 # Billing 数据库迁移
 
-本目录的三份迁移建立收费 MVP 的数据表、RLS 策略和原子事务函数。金额列统一使用 `BIGINT` 整数分；额度与用量也使用整数，并由 `CHECK` 约束和条件更新共同防止负数。
+本目录的迁移建立收费 MVP 的数据表、RLS 策略和原子事务函数。金额列统一使用 `BIGINT` 整数分；额度与用量也使用整数，并由 `CHECK` 约束和条件更新共同防止负数。
 
 ## 安全边界
 
 禁止对线上数据库执行这些迁移或本文命令。迁移验证只允许使用开发者本机 Supabase，或与生产完全隔离、可随时销毁的独立测试数据库。不要把任何数据库口令、支付密钥或真实回调载荷写入仓库和测试日志。
 
-客户端角色只获得启用商品和本人账务数据的读取权限。创建订单、支付结算、退款、发票、额度与管理写入均由服务端使用受控身份完成。十个事务 RPC（包括支付 intent 的 claim/complete/fail/Mock confirm 与 `billing_consume_order_rate_limit`）均为 `SECURITY DEFINER`、固定 `search_path`，并撤销 `PUBLIC`、`anon` 和 `authenticated` 的执行权限，仅授权 `service_role`。`billing_payment_intents` 不向客户端开放读取，避免其中的 Provider token 暴露。
+客户端角色只获得启用商品和本人账务数据的读取权限。创建订单、支付结算、退款、发票、额度与管理写入均由服务端使用受控身份完成。事务 RPC（包括支付 intent 的 claim/complete/fail/Mock confirm、`billing_consume_order_rate_limit` 与售后申请）均为 `SECURITY DEFINER`、固定 `search_path`，并撤销 `PUBLIC`、`anon` 和 `authenticated` 的执行权限，仅授权 `service_role`。`billing_payment_intents` 不向客户端开放读取，避免其中的 Provider token 暴露。
 
 ## 迁移顺序
 
 1. `202607210001_billing_schema.sql`：19 张表、索引、约束和订单快照保护。
 2. `202607210002_billing_rls.sql`：逐表启用 RLS，默认拒绝写入，并开放受策略约束的只读访问。
 3. `202607210003_billing_functions.sql`：支付创建 intent、支付结算、用量预占/确认/释放和人工额度调整。
+4. `202607230004_billing_after_sales.sql`：以前向升级方式增加退款/发票申请的 `(user_id, order_id)` 唯一约束，以及两个原子售后申请 RPC。已应用的 `001` 不回写。
+
+## 退款与发票申请
+
+应用层不得先查询订单再插入申请。服务端仅调用 `billing_request_refund` 或 `billing_request_invoice`；RPC 在一个事务内锁定订单、核对 owner，并优先返回同一 `(user_id, order_id)` 的既有申请。只有没有既有申请时才校验订单当前状态，申请金额和币种始终从锁定的订单派生。这样并发重试会稳定返回首次申请，不会因订单随后进入退款中等状态破坏幂等，也不会接受客户端计价字段。
 
 ## 订单与回调调用契约
 
@@ -50,13 +55,14 @@ supabase migration up --local
 
 静态测试只能核对 SQL 合约，不能证明 PostgreSQL 的实际事务语义。上线前必须在独立测试数据库验证：
 
-- 全新数据库按顺序应用三份 migration，并验证重复执行策略符合迁移工具预期。
+- 全新数据库按顺序应用全部 migration；另从已应用 `001`–`003` 的本地或隔离测试数据库执行 `supabase migration up --local`，确认 `004` 以前向方式补齐约束与 RPC。
 - `anon` 与 `authenticated` 不能写 Billing 表；认证用户只能读取本人账务数据，不能读取其他用户或管理/回调数据。
 - 同一 Provider 事件并发结算只发放一次订阅、权益或额度；金额、币种、订单号、状态、渠道或过期时间不符时不发放。
 - 同一订单跨数据库连接并发 claim 时只有一个调用者获得 `CLAIMED`；成功完成后其他连接复用完全相同的 `CREATED` 结果，失败或租约过期可安全接管。
 - 同一任务键并发预占只生效一次；额度不足或周期限额不足时整笔事务回滚。
 - 确认和释放只允许从 `RESERVED` 状态发生，重复调用保持幂等，且余额、预占和周期用量始终非负。
 - 人工额度调整要求有效管理员、非空原因和唯一幂等键，并与审计记录在同一事务提交。
+- 同一订单并发提交退款或发票申请只产生一行；重试返回相同申请 ID。跨用户订单 ID、不可申请状态及客户端伪造金额/币种均不能创建申请。
 
 ## 回滚原则
 

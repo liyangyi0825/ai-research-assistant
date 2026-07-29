@@ -863,6 +863,24 @@ export type Database = {
         };
         Returns: Json;
       };
+      billing_request_refund: {
+        Args: {
+          p_user_id: UUID;
+          p_order_id: UUID;
+          p_reason: string;
+        };
+        Returns: Json;
+      };
+      billing_request_invoice: {
+        Args: {
+          p_user_id: UUID;
+          p_order_id: UUID;
+          p_invoice_title: string;
+          p_tax_identifier: string | null;
+          p_delivery_email: string;
+        };
+        Returns: Json;
+      };
       billing_consume_order_rate_limit: {
         Args: {
           p_user_id: UUID;

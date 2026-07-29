@@ -5,6 +5,7 @@ import { GET as productsGET } from "../../app/api/billing/products/route";
 import { GET as orderGET } from "../../app/api/billing/orders/[id]/route";
 import { POST as ordersPOST } from "../../app/api/billing/orders/route";
 import type { BillingUser } from "../../lib/billing/auth";
+import { assertBillingAccess } from "../../lib/billing/auth";
 import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 import {
@@ -68,7 +69,7 @@ const order: BillingOrder = {
   snapshotEntitlementVersion: "pro-v1",
   snapshotEntitlements: [],
   snapshotDetails: { sku: publicProduct.sku },
-  acceptedAgreementVersion: "membership-v1",
+  acceptedAgreementVersion: "billing-member-v1",
   expiresAt: "2026-07-22T02:30:00.000Z",
   paidAt: null,
   closedAt: null,
@@ -111,7 +112,7 @@ test("POST orders performs auth, feature access, atomic rate limiting, then orde
   const events: string[] = [];
   let receivedInput: CreateOrderInput | null = null;
   const handler = createOrderPostHandler({
-    requireUser: async () => {
+    requireActor: async () => {
       events.push("auth");
       return user;
     },
@@ -136,7 +137,7 @@ test("POST orders performs auth, feature access, atomic rate limiting, then orde
     jsonRequest({
       productId: publicProduct.id,
       provider: "mock",
-      acceptedAgreementVersion: "membership-v1",
+      acceptedAgreementVersion: "billing-member-v1",
     }),
   );
 
@@ -146,9 +147,44 @@ test("POST orders performs auth, feature access, atomic rate limiting, then orde
     userId: "server-user",
     productId: publicProduct.id,
     provider: "mock",
-    acceptedAgreementVersion: "membership-v1",
+    acceptedAgreementVersion: "billing-member-v1",
   });
   assert.deepEqual(await responseBody(response), { order });
+});
+
+test("POST orders uses the server-resolved actor so an active administrator can use production Mock", async () => {
+  const admin = {
+    ...user,
+    isAdmin: true as const,
+    role: "BILLING_ADMIN" as const,
+  };
+  const productionMockConfig: BillingConfig = {
+    ...config,
+    isProduction: true,
+    testUserIds: ["different-test-user"],
+  };
+  let created = false;
+  const handler = createOrderPostHandler({
+    requireActor: async () => admin,
+    getConfig: () => productionMockConfig,
+    assertAccess: assertBillingAccess,
+    consumeRateLimit: async () => undefined,
+    createOrder: async () => {
+      created = true;
+      return { ...order, userId: admin.id };
+    },
+  });
+
+  const response = await handler(
+    jsonRequest({
+      productId: publicProduct.id,
+      provider: "mock",
+      acceptedAgreementVersion: "billing-member-v1",
+    }),
+  );
+
+  assert.equal(response.status, 201);
+  assert.equal(created, true);
 });
 
 test("POST orders rejects client amount, currency, and userId fields before product access", async () => {
@@ -156,25 +192,25 @@ test("POST orders rejects client amount, currency, and userId fields before prod
     {
       productId: publicProduct.id,
       provider: "mock",
-      acceptedAgreementVersion: "membership-v1",
+      acceptedAgreementVersion: "billing-member-v1",
       amount: 1,
     },
     {
       productId: publicProduct.id,
       provider: "mock",
-      acceptedAgreementVersion: "membership-v1",
+      acceptedAgreementVersion: "billing-member-v1",
       currency: "USD",
     },
     {
       productId: publicProduct.id,
       provider: "mock",
-      acceptedAgreementVersion: "membership-v1",
+      acceptedAgreementVersion: "billing-member-v1",
       userId: "attacker-user",
     },
   ]) {
     const events: string[] = [];
     const handler = createOrderPostHandler({
-      requireUser: async () => {
+      requireActor: async () => {
         events.push("auth");
         return user;
       },
@@ -205,7 +241,7 @@ test("POST orders rejects client amount, currency, and userId fields before prod
 
 test("POST orders rejects blank agreements and invalid providers", async () => {
   const handler = createOrderPostHandler({
-    requireUser: async () => user,
+    requireActor: async () => user,
     getConfig: () => config,
     assertAccess: () => undefined,
     consumeRateLimit: async () => undefined,
@@ -221,12 +257,43 @@ test("POST orders rejects blank agreements and invalid providers", async () => {
     {
       productId: publicProduct.id,
       provider: "paypal",
-      acceptedAgreementVersion: "membership-v1",
+      acceptedAgreementVersion: "billing-member-v1",
     },
   ]) {
     const response = await handler(jsonRequest(body));
     assert.equal(response.status, 400);
   }
+});
+
+test("POST orders rejects a stale client agreement version before order creation", async () => {
+  let created = false;
+  const handler = createOrderPostHandler({
+    requireActor: async () => user,
+    getConfig: () => config,
+    assertAccess: () => undefined,
+    consumeRateLimit: async () => undefined,
+    createOrder: async () => {
+      created = true;
+      return order;
+    },
+  });
+
+  const response = await handler(
+    jsonRequest({
+      productId: publicProduct.id,
+      provider: "mock",
+      acceptedAgreementVersion: "membership-v1",
+    }),
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal(created, false);
+  assert.deepEqual(await responseBody(response), {
+    error: {
+      code: "AGREEMENT_VERSION_MISMATCH",
+      message: "The accepted billing agreement version is not current.",
+    },
+  });
 });
 
 test("POST orders rejects providers that differ from the server payment mode", async () => {
@@ -237,7 +304,7 @@ test("POST orders rejects providers that differ from the server payment mode", a
   ] as const) {
     const events: string[] = [];
     const handler = createOrderPostHandler({
-      requireUser: async () => {
+      requireActor: async () => {
         events.push("auth");
         return user;
       },
@@ -256,7 +323,7 @@ test("POST orders rejects providers that differ from the server payment mode", a
       jsonRequest({
         productId: publicProduct.id,
         provider,
-        acceptedAgreementVersion: "membership-v1",
+        acceptedAgreementVersion: "billing-member-v1",
       }),
     );
 
@@ -275,7 +342,7 @@ test("POST orders rejects providers that differ from the server payment mode", a
 test("POST orders stops immediately when authentication or access checks fail", async () => {
   const events: string[] = [];
   const handler = createOrderPostHandler({
-    requireUser: async () => {
+    requireActor: async () => {
       events.push("auth");
       throw new BillingError("UNAUTHENTICATED", "Sign in required.", 401);
     },

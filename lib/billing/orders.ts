@@ -2,10 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import {
   assertBillingAccess,
+  requireBillingActor,
   requireBillingUser,
+  type BillingActor,
   type BillingUser,
 } from "./auth";
 import {
+  BILLING_AGREEMENT_VERSION,
   getBillingConfig,
   type BillingConfig,
   type PaymentMode,
@@ -60,7 +63,16 @@ function requiredAgreementVersion(value: unknown): string {
     );
   }
 
-  return value.trim();
+  const version = value.trim();
+  if (version !== BILLING_AGREEMENT_VERSION) {
+    throw new BillingError(
+      "AGREEMENT_VERSION_MISMATCH",
+      "The accepted billing agreement version is not current.",
+      400,
+    );
+  }
+
+  return version;
 }
 
 function assertProviderMatchesPaymentMode(
@@ -194,7 +206,7 @@ export async function getUserOrder(
 }
 
 export type CreateOrderPostHandlerDependencies = {
-  requireUser: () => Promise<BillingUser>;
+  requireActor: () => Promise<BillingActor>;
   getConfig: () => BillingConfig;
   assertAccess: (user: BillingUser, config: BillingConfig) => void;
   consumeRateLimit: (userId: string) => Promise<void>;
@@ -285,13 +297,15 @@ async function parseCreateOrderBody(request: Request): Promise<{
   return {
     productId: values.productId.trim(),
     provider: values.provider,
-    acceptedAgreementVersion: values.acceptedAgreementVersion.trim(),
+    acceptedAgreementVersion: requiredAgreementVersion(
+      values.acceptedAgreementVersion,
+    ),
   };
 }
 
 export function createOrderPostHandler(
   dependencies: CreateOrderPostHandlerDependencies = {
-    requireUser: requireBillingUser,
+    requireActor: requireBillingActor,
     getConfig: getBillingConfig,
     assertAccess: assertBillingAccess,
     consumeRateLimit: consumeOrderRateLimit,
@@ -300,7 +314,7 @@ export function createOrderPostHandler(
 ): (request: Request) => Promise<Response> {
   return async function postOrderHandler(request: Request) {
     try {
-      const user = await dependencies.requireUser();
+      const user = await dependencies.requireActor();
       const config = dependencies.getConfig();
       dependencies.assertAccess(user, config);
       await dependencies.consumeRateLimit(user.id);

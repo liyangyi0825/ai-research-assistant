@@ -50,6 +50,8 @@ const schemaPath = "supabase/migrations/202607210001_billing_schema.sql";
 const rlsPath = "supabase/migrations/202607210002_billing_rls.sql";
 const functionsPath =
   "supabase/migrations/202607210003_billing_functions.sql";
+const afterSalesPath =
+  "supabase/migrations/202607230004_billing_after_sales.sql";
 
 const tables = [
   "billing_plans",
@@ -829,10 +831,82 @@ test("database guide only documents local or isolated test database execution", 
   assert.doesNotMatch(guide, /(?:project-ref|db[_ -]?password|postgres(?:ql)?:\/\/)/i);
 });
 
-test("user refund and invoice requests are unique per owned order", () => {
+test("after-sales uniqueness is a forward-only upgrade and does not rewrite the original schema migration", () => {
   const refundRequests = sqlTable("billing_refund_requests");
   const invoiceRequests = sqlTable("billing_invoice_requests");
+  const upgrade = compactSql(afterSalesPath);
 
-  assert.match(refundRequests, /unique \(user_id, order_id\)/);
-  assert.match(invoiceRequests, /unique \(user_id, order_id\)/);
+  assert.doesNotMatch(refundRequests, /unique \(user_id, order_id\)/);
+  assert.doesNotMatch(invoiceRequests, /unique \(user_id, order_id\)/);
+  assert.match(
+    upgrade,
+    /alter table public\.billing_refund_requests add constraint billing_refund_requests_user_order_key unique \(user_id, order_id\)/,
+  );
+  assert.match(
+    upgrade,
+    /alter table public\.billing_invoice_requests add constraint billing_invoice_requests_user_order_key unique \(user_id, order_id\)/,
+  );
+});
+
+test("after-sales request RPCs lock the owned order and return an existing request before state validation", () => {
+  const refund = sqlFunction("billing_request_refund", afterSalesPath);
+  const invoice = sqlFunction("billing_request_invoice", afterSalesPath);
+
+  for (const fn of [refund, invoice]) {
+    assert.match(fn, /security definer/);
+    assert.match(fn, /set search_path = pg_catalog, public/);
+    assert.match(
+      fn,
+      /from public\.billing_orders where id = p_order_id for update/,
+    );
+    assert.match(fn, /v_order\.user_id is distinct from p_user_id/);
+    assert.match(
+      fn,
+      /where user_id = p_user_id and order_id = p_order_id/,
+    );
+    assert.ok(
+      fn.indexOf("if found then") <
+        fn.indexOf("object_not_in_prerequisite_state"),
+      "stable replay must return before mutable order-state validation",
+    );
+  }
+
+  assert.match(refund, /requested_amount_minor[\s\S]*?v_order\.amount_minor/);
+  assert.match(refund, /currency[\s\S]*?v_order\.currency/);
+  assert.match(invoice, /amount_minor[\s\S]*?v_order\.amount_minor/);
+  assert.match(invoice, /currency[\s\S]*?v_order\.currency/);
+});
+
+test("after-sales request RPCs are executable only by service_role", () => {
+  const sql = compactSql(afterSalesPath);
+
+  assert.match(
+    sql,
+    /revoke all on function public\.billing_request_refund\(uuid, uuid, text\) from public, anon, authenticated/,
+  );
+  assert.match(
+    sql,
+    /grant execute on function public\.billing_request_refund\(uuid, uuid, text\) to service_role/,
+  );
+  assert.match(
+    sql,
+    /revoke all on function public\.billing_request_invoice\(uuid, uuid, text, text, text\) from public, anon, authenticated/,
+  );
+  assert.match(
+    sql,
+    /grant execute on function public\.billing_request_invoice\(uuid, uuid, text, text, text\) to service_role/,
+  );
+});
+
+test("database types expose atomic after-sales request RPC contracts", () => {
+  const types = projectFile("lib/billing/database.types.ts");
+
+  assert.match(
+    types,
+    /billing_request_refund: \{[\s\S]*?p_user_id: UUID;[\s\S]*?p_order_id: UUID;[\s\S]*?p_reason: string;[\s\S]*?Returns: Json;/,
+  );
+  assert.match(
+    types,
+    /billing_request_invoice: \{[\s\S]*?p_user_id: UUID;[\s\S]*?p_order_id: UUID;[\s\S]*?p_invoice_title: string;[\s\S]*?p_tax_identifier: string \| null;[\s\S]*?p_delivery_email: string;[\s\S]*?Returns: Json;/,
+  );
 });

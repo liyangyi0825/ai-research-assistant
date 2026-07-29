@@ -1,17 +1,19 @@
 import { getSupabaseAdminClient } from "../supabase";
 import {
   assertBillingAccess,
-  requireBillingAdmin,
+  requireBillingActor,
   requireBillingUser,
-  type BillingAdmin,
+  type BillingActor,
   type BillingUser,
 } from "./auth";
-import { getBillingConfig, type BillingConfig, type PaymentMode } from "./config";
-import { BillingError } from "./errors";
 import {
-  billingRepository,
-  type BillingOrder,
-} from "./repositories";
+  BILLING_AGREEMENT_VERSION,
+  getBillingConfig,
+  type BillingConfig,
+  type PaymentMode,
+} from "./config";
+import { BillingError } from "./errors";
+import type { BillingOrder } from "./repositories";
 
 export type RefundReasonCode =
   | "DUPLICATE_ORDER"
@@ -90,8 +92,6 @@ export type InvoiceRequest = {
 export type RefundRequestInsert = {
   userId: string;
   orderId: string;
-  requestedAmountMinor: number;
-  currency: "CNY";
   reasonCode: RefundReasonCode;
   details: string;
 };
@@ -102,21 +102,18 @@ export type InvoiceRequestInsert = {
   titleType: InvoiceTitleType;
   invoiceTitle: string;
   taxIdentifier: string | null;
-  amountMinor: number;
-  currency: "CNY";
   deliveryEmail: string;
 };
 
 export type BillingUserPageRepository = {
   getSummary(userId: string): Promise<BillingSummary>;
-  findUserOrder(userId: string, orderId: string): Promise<BillingOrder | null>;
-  upsertRefundRequest(input: RefundRequestInsert): Promise<RefundRequest>;
-  upsertInvoiceRequest(input: InvoiceRequestInsert): Promise<InvoiceRequest>;
+  requestRefund(input: RefundRequestInsert): Promise<RefundRequest>;
+  requestInvoice(input: InvoiceRequestInsert): Promise<InvoiceRequest>;
 };
 
 type DatabaseResult = {
   data: unknown;
-  error: { message: string } | null;
+  error: { message: string; code?: string } | null;
 };
 
 export type BillingUserPageQuery = PromiseLike<DatabaseResult> & {
@@ -130,17 +127,14 @@ export type BillingUserPageQuery = PromiseLike<DatabaseResult> & {
   ): BillingUserPageQuery;
   limit(count: number): BillingUserPageQuery;
   maybeSingle(): BillingUserPageQuery;
-  upsert(
-    values: Record<string, unknown>,
-    options: {
-      onConflict: string;
-      ignoreDuplicates: boolean;
-    },
-  ): BillingUserPageQuery;
 };
 
 export type BillingUserPageClient = {
   from(table: string): BillingUserPageQuery;
+  rpc(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<DatabaseResult>;
 };
 
 const ORDER_SUMMARY_COLUMNS = [
@@ -387,14 +381,34 @@ async function failClosed<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (
-      error instanceof BillingError &&
-      error.code === "BILLING_STORAGE_UNAVAILABLE"
-    ) {
-      throw error;
-    }
+    if (error instanceof BillingError) throw error;
     throw storageError();
   }
+}
+
+function afterSalesRpcError(
+  error: DatabaseResult["error"],
+  kind: "refund" | "invoice",
+): BillingError {
+  if (error?.code === "P0002") {
+    return new BillingError(
+      "ORDER_NOT_FOUND",
+      kind === "refund"
+        ? "未找到可申请售后的订单。"
+        : "未找到可申请发票的订单。",
+      404,
+    );
+  }
+  if (error?.code === "55000") {
+    return new BillingError(
+      kind === "refund" ? "REFUND_NOT_ALLOWED" : "INVOICE_NOT_ALLOWED",
+      kind === "refund"
+        ? "当前订单状态不能提交退款申请。"
+        : "当前订单状态不能提交发票申请。",
+      409,
+    );
+  }
+  return storageError();
 }
 
 export function createBillingUserPageRepository(
@@ -492,82 +506,36 @@ export function createBillingUserPageRepository(
       });
     },
 
-    findUserOrder(userId, orderId) {
-      return failClosed(() =>
-        billingRepository.findUserOrder(userId, orderId),
-      );
-    },
-
-    upsertRefundRequest(request) {
+    requestRefund(request) {
       return failClosed(async () => {
-        const inserted = await client
-          .from("billing_refund_requests")
-          .upsert(
-            {
-              order_id: request.orderId,
-              user_id: request.userId,
-              requested_amount_minor: request.requestedAmountMinor,
-              currency: request.currency,
-              reason: JSON.stringify({
-                reasonCode: request.reasonCode,
-                details: request.details,
-              }),
-            },
-            {
-              onConflict: "user_id,order_id",
-              ignoreDuplicates: true,
-            },
-          )
-          .select(REFUND_COLUMNS)
-          .maybeSingle();
-        const insertedData = optionalRow(inserted);
-        if (insertedData !== null) return mapRefund(insertedData);
-
-        const existing = await client
-          .from("billing_refund_requests")
-          .select(REFUND_COLUMNS)
-          .eq("user_id", request.userId)
-          .eq("order_id", request.orderId)
-          .maybeSingle();
-        const existingData = optionalRow(existing);
-        if (existingData === null) throw storageError();
-        return mapRefund(existingData);
+        const result = await client.rpc("billing_request_refund", {
+          p_user_id: request.userId,
+          p_order_id: request.orderId,
+          p_reason: JSON.stringify({
+            reasonCode: request.reasonCode,
+            details: request.details,
+          }),
+        });
+        if (result.error) throw afterSalesRpcError(result.error, "refund");
+        const data = optionalRow(result);
+        if (data === null) throw storageError();
+        return mapRefund(data);
       });
     },
 
-    upsertInvoiceRequest(request) {
+    requestInvoice(request) {
       return failClosed(async () => {
-        const inserted = await client
-          .from("billing_invoice_requests")
-          .upsert(
-            {
-              order_id: request.orderId,
-              user_id: request.userId,
-              invoice_title: request.invoiceTitle,
-              tax_identifier: request.taxIdentifier,
-              amount_minor: request.amountMinor,
-              currency: request.currency,
-              delivery_email: request.deliveryEmail,
-            },
-            {
-              onConflict: "user_id,order_id",
-              ignoreDuplicates: true,
-            },
-          )
-          .select(INVOICE_COLUMNS)
-          .maybeSingle();
-        const insertedData = optionalRow(inserted);
-        if (insertedData !== null) return mapInvoice(insertedData);
-
-        const existing = await client
-          .from("billing_invoice_requests")
-          .select(INVOICE_COLUMNS)
-          .eq("user_id", request.userId)
-          .eq("order_id", request.orderId)
-          .maybeSingle();
-        const existingData = optionalRow(existing);
-        if (existingData === null) throw storageError();
-        return mapInvoice(existingData);
+        const result = await client.rpc("billing_request_invoice", {
+          p_user_id: request.userId,
+          p_order_id: request.orderId,
+          p_invoice_title: request.invoiceTitle,
+          p_tax_identifier: request.taxIdentifier,
+          p_delivery_email: request.deliveryEmail,
+        });
+        if (result.error) throw afterSalesRpcError(result.error, "invoice");
+        const data = optionalRow(result);
+        if (data === null) throw storageError();
+        return mapInvoice(data);
       });
     },
   };
@@ -585,14 +553,11 @@ const billingUserPageRepository: BillingUserPageRepository = {
   getSummary(userId) {
     return defaultRepository().getSummary(userId);
   },
-  findUserOrder(userId, orderId) {
-    return defaultRepository().findUserOrder(userId, orderId);
+  requestRefund(input) {
+    return defaultRepository().requestRefund(input);
   },
-  upsertRefundRequest(input) {
-    return defaultRepository().upsertRefundRequest(input);
-  },
-  upsertInvoiceRequest(input) {
-    return defaultRepository().upsertInvoiceRequest(input);
+  requestInvoice(input) {
+    return defaultRepository().requestInvoice(input);
   },
 };
 
@@ -626,36 +591,10 @@ export async function submitRefundRequest(
   } = {},
 ): Promise<RefundRequest> {
   const repository = dependencies.repository ?? billingUserPageRepository;
-  let order: BillingOrder | null;
   try {
-    order = await repository.findUserOrder(input.userId, input.orderId);
-  } catch {
-    throw storageError();
-  }
-  if (!order || order.userId !== input.userId) {
-    throw new BillingError(
-      "ORDER_NOT_FOUND",
-      "未找到可申请售后的订单。",
-      404,
-    );
-  }
-  if (
-    order.status !== "PAID" ||
-    (order.refundStatus !== "NONE" && order.refundStatus !== "REQUESTED")
-  ) {
-    throw new BillingError(
-      "REFUND_NOT_ALLOWED",
-      "当前订单状态不能提交退款申请。",
-      409,
-    );
-  }
-  if (order.amountMinor <= 0) throw storageError();
-  try {
-    return await repository.upsertRefundRequest({
+    return await repository.requestRefund({
       userId: input.userId,
-      orderId: order.id,
-      requestedAmountMinor: order.amountMinor,
-      currency: order.currency,
+      orderId: input.orderId,
       reasonCode: input.reasonCode,
       details: input.details,
     });
@@ -672,35 +611,13 @@ export async function submitInvoiceRequest(
   } = {},
 ): Promise<InvoiceRequest> {
   const repository = dependencies.repository ?? billingUserPageRepository;
-  let order: BillingOrder | null;
   try {
-    order = await repository.findUserOrder(input.userId, input.orderId);
-  } catch {
-    throw storageError();
-  }
-  if (!order || order.userId !== input.userId) {
-    throw new BillingError(
-      "ORDER_NOT_FOUND",
-      "未找到可申请发票的订单。",
-      404,
-    );
-  }
-  if (order.status !== "PAID" || order.refundStatus === "FULL") {
-    throw new BillingError(
-      "INVOICE_NOT_ALLOWED",
-      "当前订单状态不能提交发票申请。",
-      409,
-    );
-  }
-  try {
-    return await repository.upsertInvoiceRequest({
+    return await repository.requestInvoice({
       userId: input.userId,
-      orderId: order.id,
+      orderId: input.orderId,
       titleType: input.titleType,
       invoiceTitle: input.invoiceTitle,
       taxIdentifier: input.taxIdentifier,
-      amountMinor: order.amountMinor,
-      currency: order.currency,
       deliveryEmail: input.deliveryEmail,
     });
   } catch (error) {
@@ -730,21 +647,20 @@ function errorResponse(
 
 export type BillingAvailabilityHandlerDependencies = {
   getConfig: () => BillingConfig;
-  requireUser: () => Promise<BillingUser>;
-  requireAdmin: () => Promise<BillingAdmin>;
+  requireActor: () => Promise<BillingActor>;
 };
 
 const unavailable = {
   available: false,
   paymentMode: null,
   mockConfirmationAllowed: false,
+  agreementVersion: null,
 } as const;
 
 export async function getCurrentBillingAvailability(
   dependencies: BillingAvailabilityHandlerDependencies = {
     getConfig: getBillingConfig,
-    requireUser: requireBillingUser,
-    requireAdmin: requireBillingAdmin,
+    requireActor: requireBillingActor,
   },
 ): Promise<BillingAvailability> {
   try {
@@ -755,22 +671,19 @@ export async function getCurrentBillingAvailability(
         available: true,
         paymentMode: config.paymentMode,
         mockConfirmationAllowed: config.paymentMode === "mock",
+        agreementVersion: BILLING_AGREEMENT_VERSION,
       };
     }
 
-    const authenticatedUser = await dependencies.requireUser();
-    let allowed =
-      authenticatedUser.isAdmin ||
-      config.testUserIds.includes(authenticatedUser.id);
-    if (!allowed) {
-      const admin = await dependencies.requireAdmin();
-      allowed = admin.id === authenticatedUser.id;
+    const actor = await dependencies.requireActor();
+    if (!actor.isAdmin && !config.testUserIds.includes(actor.id)) {
+      return unavailable;
     }
-    if (!allowed) return unavailable;
     return {
       available: true,
       paymentMode: "mock",
       mockConfirmationAllowed: true,
+      agreementVersion: BILLING_AGREEMENT_VERSION,
     };
   } catch {
     return unavailable;
@@ -780,8 +693,7 @@ export async function getCurrentBillingAvailability(
 export function createBillingAvailabilityGetHandler(
   dependencies: BillingAvailabilityHandlerDependencies = {
     getConfig: getBillingConfig,
-    requireUser: requireBillingUser,
-    requireAdmin: requireBillingAdmin,
+    requireActor: requireBillingActor,
   },
 ): () => Promise<Response> {
   return async function availabilityHandler() {
@@ -874,7 +786,7 @@ async function parseRefundBody(
 }
 
 export type RefundPostHandlerDependencies = {
-  requireUser: () => Promise<BillingUser>;
+  requireActor: () => Promise<BillingActor>;
   getConfig: () => BillingConfig;
   assertAccess: (user: BillingUser, config: BillingConfig) => void;
   submitRefund: (input: SubmitRefundInput) => Promise<RefundRequest>;
@@ -882,7 +794,7 @@ export type RefundPostHandlerDependencies = {
 
 export function createRefundPostHandler(
   dependencies: RefundPostHandlerDependencies = {
-    requireUser: requireBillingUser,
+    requireActor: requireBillingActor,
     getConfig: getBillingConfig,
     assertAccess: assertBillingAccess,
     submitRefund: submitRefundRequest,
@@ -890,7 +802,7 @@ export function createRefundPostHandler(
 ): (request: Request) => Promise<Response> {
   return async function refundHandler(request) {
     try {
-      const billingUser = await dependencies.requireUser();
+      const billingUser = await dependencies.requireActor();
       const config = dependencies.getConfig();
       dependencies.assertAccess(billingUser, config);
       const input = await parseRefundBody(request);
@@ -964,7 +876,7 @@ async function parseInvoiceBody(
 }
 
 export type InvoicePostHandlerDependencies = {
-  requireUser: () => Promise<BillingUser>;
+  requireActor: () => Promise<BillingActor>;
   getConfig: () => BillingConfig;
   assertAccess: (user: BillingUser, config: BillingConfig) => void;
   submitInvoice: (input: SubmitInvoiceInput) => Promise<InvoiceRequest>;
@@ -972,7 +884,7 @@ export type InvoicePostHandlerDependencies = {
 
 export function createInvoicePostHandler(
   dependencies: InvoicePostHandlerDependencies = {
-    requireUser: requireBillingUser,
+    requireActor: requireBillingActor,
     getConfig: getBillingConfig,
     assertAccess: assertBillingAccess,
     submitInvoice: submitInvoiceRequest,
@@ -980,7 +892,7 @@ export function createInvoicePostHandler(
 ): (request: Request) => Promise<Response> {
   return async function invoiceHandler(request) {
     try {
-      const billingUser = await dependencies.requireUser();
+      const billingUser = await dependencies.requireActor();
       const config = dependencies.getConfig();
       dependencies.assertAccess(billingUser, config);
       const input = await parseInvoiceBody(request);
@@ -1007,4 +919,5 @@ export type BillingAvailability = {
   available: boolean;
   paymentMode: PaymentMode | null;
   mockConfirmationAllowed: boolean;
+  agreementVersion: string | null;
 };

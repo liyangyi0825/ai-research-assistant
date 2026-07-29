@@ -16,6 +16,8 @@ export type BillingAdmin = BillingUser & {
   role: "BILLING_ADMIN" | "BILLING_REVIEWER";
 };
 
+export type BillingActor = BillingUser | BillingAdmin;
+
 type BillingAdminRecord = {
   role: "BILLING_ADMIN" | "BILLING_REVIEWER";
   isActive: boolean;
@@ -104,13 +106,9 @@ export async function requireBillingUser(
 export async function requireBillingAdmin(
   dependencies: BillingAuthDependencies = serverDependencies,
 ): Promise<BillingAdmin> {
-  const user = await requireBillingUser(dependencies);
-  const record = await dependencies.findAdmin(user.id);
-  const isBootstrapAdmin =
-    normalizeEmail(user.email) !== null &&
-    normalizeEmail(user.email) === normalizeEmail(dependencies.adminEmail);
+  const actor = await requireBillingActor(dependencies);
 
-  if (record && !record.isActive) {
+  if (!actor.isAdmin) {
     throw new BillingError(
       "BILLING_ADMIN_REQUIRED",
       "An active billing administrator is required.",
@@ -118,12 +116,24 @@ export async function requireBillingAdmin(
     );
   }
 
+  return actor as BillingAdmin;
+}
+
+export async function requireBillingActor(
+  dependencies: BillingAuthDependencies = serverDependencies,
+): Promise<BillingActor> {
+  const user = await requireBillingUser(dependencies);
+  const record = await dependencies.findAdmin(user.id);
+  const isBootstrapAdmin =
+    normalizeEmail(user.email) !== null &&
+    normalizeEmail(user.email) === normalizeEmail(dependencies.adminEmail);
+
+  if (record && !record.isActive) {
+    return { ...user, isAdmin: false };
+  }
+
   if (!record && !isBootstrapAdmin) {
-    throw new BillingError(
-      "BILLING_ADMIN_REQUIRED",
-      "An active billing administrator is required.",
-      403,
-    );
+    return user;
   }
 
   return {

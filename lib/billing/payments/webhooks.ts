@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { getSupabaseAdminClient } from "../../supabase";
 import {
   assertBillingAccess,
-  requireBillingAdmin,
-  requireBillingUser,
+  requireBillingActor,
+  type BillingActor,
   type BillingUser,
 } from "../auth";
 import { getBillingConfig, type BillingConfig, type PaymentMode } from "../config";
@@ -831,8 +831,7 @@ export async function confirmMockOrderPayment(
 }
 
 type MockConfirmHandlerDependencies = {
-  requireUser: () => Promise<BillingUser>;
-  requireAdmin?: () => Promise<BillingUser>;
+  requireActor: () => Promise<BillingActor>;
   getConfig: () => BillingConfig;
   assertAccess: (user: BillingUser, config: BillingConfig) => void;
   confirmPayment: (
@@ -880,8 +879,7 @@ async function parseMockConfirmBody(request: Request) {
 
 export function createMockConfirmPostHandler(
   dependencies: MockConfirmHandlerDependencies = {
-    requireUser: requireBillingUser,
-    requireAdmin: requireBillingAdmin,
+    requireActor: requireBillingActor,
     getConfig: getBillingConfig,
     assertAccess: assertBillingAccess,
     confirmPayment: confirmMockOrderPayment,
@@ -889,26 +887,8 @@ export function createMockConfirmPostHandler(
 ) {
   return async function mockConfirmPost(request: Request): Promise<Response> {
     try {
-      const authenticatedUser = await dependencies.requireUser();
+      const user = await dependencies.requireActor();
       const config = dependencies.getConfig();
-      let user = authenticatedUser;
-      if (!user.isAdmin && !config.testUserIds.includes(user.id)) {
-        if (!dependencies.requireAdmin) {
-          throw new BillingError(
-            "MOCK_CONFIRM_NOT_ALLOWED",
-            "Mock payment confirmation is restricted to administrators and listed test users.",
-            403,
-          );
-        }
-        user = await dependencies.requireAdmin();
-        if (user.id !== authenticatedUser.id) {
-          throw new BillingError(
-            "MOCK_CONFIRM_NOT_ALLOWED",
-            "Mock payment confirmation is restricted to administrators and listed test users.",
-            403,
-          );
-        }
-      }
       dependencies.assertAccess(user, config);
       assertMockConfirmationAllowed(user, config);
       const body = await parseMockConfirmBody(request);

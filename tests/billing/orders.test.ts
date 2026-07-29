@@ -204,7 +204,7 @@ function validInput(
     userId: "user-1",
     productId: "product-pro-monthly",
     provider: "mock",
-    acceptedAgreementVersion: "membership-v1",
+    acceptedAgreementVersion: "billing-member-v1",
     ...overrides,
   };
 }
@@ -275,7 +275,7 @@ test("createOrder prices and snapshots the order from the enabled database produ
     sku: "PRO_MONTHLY",
     displayMetadata: { badge: "推荐" },
   });
-  assert.equal(order.acceptedAgreementVersion, "membership-v1");
+  assert.equal(order.acceptedAgreementVersion, "billing-member-v1");
   assert.equal(order.status, "PENDING");
 });
 
@@ -357,6 +357,21 @@ test("createOrder rejects a missing or blank agreement version", async () => {
         dependencies(repository),
       ),
     (error: unknown) => expectBillingError(error, "AGREEMENT_REQUIRED", 400),
+  );
+  assert.equal(repository.orders.length, 0);
+});
+
+test("createOrder rejects a non-current agreement version even when non-empty", async () => {
+  const repository = new InMemoryBillingRepository();
+
+  await assert.rejects(
+    () =>
+      createOrder(
+        validInput({ acceptedAgreementVersion: "legacy-membership-v1" }),
+        dependencies(repository),
+      ),
+    (error: unknown) =>
+      expectBillingError(error, "AGREEMENT_VERSION_MISMATCH", 400),
   );
   assert.equal(repository.orders.length, 0);
 });
@@ -551,7 +566,7 @@ test("the Supabase repository maps immutable order snapshots to database columns
       },
     ],
     snapshotDetails: { sku: "PRO_MONTHLY" },
-    acceptedAgreementVersion: "membership-v1",
+    acceptedAgreementVersion: "billing-member-v1",
     expiresAt: "2026-07-22T02:30:00.000Z",
   };
   const row = {

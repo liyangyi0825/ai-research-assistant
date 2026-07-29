@@ -70,7 +70,8 @@ export function CheckoutPanel({ productId }: { productId: string }) {
       !acceptedAgreement ||
       !product ||
       !availability?.available ||
-      !availability.paymentMode
+      !availability.paymentMode ||
+      !availability.agreementVersion
     ) {
       return;
     }
@@ -83,7 +84,7 @@ export function CheckoutPanel({ productId }: { productId: string }) {
         body: JSON.stringify({
           productId: product.id,
           provider: availability.paymentMode,
-          acceptedAgreementVersion: "billing-member-v1",
+          acceptedAgreementVersion: availability.agreementVersion,
         }),
       });
       if (response.status === 401) {
