@@ -267,3 +267,60 @@ test("admin pages and routes enforce the server administrator boundary", async (
     assert.match(await fs.readFile(file, "utf8"), /createAdminBillingHandler/);
   }
 });
+
+test("admin repositories use real schema names and include payment records", async () => {
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile("lib/billing/admin.ts", "utf8"));
+  assert.match(source, /amount_minor, currency, provider/);
+  assert.match(source, /provider_transaction_id, status, amount_minor/);
+  assert.match(source, /sku, name, product_type, price_minor/);
+  assert.match(source, /credit_grant/);
+  assert.match(source, /from\("billing_payments"\)/);
+  assert.match(source, /payments/);
+  assert.doesNotMatch(source, /payment_provider/);
+  assert.doesNotMatch(source, /\bcode, name, product_type/);
+  assert.doesNotMatch(source, /\bcredit_amount\b/);
+});
+
+test("all admin RPC replays bind the complete request payload", async () => {
+  const sql = await import("node:fs/promises").then((fs) =>
+    fs.readFile("supabase/migrations/202607290005_billing_admin_functions.sql", "utf8"));
+  assert.equal((sql.match(/request_hash/g) ?? []).length >= 15, true);
+  assert.equal((sql.match(/IDEMPOTENCY_CONFLICT/g) ?? []).length >= 5, true);
+  assert.match(sql, /p_admin_user_id/);
+  assert.match(sql, /p_decision/);
+  assert.match(sql, /p_price_minor/);
+});
+
+test("after-sales reviews lock and verify the associated order contract", async () => {
+  const sql = (await import("node:fs/promises")).readFile(
+    "supabase/migrations/202607290005_billing_admin_functions.sql", "utf8");
+  const text = await sql;
+  assert.equal((text.match(/billing_orders%ROWTYPE/g) ?? []).length >= 2, true);
+  assert.equal((text.match(/WHERE id=v_request\.order_id FOR UPDATE/g) ?? []).length >= 2, true);
+  assert.match(text, /v_order\.user_id IS DISTINCT FROM v_request\.user_id/);
+  assert.match(text, /v_order\.amount_minor IS DISTINCT FROM v_request\.requested_amount_minor/);
+  assert.match(text, /GET DIAGNOSTICS v_updated = ROW_COUNT/);
+});
+
+test("forward hardening restricts credit writers and makes audit logs immutable", async () => {
+  const sql = await import("node:fs/promises").then((fs) =>
+    fs.readFile("supabase/migrations/202607290006_billing_admin_hardening.sql", "utf8"));
+  assert.match(sql, /role = 'BILLING_ADMIN'/);
+  assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_adjust_credit/);
+  assert.match(sql, /IDEMPOTENCY_CONFLICT/);
+  assert.match(sql, /BEFORE UPDATE OR DELETE ON public\.billing_admin_audit_logs/);
+  assert.match(sql, /billing_reject_audit_log_mutation/);
+});
+
+test("billing admin UI exposes writer actions while reviewers remain read-only", async () => {
+  const fs = await import("node:fs/promises");
+  const actions = await fs.readFile("app/admin/billing/AdminBillingActions.tsx", "utf8");
+  for (const label of ["人工调整额度", "人工开通会员", "保存套餐", "保存商品", "审核退款", "审核发票"]) {
+    assert.match(actions, new RegExp(label));
+  }
+  assert.match(actions, /canWrite/);
+  assert.match(actions, /disabled=\{!canWrite/);
+  const overview = await fs.readFile("app/admin/billing/page.tsx", "utf8");
+  assert.match(overview, /admin\.role === "BILLING_ADMIN"/);
+});

@@ -49,6 +49,11 @@ supabase db reset
 supabase migration up --local
 ```
 
+管理后台 migration `202607290005_billing_admin_functions.sql` 与
+`202607290006_billing_admin_hardening.sql` 也只能在本地或独立测试数据库验证。
+006 以向前修复方式将人工调额限制为 active `BILLING_ADMIN`，并为管理员审计日志
+添加数据库级 UPDATE/DELETE 拒绝触发器；不要对生产库手工回写旧 migration。
+
 `db reset` 会清除本地实例数据，只能对明确确认的本地环境使用。若使用独立测试数据库，应由测试环境负责人提供隔离实例并在运行前再次确认目标；本文不提供任何线上目标信息。
 
 ## 必须在隔离数据库补做的验证

@@ -10,7 +10,7 @@ export type AdminMutationResult = {
 
 export type BillingAdminRepository = {
   getOverview(): Promise<unknown>;
-  listOrders(): Promise<unknown[]>;
+  listOrders(): Promise<unknown>;
   getUser(userId: string): Promise<unknown>;
   listRefunds(): Promise<unknown[]>;
   listInvoices(): Promise<unknown[]>;
@@ -93,6 +93,11 @@ function reason(value: string): string {
   return required(value, "ADMIN_REASON_REQUIRED");
 }
 
+function optionalString(value: unknown): string | null {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
+}
+
 function parseMutation(data: unknown): AdminMutationResult {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw storageError();
   const row = data as Record<string, unknown>;
@@ -132,7 +137,11 @@ export function createBillingAdminRepository(client: Client): BillingAdminReposi
       return { pendingOrders: orders, pendingRefunds: refunds, pendingInvoices: invoices, recentAuditLogs: audits };
     },
     async listOrders() {
-      return (await result(client.from("billing_orders").select("id, order_number, user_id, snapshot_product_name, amount_minor, currency, payment_provider, status, refund_status, created_at, paid_at").order("created_at", { ascending: false }).limit(100))) as unknown[];
+      const [orders, payments] = await Promise.all([
+        result(client.from("billing_orders").select("id, order_number, user_id, snapshot_product_name, amount_minor, currency, provider, status, refund_status, created_at, paid_at").order("created_at", { ascending: false }).limit(100)),
+        result(client.from("billing_payments").select("id, order_id, user_id, provider, provider_transaction_id, status, amount_minor, currency, paid_at, created_at").order("created_at", { ascending: false }).limit(100)),
+      ]);
+      return { orders, payments };
     },
     async getUser(userId) {
       const [credit, subscriptions, entitlements, quotas] = await Promise.all([
@@ -155,7 +164,7 @@ export function createBillingAdminRepository(client: Client): BillingAdminReposi
     async listCatalog() {
       const [plans, products] = await Promise.all([
         result(client.from("billing_plans").select("id, code, name, description, is_active, created_at").order("created_at")),
-        result(client.from("billing_products").select("id, plan_id, code, name, product_type, price_minor, currency, duration_days, credit_amount, is_active, created_at").order("created_at")),
+        result(client.from("billing_products").select("id, plan_id, sku, name, product_type, price_minor, currency, duration_days, credit_grant, is_active, created_at").order("created_at")),
       ]);
       return { plans: plans as unknown[], products: products as unknown[] };
     },
@@ -244,7 +253,7 @@ export async function upsertBillingPlan(admin: BillingAdmin, input: Record<strin
   }
   return repository.upsertPlan({
     p_admin_user_id: admin.id,
-    p_plan_id: input.planId ?? null,
+    p_plan_id: optionalString(input.planId),
     p_code: required(String(input.code ?? "")),
     p_name: required(String(input.name ?? "")),
     p_description: input.description == null ? null : String(input.description),
@@ -273,8 +282,8 @@ export async function upsertBillingProduct(admin: BillingAdmin, input: Record<st
   }
   return repository.upsertProduct({
     p_admin_user_id: admin.id,
-    p_product_id: input.productId ?? null,
-    p_plan_id: input.planId ?? null,
+    p_product_id: optionalString(input.productId),
+    p_plan_id: optionalString(input.planId),
     p_sku: required(String(input.sku ?? "")),
     p_name: required(String(input.name ?? "")),
     p_description: input.description == null ? null : String(input.description),
