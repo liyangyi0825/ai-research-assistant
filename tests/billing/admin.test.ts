@@ -333,6 +333,16 @@ test("007 forward migration reapplies all corrected admin RPC definitions for up
   assert.match(sql, /GRANT EXECUTE ON FUNCTION[\s\S]+service_role/);
 });
 
+test("008 revokes the exact legacy credit RPC signature for databases that applied old 006", async () => {
+  const sql = await import("node:fs/promises").then((fs) =>
+    fs.readFile("supabase/migrations/202607290008_revoke_legacy_billing_credit_rpc.sql", "utf8"));
+  assert.match(
+    sql,
+    /REVOKE ALL ON FUNCTION public\.billing_adjust_credit_legacy\(UUID, BIGINT, TEXT, TEXT, UUID, TEXT\)\s+FROM PUBLIC, anon, authenticated, service_role;/,
+  );
+  assert.doesNotMatch(sql, /GRANT\s+EXECUTE/i);
+});
+
 test("billing admin UI exposes writer actions while reviewers remain read-only", async () => {
   const fs = await import("node:fs/promises");
   const actions = await fs.readFile("app/admin/billing/AdminBillingActions.tsx", "utf8");
