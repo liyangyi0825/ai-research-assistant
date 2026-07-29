@@ -20,7 +20,7 @@
 - 产品名称、价格、有效期、credits 与展示权益均来自 `/api/billing/products`/数据库；前端创建订单只提交 `productId`、服务端公开的 provider 和协议版本，不提交金额、币种或用户 ID。
 - 退款与发票接口先执行服务端认证，再校验订单所有权和状态；申请金额与币种只从本人订单读取。
 - 退款和发票首期均只创建申请，不执行自动退款，也不伪造已开票状态。
-- 两类申请增加 `(user_id, order_id)` 唯一约束，并使用 `upsert onConflict` 后按本人订单重读，避免 search-then-insert 并发竞态。
+- 两类申请通过前向迁移增加 `(user_id, order_id)` 唯一约束，并调用 service-role-only 原子 RPC；RPC 锁订单、核对 owner、稳定重放既有申请，并从订单派生金额与币种。
 - 输入执行精确字段、枚举、长度、税号和邮箱校验；数据库与未知错误统一 fail-closed，不向页面泄露原始错误。
 
 ## TDD 证据
@@ -31,9 +31,9 @@
 
 ## 验证
 
-- 定向测试：44/44 通过。
-- `npm.cmd run test:billing`：183/183 通过。
-- `npm.cmd test`：186/186 通过。
+- 最终六文件定向矩阵：102/102 通过。
+- `npm.cmd run test:billing`：192/192 通过。
+- `npm.cmd test`：195/195 通过。
 - `npm.cmd run typecheck`：通过。
 - 目标 ESLint：通过。
 - `npm.cmd run build`：生产构建通过，生成 66 个页面。
@@ -46,4 +46,28 @@
 
 - 未修改备案 footer、根 layout、管理后台、法律页面或部署配置。
 - 未连接或迁移线上数据库，未 push，未 deploy。
-- 迁移文件只增加退款/发票申请的复合唯一约束；没有执行数据库部署。
+- 售后数据库变更仅落在前向迁移文件中；没有执行数据库部署。
+
+## Changes Required 加固（2026-07-29）
+
+- 新增统一服务端 `BillingActor` 解析：active `billing_admins` 记录或 `ADMIN_EMAIL` bootstrap 会在认证边界解析为管理员；inactive 数据库记录优先并保持拒绝。
+- availability、订单创建、退款/发票申请和 Mock confirm 共用已解析 actor。production Mock 下 active admin/测试白名单可用，普通用户仍由服务端返回 403。
+- 撤销对已应用 `202607210001_billing_schema.sql` 的售后唯一约束回写，新增前向迁移 `202607230004_billing_after_sales.sql`：
+  - 通过 `ALTER TABLE` 增加退款/发票 `(user_id, order_id)` 唯一约束；
+  - 新增两个 service-role-only、`SECURITY DEFINER`、固定 `search_path` 的原子申请 RPC；
+  - RPC 锁订单、核对 owner、优先返回既有申请；仅首次申请校验订单状态，并从订单派生金额/币种。
+- repository 不再执行“查订单再 upsert”，改为每次只调用一个原子 RPC；已补数据库类型与本地/隔离升级说明。
+- `BILLING_AGREEMENT_VERSION` 成为服务端权威版本；availability 只在可用时公开版本，checkout 回传该值，route 与 `createOrder` 均精确拒绝过期或伪造版本。
+
+### Changes Required TDD / 验证
+
+- Actor：auth RED 2 项因 `requireBillingActor` 缺失失败；Order POST、availability、refund/invoice、Mock confirm 分别观测 500/关闭态 RED，统一接线后定向转绿。
+- 迁移/RPC：初始 31/35，4 项因 `004` 与类型缺失失败；repository 明确因 `requestRefund` 缺失 RED。实现后迁移与用户页定向 48/48。
+- 协议版本：route 错误返回 201、service 未拒绝、checkout 仍硬编码、availability 缺字段，共 4 项 RED；服务端常量贯穿后转绿。
+- 最终六文件定向矩阵：102/102。
+- `npm.cmd run test:billing`：192/192。
+- `npm.cmd test`：195/195。
+- `npm.cmd run typecheck`：通过。
+- 目标 ESLint：通过。
+- `npm.cmd run build`：允许下载项目现有 Geist 字体后通过，生成 66 pages；首次受限网络运行仅因字体下载失败。
+- 未执行数据库迁移、push 或 deploy。
