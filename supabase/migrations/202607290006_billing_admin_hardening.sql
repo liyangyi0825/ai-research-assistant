@@ -6,9 +6,7 @@ ALTER FUNCTION public.billing_adjust_credit(UUID, BIGINT, TEXT, TEXT, UUID, TEXT
   RENAME TO billing_adjust_credit_legacy;
 
 REVOKE ALL ON FUNCTION public.billing_adjust_credit_legacy(UUID, BIGINT, TEXT, TEXT, UUID, TEXT)
-  FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.billing_adjust_credit_legacy(UUID, BIGINT, TEXT, TEXT, UUID, TEXT)
-  TO service_role;
+  FROM PUBLIC, anon, authenticated, service_role;
 
 CREATE OR REPLACE FUNCTION public.billing_adjust_credit(
   p_user_id UUID,

@@ -311,6 +311,26 @@ test("forward hardening restricts credit writers and makes audit logs immutable"
   assert.match(sql, /IDEMPOTENCY_CONFLICT/);
   assert.match(sql, /BEFORE UPDATE OR DELETE ON public\.billing_admin_audit_logs/);
   assert.match(sql, /billing_reject_audit_log_mutation/);
+  assert.doesNotMatch(sql, /GRANT EXECUTE ON FUNCTION public\.billing_adjust_credit_legacy[\s\S]*TO service_role/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION public\.billing_adjust_credit_legacy[\s\S]*service_role/);
+});
+
+test("007 forward migration reapplies all corrected admin RPC definitions for upgraded databases", async () => {
+  const sql = await import("node:fs/promises").then((fs) =>
+    fs.readFile("supabase/migrations/202607290007_billing_admin_rpc_hardening.sql", "utf8"));
+  for (const name of [
+    "billing_admin_grant_subscription",
+    "billing_admin_review_refund",
+    "billing_admin_review_invoice",
+    "billing_admin_upsert_plan",
+    "billing_admin_upsert_product",
+  ]) {
+    assert.match(sql, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${name}`));
+  }
+  assert.equal((sql.match(/IDEMPOTENCY_CONFLICT/g) ?? []).length >= 5, true);
+  assert.match(sql, /GET DIAGNOSTICS v_updated = ROW_COUNT/);
+  assert.match(sql, /REVOKE ALL ON FUNCTION/);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION[\s\S]+service_role/);
 });
 
 test("billing admin UI exposes writer actions while reviewers remain read-only", async () => {
