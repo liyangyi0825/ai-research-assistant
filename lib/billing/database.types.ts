@@ -137,7 +137,7 @@ export type BillingSubscriptionRow = {
   id: UUID;
   user_id: UUID;
   plan_id: UUID;
-  source_order_id: UUID;
+  source_order_id: UUID | null;
   status: "ACTIVE" | "EXPIRED" | "CANCELLED";
   starts_at: Timestamp;
   ends_at: Timestamp;
@@ -860,6 +860,71 @@ export type Database = {
           p_idempotency_key: string;
           p_admin_user_id: UUID;
           p_currency?: string;
+        };
+        Returns: Json;
+      };
+      billing_admin_grant_subscription: {
+        Args: {
+          p_admin_user_id: UUID;
+          p_user_id: UUID;
+          p_plan_id: UUID;
+          p_duration_days: number;
+          p_reason: string;
+          p_idempotency_key: string;
+        };
+        Returns: Json;
+      };
+      billing_admin_review_refund: {
+        Args: {
+          p_admin_user_id: UUID;
+          p_request_id: UUID;
+          p_decision: "APPROVED" | "REJECTED";
+          p_reason: string;
+          p_idempotency_key: string;
+        };
+        Returns: Json;
+      };
+      billing_admin_review_invoice: {
+        Args: {
+          p_admin_user_id: UUID;
+          p_request_id: UUID;
+          p_decision: "ISSUED" | "REJECTED";
+          p_reason: string;
+          p_idempotency_key: string;
+        };
+        Returns: Json;
+      };
+      billing_admin_upsert_plan: {
+        Args: {
+          p_admin_user_id: UUID;
+          p_plan_id: UUID | null;
+          p_code: string;
+          p_name: string;
+          p_description: string | null;
+          p_billing_period: "FREE" | "MONTHLY" | "YEARLY";
+          p_is_active: boolean;
+          p_reason: string;
+          p_idempotency_key: string;
+        };
+        Returns: Json;
+      };
+      billing_admin_upsert_product: {
+        Args: {
+          p_admin_user_id: UUID;
+          p_product_id: UUID | null;
+          p_plan_id: UUID | null;
+          p_sku: string;
+          p_name: string;
+          p_description: string | null;
+          p_product_type: "SUBSCRIPTION" | "CREDIT_PACK";
+          p_price_minor: number;
+          p_currency: "CNY";
+          p_duration_days: number | null;
+          p_credit_grant: number;
+          p_entitlement_version: string;
+          p_is_active: boolean;
+          p_reason: string;
+          p_idempotency_key: string;
         };
         Returns: Json;
       };
