@@ -140,6 +140,26 @@ export function getBillingConfig(
   return config;
 }
 
+export function validateBillingRuntimeAtStartup(
+  env: BillingEnvironment = process.env,
+): void {
+  const config = getBillingConfig(env);
+  const unsafeTestUserIds = new Set(["*", "all", "public"]);
+
+  if (
+    config.featureEnabled &&
+    config.isProduction &&
+    config.paymentMode === "mock" &&
+    config.testUserIds.some((id) => unsafeTestUserIds.has(id.toLowerCase()))
+  ) {
+    throw new BillingError(
+      "UNSAFE_PAYMENT_CONFIGURATION",
+      "Production mock payments require explicit individual test user IDs.",
+      500,
+    );
+  }
+}
+
 export function assertPaymentRuntimeSafe(
   config: BillingConfig,
   context: PaymentRuntimeContext,

@@ -13,6 +13,7 @@ BILLING_TEST_USER_IDS=
 - `BILLING_FEATURE_ENABLED=false` 时不展示公开购买入口，订单、支付及售后写接口拒绝访问。
 - `PAYMENT_MODE=mock` 只用于本地、测试环境，以及生产环境中明确列入 `BILLING_TEST_USER_IDS` 的测试账号或服务端确认的管理员。
 - 生产环境不能将 Mock 支付公开给普通用户。程序启动和每次支付访问都会执行安全校验。
+- 根目录 `instrumentation.ts` 的 `register()` 会在 Next.js 服务实例就绪前调用 Billing 启动校验；默认关闭配置可正常构建和启动，不安全的生产 Mock 或缺少正式 Provider 配置会阻止实例就绪。
 - 不要在仓库、数据库或日志中保存真实商户密钥。
 
 ## 环境变量
