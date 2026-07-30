@@ -290,6 +290,49 @@ test("billing enabled authenticates on the server and reserves the centralized f
   });
 });
 
+test("billing enabled uses only the server-resolved credit fallback tuple", async () => {
+  let receivedInput: ResearchUsageInput | null = null;
+  let authorization: ResearchUsageRunOptions["authorization"];
+  const runner = createAiUsageRunner(
+    dependencies({
+      getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
+      resolveCost: async () => ({
+        quotaUnits: 0,
+        creditAmount: 25,
+        accessMode: "CREDIT_FALLBACK",
+      }),
+      research: {
+        async run<T>(
+          input: ResearchUsageInput,
+          task: () => T | Promise<T>,
+          options?: ResearchUsageRunOptions,
+        ) {
+          receivedInput = input;
+          authorization = options?.authorization;
+          return task();
+        },
+      },
+    }),
+  );
+
+  const response = await runner(
+    request("credit-task-key"),
+    "translate",
+    () => Response.json({ error: "legacy" }, { status: 429 }),
+    async () => Response.json({ answer: "ok" }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(receivedInput, {
+    userId: "server-user",
+    taskKey: "ai:server-user:translate:credit-task-key",
+    featureKey: "translate",
+    quotaUnits: 0,
+    creditAmount: 25,
+  });
+  assert.equal(authorization, "CREDIT_FALLBACK");
+});
+
 test("a billed multi-stage root atomically finalizes and provisions only its finite stages", async () => {
   const events: string[] = [];
   const runner = createAiUsageRunner(

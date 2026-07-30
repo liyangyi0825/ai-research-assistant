@@ -2,6 +2,7 @@
 // 输入：{ paperContent: string, scene: "defense" | "meeting" }
 // 输出：{ outline: SlideOutlineItem[] } —— 只生成PPT的骨架结构（类型+标题），不含正文内容
 import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import type { PptScene } from "@/app/api/ppt/generate-content/route";
 
@@ -39,7 +40,7 @@ function closeTruncatedJSON(raw: string): string {
   return result;
 }
 
-export async function POST(req: NextRequest) {
+async function execute(req: NextRequest) {
   try {
     const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
@@ -163,4 +164,18 @@ ${keyContent}`;
     const msg = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: `请求失败：${msg.slice(0, 120)}` }, { status: 500 });
   }
+}
+
+export async function POST(req: NextRequest) {
+  return await withAiUsage(
+    req,
+    "ppt_generate",
+    ({ used, limit }) =>
+      NextResponse.json(
+        { error: `本月 PPT 生成次数已用完（${used}/${limit} 次）` },
+        { status: 429 },
+      ),
+    async () => execute(req),
+    { operationKey: "ppt_generate_outline" },
+  );
 }

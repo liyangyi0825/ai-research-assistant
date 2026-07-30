@@ -35,6 +35,7 @@ type ResearchUsageDependencies = {
 
 export type ResearchUsageRunOptions = {
   finalize?: () => Promise<void>;
+  authorization?: "ENTITLEMENT" | "CREDIT_FALLBACK";
 };
 
 function isTaskFailure(value: unknown): value is ResearchTaskFailure {
@@ -160,7 +161,9 @@ export class ResearchUsageService {
     options: ResearchUsageRunOptions = {},
   ): Promise<T> {
     const input = normalizeUsageReservation(rawInput);
-    await this.entitlements.requireEntitlement(input.userId, input.featureKey);
+    if (options.authorization !== "CREDIT_FALLBACK") {
+      await this.entitlements.requireEntitlement(input.userId, input.featureKey);
+    }
     const reservation = await this.usage.reserve(input);
     if (reservation.idempotent || reservation.status !== "RESERVED") {
       throw replayError(reservation.status);

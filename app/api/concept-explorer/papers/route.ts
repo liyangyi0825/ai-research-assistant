@@ -5,6 +5,7 @@
 // - recent（最新进展）：Semantic Scholar API，按引用数降序
 
 import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import { getSupabaseAuthClient } from "@/lib/supabase";
 
@@ -235,7 +236,7 @@ function toSSPaper(p: any): Paper {
   };
 }
 
-export async function POST(req: NextRequest) {
+async function execute(req: NextRequest) {
   try {
     const supabase = await getSupabaseAuthClient();
     const { data: { user } } = await supabase.auth.getUser();
@@ -381,4 +382,18 @@ export async function POST(req: NextRequest) {
     console.error("[concept-papers] 论文搜索异常:", error);
     return NextResponse.json({ papers: [], searchTerm: "" });
   }
+}
+
+export async function POST(req: NextRequest) {
+  return await withAiUsage(
+    req,
+    "concept_explore",
+    ({ used, limit }) =>
+      NextResponse.json(
+        { error: `本月概念探索次数已用完（${used}/${limit} 次）` },
+        { status: 429 },
+      ),
+    async () => execute(req),
+    { operationKey: "concept_papers" },
+  );
 }

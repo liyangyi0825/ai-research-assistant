@@ -347,6 +347,16 @@ export type BillingRateLimitRow = {
   updated_at: Timestamp;
 };
 
+export type BillingFeatureUsageCostRow = {
+  feature_key: string;
+  quota_units: number;
+  credit_amount: number;
+  allow_credit_fallback: boolean;
+  enabled: boolean;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+};
+
 export type Database = {
   public: {
     Tables: {
@@ -389,6 +399,12 @@ export type Database = {
             referencedColumns: ["id"];
           },
         ];
+      };
+      billing_feature_usage_costs: {
+        Row: BillingFeatureUsageCostRow;
+        Insert: Insert<BillingFeatureUsageCostRow, "feature_key" | "quota_units" | "credit_amount">;
+        Update: Update<BillingFeatureUsageCostRow>;
+        Relationships: [];
       };
       billing_orders: {
         Row: BillingOrderRow;

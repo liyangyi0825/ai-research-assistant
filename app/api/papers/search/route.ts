@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { withAiUsage } from "@/lib/billing/ai-usage";
+import { getBillingConfig } from "@/lib/billing/config";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 
 interface SemPaper {
@@ -205,6 +206,12 @@ ${papersText}`,
 
     return NextResponse.json({ papers });
       },
+      getBillingConfig().featureEnabled
+        ? {
+            operationKey: "papers_search",
+            continuationStages: [{ stageKey: "recommend" }],
+          }
+        : { operationKey: "papers_search" },
     );
   } catch (err) {
     console.error("论文搜索失败:", err);

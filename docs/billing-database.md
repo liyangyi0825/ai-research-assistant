@@ -96,3 +96,20 @@ section generation derives four-slide batches from the submitted complete outlin
 limits an operation to 20 batches, and prebinds `batch:1..N-1` hashes during batch
 zero. PPT content generation and PPT section generation use different operation
 keys.
+
+## AI feature costs and Credit Pack consumption
+
+Migration `202607290009_billing_feature_usage_costs.sql` adds a server-only,
+service-role-managed policy table. Clients never submit `quota_units` or
+`credit_amount`. Both values are non-negative BIGINT integers; missing, disabled,
+zero-cost, or malformed policies fail closed.
+
+With a current feature entitlement, the adapter reserves the configured periodic
+quota units. Without one, credits may be used only when that exact feature has
+`allow_credit_fallback = true` and a positive `credit_amount`. The resulting
+credit-only reservation has `quota_units = 0`; owning credits alone never bypasses
+an entitlement unless this backend policy explicitly allows it.
+
+The existing usage RPC locks quota and credit rows independently, conditionally
+moves available credits into reserved credits without allowing a negative balance,
+then finalizes on success or releases on task/stream failure.

@@ -4,11 +4,14 @@
 // 不单独消耗配额（与 AI 精准搜索共享一次 keyword_gen）
 
 import { NextRequest, NextResponse } from "next/server";
+import { canonicalAiRequestHash } from "@/lib/billing/ai-continuation";
+import { withAiUsage, type AiUsageContext } from "@/lib/billing/ai-usage";
+import { getBillingConfig } from "@/lib/billing/config";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import { getSupabaseAuthClient } from "@/lib/supabase";
 import type { AnalyzedPaper } from "@/app/api/papers/search/route";
 
-export async function POST(req: NextRequest) {
+async function execute(req: NextRequest, usage: AiUsageContext) {
   try {
     const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
@@ -121,6 +124,8 @@ LABELS:{"top":[强推论文的编号],"recommend":[次推荐编号],"reference":
             } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
+      } catch (error) {
+        usage.markFailed(error);
       } finally {
         writer.close().catch(() => {});
       }
@@ -137,4 +142,32 @@ LABELS:{"top":[强推论文的编号],"recommend":[次推荐编号],"reference":
     console.error("推荐分析异常:", error);
     return NextResponse.json({ error: "请求失败，请重试" }, { status: 500 });
   }
+}
+
+export async function POST(req: NextRequest) {
+  if (!getBillingConfig().featureEnabled) {
+    return execute(req, {
+      userId: null,
+      setTokenUsage() {},
+      markFailed() {},
+    });
+  }
+  const payload = await req.clone().json();
+  return await withAiUsage(
+    req,
+    "keyword_gen",
+    ({ used, limit }) =>
+      NextResponse.json(
+        { error: `本月关键词/搜索次数已用完（${used}/${limit} 次）` },
+        { status: 429 },
+      ),
+    async (usage) => execute(req, usage),
+    {
+      operationKey: "papers_search",
+      continuation: {
+        stageKey: "recommend",
+        requestHash: canonicalAiRequestHash(payload),
+      },
+    },
+  );
 }

@@ -6,6 +6,10 @@ import { requireBillingUser, type BillingUser } from "./auth";
 import { getBillingConfig, type BillingConfig } from "./config";
 import { BillingError } from "./errors";
 import {
+  FeatureUsageCostService,
+  type ResolvedFeatureUsageCost,
+} from "./feature-usage-costs";
+import {
   ResearchUsageService,
   type ResearchUsageInput,
   type ResearchUsageRunOptions,
@@ -67,6 +71,10 @@ export type AiUsageRunnerDependencies = {
   research: ResearchUsageRunner;
   continuations: AiUsageContinuationLifecycle;
   randomUUID: () => string;
+  resolveCost?: (
+    userId: string,
+    featureKey: UsageActionType,
+  ) => Promise<ResolvedFeatureUsageCost>;
 };
 
 export type AiUsageRunner = (
@@ -87,6 +95,7 @@ export type AiUsageOptions = {
 };
 
 const usageQuota = new UsageQuotaService();
+const featureUsageCosts = new FeatureUsageCostService();
 const defaultDependencies: AiUsageRunnerDependencies = {
   getConfig: getBillingConfig,
   requireUser: requireBillingUser,
@@ -108,6 +117,9 @@ const defaultDependencies: AiUsageRunnerDependencies = {
     },
   },
   randomUUID,
+  resolveCost(userId, featureKey) {
+    return featureUsageCosts.resolve(userId, featureKey);
+  },
 };
 
 const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
@@ -160,6 +172,11 @@ function researchInput(
   userId: string,
   createId: () => string,
   requireClientKey = false,
+  cost: ResolvedFeatureUsageCost = {
+    quotaUnits: 1,
+    creditAmount: 0,
+    accessMode: "ENTITLEMENT",
+  },
 ): ResearchUsageInput {
   return {
     userId,
@@ -171,8 +188,8 @@ function researchInput(
       requireClientKey,
     ),
     featureKey: feature,
-    quotaUnits: 1,
-    creditAmount: 0,
+    quotaUnits: cost.quotaUnits,
+    creditAmount: cost.creditAmount,
   };
 }
 
@@ -599,6 +616,13 @@ export function createAiUsageRunner(
       }
 
       const user = await dependencies.requireUser();
+      const cost = dependencies.resolveCost
+        ? await dependencies.resolveCost(user.id, feature)
+        : {
+            quotaUnits: 1,
+            creditAmount: 0,
+            accessMode: "ENTITLEMENT" as const,
+          };
       const stages = options?.continuationStages ?? [];
       const input = researchInput(
         request,
@@ -607,6 +631,7 @@ export function createAiUsageRunner(
         user.id,
         dependencies.randomUUID,
         options?.continuation !== undefined || stages.length > 0,
+        cost,
       );
       if (options?.continuation) {
         return await runClaimedContinuation(
@@ -624,8 +649,9 @@ export function createAiUsageRunner(
       const usage = usageContext(user.id);
       const settlementOptions: ResearchUsageRunOptions =
         stages.length === 0
-          ? {}
+          ? { authorization: cost.accessMode }
           : {
+              authorization: cost.accessMode,
               finalize: async () => {
                 await dependencies.continuations.provision({
                   userId: user.id,
