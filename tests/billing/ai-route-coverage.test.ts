@@ -35,13 +35,18 @@ test("the protected dirty translation route remains untouched by this phase", as
   assert.doesNotMatch(status, /withAiUsage/);
 });
 
-test("concept paper fallback marks enabled billing work failed before returning its legacy 200 DTO", async () => {
+test("concept paper fallback releases enabled usage while preserving its legacy 200 DTO", async () => {
   const contents = await source("app/api/concept-explorer/papers/route.ts");
-  assert.match(contents, /async function execute\(req: NextRequest, usage\?: AiUsageContext\)/);
+  assert.match(contents, /type ConceptPaperFallback/);
+  assert.match(contents, /fallback\?: ConceptPaperFallback/);
   assert.match(
     contents,
-    /catch \(error\) \{[\s\S]*?usage\?\.markFailed\(error\);[\s\S]*?NextResponse\.json\(\{ papers: \[\], searchTerm: "" \}\)/,
+    /catch \(error\) \{[\s\S]*?usage\?\.markFailed\(error\);[\s\S]*?fallback\.error = error;[\s\S]*?fallback\.response = response/,
   );
   assert.match(contents, /if \(!getBillingConfig\(\)\.featureEnabled\) \{[\s\S]*?execute\(req\)/);
-  assert.match(contents, /async \(usage\) => execute\(req, usage\)/);
+  assert.match(contents, /async \(usage\) => execute\(req, usage, fallback\)/);
+  assert.match(
+    contents,
+    /catch \(error\) \{[\s\S]*?fallback\.error === error[\s\S]*?return fallback\.response[\s\S]*?throw error/,
+  );
 });

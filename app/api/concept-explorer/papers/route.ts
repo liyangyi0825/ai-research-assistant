@@ -22,6 +22,11 @@ export interface Paper {
   relevanceSummary?: string;
 }
 
+type ConceptPaperFallback = {
+  error?: unknown;
+  response?: Response;
+};
+
 // ── OpenAlex（用于 oldest）────────────────────────────────────────────────────
 const OA_BASE    = "https://api.openalex.org/works";
 const OA_FIELDS  = "id,title,authorships,publication_year,abstract_inverted_index,cited_by_count,doi";
@@ -237,7 +242,11 @@ function toSSPaper(p: any): Paper {
   };
 }
 
-async function execute(req: NextRequest, usage?: AiUsageContext) {
+async function execute(
+  req: NextRequest,
+  usage?: AiUsageContext,
+  fallback?: ConceptPaperFallback,
+) {
   try {
     const supabase = await getSupabaseAuthClient();
     const { data: { user } } = await supabase.auth.getUser();
@@ -381,8 +390,13 @@ async function execute(req: NextRequest, usage?: AiUsageContext) {
     return NextResponse.json({ error: "无效的 type 参数" }, { status: 400 });
   } catch (error) {
     console.error("[concept-papers] 论文搜索异常:", error);
+    const response = NextResponse.json({ papers: [], searchTerm: "" });
     usage?.markFailed(error);
-    return NextResponse.json({ papers: [], searchTerm: "" });
+    if (fallback) {
+      fallback.error = error;
+      fallback.response = response;
+    }
+    return response;
   }
 }
 
@@ -390,15 +404,23 @@ export async function POST(req: NextRequest) {
   if (!getBillingConfig().featureEnabled) {
     return execute(req);
   }
-  return await withAiUsage(
-    req,
-    "concept_explore",
-    ({ used, limit }) =>
-      NextResponse.json(
-        { error: `本月概念探索次数已用完（${used}/${limit} 次）` },
-        { status: 429 },
-      ),
-    async (usage) => execute(req, usage),
-    { operationKey: "concept_papers" },
-  );
+  const fallback: ConceptPaperFallback = {};
+  try {
+    return await withAiUsage(
+      req,
+      "concept_explore",
+      ({ used, limit }) =>
+        NextResponse.json(
+          { error: `本月概念探索次数已用完（${used}/${limit} 次）` },
+          { status: 429 },
+        ),
+      async (usage) => execute(req, usage, fallback),
+      { operationKey: "concept_papers" },
+    );
+  } catch (error) {
+    if (fallback.error === error && fallback.response) {
+      return fallback.response;
+    }
+    throw error;
+  }
 }

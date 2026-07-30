@@ -333,7 +333,7 @@ test("billing enabled uses only the server-resolved credit fallback tuple", asyn
   assert.equal(authorization, "CREDIT_FALLBACK");
 });
 
-test("an enabled route can preserve a legacy 200 fallback while releasing failed usage", async () => {
+test("a route-scoped fallback can return legacy 200 after enabled usage is released", async () => {
   const events: string[] = [];
   const runner = createAiUsageRunner(
     dependencies({
@@ -345,19 +345,47 @@ test("an enabled route can preserve a legacy 200 fallback while releasing failed
     }),
   );
 
-  await assert.rejects(
-    runner(
+  const fallback: { error?: unknown; response?: Response } = {};
+  let response: Response;
+  try {
+    response = await runner(
       request("concept-failure"),
       "concept_explore",
       () => Response.json({ error: "legacy" }, { status: 429 }),
       async (usage) => {
-        usage.markFailed(new Error("concept provider failed"));
-        return Response.json({ papers: [], searchTerm: "" });
+        const error = new Error("concept provider failed");
+        const legacyResponse = Response.json({ papers: [], searchTerm: "" });
+        fallback.error = error;
+        fallback.response = legacyResponse;
+        usage.markFailed(error);
+        return legacyResponse;
       },
-    ),
-    /concept provider failed/,
-  );
+    );
+  } catch (error) {
+    if (fallback.error !== error || !fallback.response) throw error;
+    response = fallback.response;
+  }
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { papers: [], searchTerm: "" });
   assert.deepEqual(events, ["entitlement", "reserve", "release"]);
+});
+
+test("route-scoped fallback recovery does not swallow unrelated billing errors", async () => {
+  const fallback = {
+    error: new Error("provider failed"),
+    response: Response.json({ papers: [], searchTerm: "" }),
+  };
+  const billingError = new BillingError("ENTITLEMENT_REQUIRED", "denied", 403);
+  let caught: unknown;
+  try {
+    throw billingError;
+  } catch (error) {
+    if (fallback.error === error) {
+      assert.fail("an unrelated billing error must not recover the fallback");
+    }
+    caught = error;
+  }
+  assert.equal(caught, billingError);
 });
 
 test("billing disabled preserves the same 200 fallback without atomic settlement", async () => {
