@@ -34,3 +34,14 @@ test("the protected dirty translation route remains untouched by this phase", as
   const status = await source("app/api/translate-page/route.ts");
   assert.doesNotMatch(status, /withAiUsage/);
 });
+
+test("concept paper fallback marks enabled billing work failed before returning its legacy 200 DTO", async () => {
+  const contents = await source("app/api/concept-explorer/papers/route.ts");
+  assert.match(contents, /async function execute\(req: NextRequest, usage\?: AiUsageContext\)/);
+  assert.match(
+    contents,
+    /catch \(error\) \{[\s\S]*?usage\?\.markFailed\(error\);[\s\S]*?NextResponse\.json\(\{ papers: \[\], searchTerm: "" \}\)/,
+  );
+  assert.match(contents, /if \(!getBillingConfig\(\)\.featureEnabled\) \{[\s\S]*?execute\(req\)/);
+  assert.match(contents, /async \(usage\) => execute\(req, usage\)/);
+});

@@ -333,6 +333,62 @@ test("billing enabled uses only the server-resolved credit fallback tuple", asyn
   assert.equal(authorization, "CREDIT_FALLBACK");
 });
 
+test("an enabled route can preserve a legacy 200 fallback while releasing failed usage", async () => {
+  const events: string[] = [];
+  const runner = createAiUsageRunner(
+    dependencies({
+      getConfig: () => ({ ...disabledConfig, featureEnabled: true }),
+      research: new ResearchUsageService({
+        entitlements: new StreamEntitlements(events),
+        usage: new StreamReservations(events),
+      }),
+    }),
+  );
+
+  await assert.rejects(
+    runner(
+      request("concept-failure"),
+      "concept_explore",
+      () => Response.json({ error: "legacy" }, { status: 429 }),
+      async (usage) => {
+        usage.markFailed(new Error("concept provider failed"));
+        return Response.json({ papers: [], searchTerm: "" });
+      },
+    ),
+    /concept provider failed/,
+  );
+  assert.deepEqual(events, ["entitlement", "reserve", "release"]);
+});
+
+test("billing disabled preserves the same 200 fallback without atomic settlement", async () => {
+  const events: string[] = [];
+  const runner = createAiUsageRunner(
+    dependencies({
+      checkLegacy: async () => ({
+        allowed: true,
+        used: 0,
+        limit: 10,
+        userId: null,
+      }),
+      research: {
+        async run() {
+          events.push("research");
+          throw new Error("atomic billing must stay disabled");
+        },
+      },
+    }),
+  );
+  const response = await runner(
+    request(),
+    "concept_explore",
+    () => Response.json({ error: "legacy" }, { status: 429 }),
+    async () => Response.json({ papers: [], searchTerm: "" }),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { papers: [], searchTerm: "" });
+  assert.deepEqual(events, []);
+});
+
 test("a billed multi-stage root atomically finalizes and provisions only its finite stages", async () => {
   const events: string[] = [];
   const runner = createAiUsageRunner(

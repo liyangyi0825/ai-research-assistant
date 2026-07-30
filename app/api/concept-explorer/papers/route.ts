@@ -5,7 +5,8 @@
 // - recent（最新进展）：Semantic Scholar API，按引用数降序
 
 import { NextRequest, NextResponse } from "next/server";
-import { withAiUsage } from "@/lib/billing/ai-usage";
+import { withAiUsage, type AiUsageContext } from "@/lib/billing/ai-usage";
+import { getBillingConfig } from "@/lib/billing/config";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import { getSupabaseAuthClient } from "@/lib/supabase";
 
@@ -236,7 +237,7 @@ function toSSPaper(p: any): Paper {
   };
 }
 
-async function execute(req: NextRequest) {
+async function execute(req: NextRequest, usage?: AiUsageContext) {
   try {
     const supabase = await getSupabaseAuthClient();
     const { data: { user } } = await supabase.auth.getUser();
@@ -380,11 +381,15 @@ async function execute(req: NextRequest) {
     return NextResponse.json({ error: "无效的 type 参数" }, { status: 400 });
   } catch (error) {
     console.error("[concept-papers] 论文搜索异常:", error);
+    usage?.markFailed(error);
     return NextResponse.json({ papers: [], searchTerm: "" });
   }
 }
 
 export async function POST(req: NextRequest) {
+  if (!getBillingConfig().featureEnabled) {
+    return execute(req);
+  }
   return await withAiUsage(
     req,
     "concept_explore",
@@ -393,7 +398,7 @@ export async function POST(req: NextRequest) {
         { error: `本月概念探索次数已用完（${used}/${limit} 次）` },
         { status: 429 },
       ),
-    async () => execute(req),
+    async (usage) => execute(req, usage),
     { operationKey: "concept_papers" },
   );
 }
