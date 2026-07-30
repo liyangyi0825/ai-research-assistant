@@ -29,19 +29,46 @@ const WECHAT_REQUIRED_VARIABLES = [
   "WECHAT_PAY_MCH_ID",
   "WECHAT_PAY_APP_ID",
   "WECHAT_PAY_API_V3_KEY",
-  "WECHAT_PAY_MCH_PRIVATE_KEY",
-  "WECHAT_PAY_MCH_SERIAL_NO",
+  "WECHAT_PAY_PRIVATE_KEY",
+  "WECHAT_PAY_CERT_SERIAL_NO",
   "WECHAT_PAY_PLATFORM_CERT",
   "WECHAT_PAY_NOTIFY_URL",
 ] as const;
 
 const ALIPAY_REQUIRED_VARIABLES = [
   "ALIPAY_APP_ID",
-  "ALIPAY_APP_PRIVATE_KEY",
+  "ALIPAY_PRIVATE_KEY",
   "ALIPAY_PUBLIC_KEY",
   "ALIPAY_NOTIFY_URL",
   "ALIPAY_RETURN_URL",
 ] as const;
+
+const PAYMENT_VARIABLE_ALIASES = [
+  ["WECHAT_PAY_PRIVATE_KEY", "WECHAT_PAY_MCH_PRIVATE_KEY"],
+  ["WECHAT_PAY_CERT_SERIAL_NO", "WECHAT_PAY_MCH_SERIAL_NO"],
+  ["ALIPAY_PRIVATE_KEY", "ALIPAY_APP_PRIVATE_KEY"],
+] as const;
+
+function normalizedPaymentEnvironment(
+  env: BillingEnvironment,
+): BillingEnvironment {
+  const normalized: Record<string, string | undefined> = { ...env };
+
+  for (const [canonical, alias] of PAYMENT_VARIABLE_ALIASES) {
+    const canonicalValue = env[canonical]?.trim();
+    const aliasValue = env[alias]?.trim();
+    if (canonicalValue && aliasValue && canonicalValue !== aliasValue) {
+      throw new BillingError(
+        "PAYMENT_CONFIGURATION_CONFLICT",
+        `Conflicting payment configuration variables: ${canonical}, ${alias}.`,
+        500,
+      );
+    }
+    normalized[canonical] = canonicalValue || aliasValue;
+  }
+
+  return normalized;
+}
 
 function hasValue(env: BillingEnvironment, variable: string): boolean {
   return Boolean(env[variable]?.trim());
@@ -100,24 +127,25 @@ function assertProviderConfigured(
 export function getBillingConfig(
   env: BillingEnvironment = process.env,
 ): BillingConfig {
-  const paymentMode = parsePaymentMode(env.PAYMENT_MODE);
-  const testUserIds = parseTestUserIds(env.BILLING_TEST_USER_IDS);
+  const paymentEnv = normalizedPaymentEnvironment(env);
+  const paymentMode = parsePaymentMode(paymentEnv.PAYMENT_MODE);
+  const testUserIds = parseTestUserIds(paymentEnv.BILLING_TEST_USER_IDS);
   const wechatConfigured =
-    missingVariables(env, WECHAT_REQUIRED_VARIABLES).length === 0;
+    missingVariables(paymentEnv, WECHAT_REQUIRED_VARIABLES).length === 0;
   const alipayConfigured =
-    missingVariables(env, ALIPAY_REQUIRED_VARIABLES).length === 0;
+    missingVariables(paymentEnv, ALIPAY_REQUIRED_VARIABLES).length === 0;
   const config: BillingConfig = {
-    featureEnabled: env.BILLING_FEATURE_ENABLED === "true",
+    featureEnabled: paymentEnv.BILLING_FEATURE_ENABLED === "true",
     paymentMode,
     testUserIds,
     legal: {
-      operatorName: env.LEGAL_OPERATOR_NAME?.trim() ?? "",
-      operatorCreditCode: env.LEGAL_OPERATOR_CREDIT_CODE?.trim() ?? "",
-      contactEmail: env.LEGAL_CONTACT_EMAIL?.trim() ?? "",
+      operatorName: paymentEnv.LEGAL_OPERATOR_NAME?.trim() ?? "",
+      operatorCreditCode: paymentEnv.LEGAL_OPERATOR_CREDIT_CODE?.trim() ?? "",
+      contactEmail: paymentEnv.LEGAL_CONTACT_EMAIL?.trim() ?? "",
     },
     wechatConfigured,
     alipayConfigured,
-    isProduction: env.NODE_ENV === "production",
+    isProduction: paymentEnv.NODE_ENV === "production",
   };
 
   if (
@@ -134,7 +162,7 @@ export function getBillingConfig(
   }
 
   if (config.featureEnabled) {
-    assertProviderConfigured(config.paymentMode, env);
+    assertProviderConfigured(config.paymentMode, paymentEnv);
   }
 
   return config;

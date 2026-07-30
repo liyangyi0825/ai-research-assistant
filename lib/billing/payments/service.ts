@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 
 import { getSupabaseAdminClient } from "../../supabase";
-import { assertBillingAccess } from "../auth";
+import {
+  assertBillingAccess,
+  requireBillingActor,
+  type BillingActor,
+} from "../auth";
 import { getBillingConfig, type BillingConfig } from "../config";
 import { BillingError } from "../errors";
 import type {
@@ -89,6 +93,17 @@ export type CreateOrderPaymentDependencies = {
     config: BillingConfig,
   ) => PaymentProvider;
   isAdmin?: boolean;
+};
+
+type PaymentRouteContext = {
+  params: Promise<{ id: string }>;
+};
+
+export type CreateOrderPaymentPostHandlerDependencies = {
+  requireActor: () => Promise<BillingActor>;
+  getConfig: () => BillingConfig;
+  assertAccess: (actor: BillingActor, config: BillingConfig) => void;
+  createPayment: typeof createOrderPayment;
 };
 
 const PAYMENT_ORDER_COLUMNS = [
@@ -496,4 +511,61 @@ export async function createOrderPayment(
     throw storageError();
   }
   return paymentFromStored(order.orderNumber, persisted);
+}
+
+function paymentErrorResponse(error: unknown): Response {
+  const billingError =
+    error instanceof BillingError
+      ? error
+      : new BillingError(
+          "INTERNAL_BILLING_ERROR",
+          "Billing request failed.",
+          500,
+        );
+  return Response.json(
+    {
+      error: {
+        code: billingError.code,
+        message: billingError.message,
+      },
+    },
+    { status: billingError.status },
+  );
+}
+
+export function createOrderPaymentPostHandler(
+  dependencies: CreateOrderPaymentPostHandlerDependencies = {
+    requireActor: requireBillingActor,
+    getConfig: getBillingConfig,
+    assertAccess: assertBillingAccess,
+    createPayment: createOrderPayment,
+  },
+): (request: Request, context: PaymentRouteContext) => Promise<Response> {
+  return async function postOrderPaymentHandler(
+    _request: Request,
+    context: PaymentRouteContext,
+  ): Promise<Response> {
+    try {
+      const actor = await dependencies.requireActor();
+      const config = dependencies.getConfig();
+      dependencies.assertAccess(actor, config);
+      const { id } = await context.params;
+      const payment = await dependencies.createPayment(actor.id, id, {
+        getConfig: () => config,
+        isAdmin: actor.isAdmin,
+      });
+
+      return Response.json(
+        {
+          payment: {
+            status: payment.status,
+            expiresAt: payment.expiresAt,
+          },
+        },
+        { status: 201 },
+      );
+    } catch (error) {
+      return paymentErrorResponse(error);
+    }
+  };
 }

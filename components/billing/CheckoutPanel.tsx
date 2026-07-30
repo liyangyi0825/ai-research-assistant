@@ -97,6 +97,16 @@ export function CheckoutPanel({ productId }: { productId: string }) {
       }
       const body = (await response.json()) as { order?: { id?: string } };
       if (!body.order?.id) throw new Error("missing order");
+      const paymentResponse = await fetch(
+        `/api/billing/orders/${encodeURIComponent(body.order.id)}/payment`,
+        { method: "POST" },
+      );
+      if (!paymentResponse.ok) {
+        setMessage(
+          "璁㈠崟宸插垱寤猴紝浣嗘敮浠樺噯澶囨湭瀹屾垚锛岃浠庤处鍗曚腑蹇冮噸璇曘€?",
+        );
+        return;
+      }
       router.push(
         `/billing/payment-result?orderId=${encodeURIComponent(body.order.id)}`,
       );

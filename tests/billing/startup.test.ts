@@ -11,15 +11,15 @@ const configuredWechat = {
   WECHAT_PAY_MCH_ID: "test-mch",
   WECHAT_PAY_APP_ID: "test-app",
   WECHAT_PAY_API_V3_KEY: "test-api-v3-key",
-  WECHAT_PAY_MCH_PRIVATE_KEY: "test-private-key",
-  WECHAT_PAY_MCH_SERIAL_NO: "test-serial",
+  WECHAT_PAY_PRIVATE_KEY: "test-private-key",
+  WECHAT_PAY_CERT_SERIAL_NO: "test-serial",
   WECHAT_PAY_PLATFORM_CERT: "test-platform-cert",
   WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
 };
 
 const configuredAlipay = {
   ALIPAY_APP_ID: "test-app",
-  ALIPAY_APP_PRIVATE_KEY: "test-private-key",
+  ALIPAY_PRIVATE_KEY: "test-private-key",
   ALIPAY_PUBLIC_KEY: "test-public-key",
   ALIPAY_NOTIFY_URL: "https://billing.test/alipay/callback",
   ALIPAY_RETURN_URL: "https://billing.test/alipay/return",
@@ -88,7 +88,7 @@ test("startup rejects incomplete WeChat and Alipay configuration without leaking
           BILLING_FEATURE_ENABLED: "true",
           PAYMENT_MODE: paymentMode,
           WECHAT_PAY_API_V3_KEY: secret,
-          ALIPAY_APP_PRIVATE_KEY: secret,
+          ALIPAY_PRIVATE_KEY: secret,
         }),
       (error: unknown) => {
         assert.ok(error instanceof BillingError);

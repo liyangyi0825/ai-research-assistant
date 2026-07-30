@@ -117,3 +117,69 @@ test("test user IDs are trimmed and de-duplicated", () => {
     "third-user",
   ]);
 });
+
+test("formal provider configuration accepts the documented private key names", () => {
+  assert.equal(
+    getBillingConfig({
+      BILLING_FEATURE_ENABLED: "true",
+      PAYMENT_MODE: "wechat",
+      WECHAT_PAY_MCH_ID: "mch",
+      WECHAT_PAY_APP_ID: "app",
+      WECHAT_PAY_API_V3_KEY: "api-key",
+      WECHAT_PAY_PRIVATE_KEY: "private-key",
+      WECHAT_PAY_CERT_SERIAL_NO: "serial",
+      WECHAT_PAY_PLATFORM_CERT: "platform-cert",
+      WECHAT_PAY_NOTIFY_URL: "https://example.test/wechat",
+    }).wechatConfigured,
+    true,
+  );
+  assert.equal(
+    getBillingConfig({
+      BILLING_FEATURE_ENABLED: "true",
+      PAYMENT_MODE: "alipay",
+      ALIPAY_APP_ID: "app",
+      ALIPAY_PRIVATE_KEY: "private-key",
+      ALIPAY_PUBLIC_KEY: "public-key",
+      ALIPAY_NOTIFY_URL: "https://example.test/alipay",
+      ALIPAY_RETURN_URL: "https://example.test/return",
+    }).alipayConfigured,
+    true,
+  );
+});
+
+test("legacy key aliases remain compatible but conflicting aliases fail closed without values", () => {
+  assert.doesNotThrow(() =>
+    getBillingConfig({
+      BILLING_FEATURE_ENABLED: "true",
+      PAYMENT_MODE: "wechat",
+      WECHAT_PAY_MCH_ID: "mch",
+      WECHAT_PAY_APP_ID: "app",
+      WECHAT_PAY_API_V3_KEY: "api-key",
+      WECHAT_PAY_MCH_PRIVATE_KEY: "private-key",
+      WECHAT_PAY_MCH_SERIAL_NO: "serial",
+      WECHAT_PAY_PLATFORM_CERT: "platform-cert",
+      WECHAT_PAY_NOTIFY_URL: "https://example.test/wechat",
+    }),
+  );
+
+  const secret = "must-not-leak";
+  assert.throws(
+    () =>
+      getBillingConfig({
+        BILLING_FEATURE_ENABLED: "true",
+        PAYMENT_MODE: "alipay",
+        ALIPAY_APP_ID: "app",
+        ALIPAY_PRIVATE_KEY: secret,
+        ALIPAY_APP_PRIVATE_KEY: "different-secret",
+        ALIPAY_PUBLIC_KEY: "public",
+        ALIPAY_NOTIFY_URL: "https://example.test/alipay",
+        ALIPAY_RETURN_URL: "https://example.test/return",
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof BillingError);
+      assert.equal(error.code, "PAYMENT_CONFIGURATION_CONFLICT");
+      assert.doesNotMatch(error.message, /must-not-leak|different-secret/);
+      return true;
+    },
+  );
+});
