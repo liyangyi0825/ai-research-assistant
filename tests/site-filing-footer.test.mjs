@@ -8,7 +8,7 @@ const read = (path) =>
 test("filing footer contains the official filing records and safe links", async () => {
   const source = await read("components/SiteFilingFooter.tsx");
 
-  assert.match(source, /津ICP备2026007356号/);
+  assert.match(source, /冀ICP备2026029358号/);
   assert.match(source, /https:\/\/beian\.miit\.gov\.cn\//);
   assert.match(source, /冀公网安备13028302000277号/);
   assert.match(source, /https:\/\/beian\.mps\.gov\.cn\//);
@@ -35,6 +35,6 @@ test("sidebar does not duplicate filing records", async () => {
 
   assert.doesNotMatch(
     source,
-    /津ICP备2026007356号|冀公网安备13028302000277号/,
+    /冀ICP备2026029358号|冀公网安备13028302000277号/,
   );
 });

@@ -6,7 +6,7 @@
 
 ## 备案信息
 
-- ICP 备案：`津ICP备2026007356号`，链接至 `https://beian.miit.gov.cn/`
+- ICP 备案：`冀ICP备2026029358号`，链接至 `https://beian.miit.gov.cn/`
 - 公安备案：`冀公网安备13028302000277号`，链接至 `https://beian.mps.gov.cn/`
 
 两个链接均在新标签页打开，并使用 `rel="noopener noreferrer"`。

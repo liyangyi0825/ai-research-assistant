@@ -13,7 +13,7 @@ export function SiteFilingFooter() {
           rel="noopener noreferrer"
           className={linkClass}
         >
-          津ICP备2026007356号
+          冀ICP备2026029358号
         </a>
         <span aria-hidden="true" className="hidden text-slate-300 sm:inline">
           |
