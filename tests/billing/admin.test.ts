@@ -4,7 +4,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { AdminBillingView } from "../../app/admin/billing/AdminBillingView";
+import { ReconciliationReportView } from "../../components/billing/ReconciliationReportView";
 import { BillingError } from "../../lib/billing/errors";
+import type { InternalReconciliationReport } from "../../lib/billing/reconciliation";
 import {
   adjustUserCredit,
   createBillingAdminRepository,
@@ -62,6 +64,47 @@ const admin = {
   email: "admin@example.test",
   isAdmin: true as const,
   role: "BILLING_ADMIN" as const,
+};
+
+const reconciliationReport: InternalReconciliationReport = {
+  generatedAt: "2026-08-05T00:00:00.000Z",
+  scope: "INTERNAL_DATABASE_ONLY",
+  summary: {
+    total: 2,
+    critical: 1,
+    warning: 1,
+    info: 0,
+    byCode: {
+      ORDER_EXPIRED_PENDING: 0,
+      PAID_ORDER_PAYMENT_MISSING: 1,
+      PAYMENT_ORDER_MISMATCH: 0,
+      WEBHOOK_STALLED: 1,
+      SUBSCRIPTION_GRANT_MISSING: 0,
+      CREDIT_GRANT_MISSING: 0,
+      REFUND_STATE_MISMATCH: 0,
+    },
+  },
+  items: [
+    {
+      code: "PAID_ORDER_PAYMENT_MISSING",
+      severity: "CRITICAL",
+      entityType: "ORDER",
+      entityId: "order-1",
+      orderNumber: "ORD-20260805-001",
+      detectedAt: "2026-08-05T00:00:00.000Z",
+      message: "Paid order is missing a paid payment record.",
+    },
+    {
+      code: "WEBHOOK_STALLED",
+      severity: "WARNING",
+      entityType: "WEBHOOK",
+      entityId: "webhook-1",
+      orderNumber: null,
+      detectedAt: "2026-08-05T00:00:00.000Z",
+      message: "Webhook processing has stalled.",
+    },
+  ],
+  truncated: false,
 };
 
 function repository(
@@ -130,6 +173,75 @@ test("every admin handler rejects a regular user before repository access", asyn
   assert.deepEqual(await response.json(), {
     error: { code: "BILLING_ADMIN_REQUIRED", message: "forbidden" },
   });
+});
+
+test("reconciliation route rejects a regular user before generating a report", async () => {
+  const { createReconciliationGetHandler } = await import("../../app/api/admin/billing/reconciliation/route");
+  let generated = false;
+  const handler = createReconciliationGetHandler({
+    requireAdmin: async () => {
+      throw new BillingError("BILLING_ADMIN_REQUIRED", "forbidden", 403);
+    },
+    generateReport: async () => {
+      generated = true;
+      return reconciliationReport;
+    },
+  });
+
+  const response = await handler(new Request("http://localhost/api/admin/billing/reconciliation"));
+  assert.equal(response.status, 403);
+  assert.equal(generated, false);
+});
+
+test("reconciliation route returns the exact report DTO to an administrator", async () => {
+  const { createReconciliationGetHandler } = await import("../../app/api/admin/billing/reconciliation/route");
+  const handler = createReconciliationGetHandler({
+    requireAdmin: async () => admin,
+    generateReport: async () => reconciliationReport,
+  });
+
+  const response = await handler(new Request("http://localhost/api/admin/billing/reconciliation"));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), reconciliationReport);
+});
+
+test("reconciliation report view renders safe report fields and read-only scope", () => {
+  const markup = renderToStaticMarkup(createElement(ReconciliationReportView, { report: reconciliationReport }));
+
+  for (const text of [
+    "内部数据库一致性报告",
+    "只读报告，不会自动修改账务",
+    "不代表已与微信或支付宝完成对账",
+    "ORD-20260805-001",
+    "order-1",
+    "webhook-1",
+    "PAID_ORDER_PAYMENT_MISSING",
+    "WEBHOOK_STALLED",
+    "CRITICAL",
+    "WARNING",
+    "Paid order is missing a paid payment record.",
+    "Webhook processing has stalled.",
+  ]) assert.match(markup, new RegExp(text));
+
+  for (const [name, label, count] of [
+    ["total", "总计", 2],
+    ["critical", "严重", 1],
+    ["warning", "警告", 1],
+    ["info", "提示", 0],
+  ]) assert.match(markup, new RegExp(`<dt id="summary-${name}-label"[^>]*>${label}</dt><dd[^>]*aria-labelledby="summary-${name}-label"[^>]*>${count}</dd>`));
+
+  for (const [code, count] of Object.entries(reconciliationReport.summary.byCode)) {
+    assert.match(markup, new RegExp(`<dt id="finding-count-${code}"[^>]*>${code}</dt><dd[^>]*aria-labelledby="finding-count-${code}"[^>]*>${count}</dd>`));
+  }
+  assert.match(markup, /<tr data-finding-code="PAID_ORDER_PAYMENT_MISSING" data-entity-id="order-1"/);
+  assert.match(markup, /<tr data-finding-code="WEBHOOK_STALLED" data-entity-id="webhook-1"/);
+  assert.doesNotMatch(markup, /<button|<form|自动修复|一键修复|payload_summary|signature|token|email|tax/i);
+});
+
+test("reconciliation API exposes GET only", async () => {
+  const route = await import("../../app/api/admin/billing/reconciliation/route");
+  assert.equal(typeof route.GET, "function");
+  for (const method of ["POST", "PUT", "PATCH", "DELETE"]) assert.equal(method in route, false);
 });
 
 test("admin query handlers return repository data without exposing secrets", async () => {
@@ -444,6 +556,7 @@ test("admin pages and routes enforce the server administrator boundary", async (
     "app/admin/billing/refunds/page.tsx",
     "app/admin/billing/invoices/page.tsx",
     "app/admin/billing/webhooks/page.tsx",
+    "app/admin/billing/reconciliation/page.tsx",
   ];
   for (const file of pages) {
     assert.match(await fs.readFile(file, "utf8"), /requireBillingAdmin\(\)/);
@@ -458,6 +571,7 @@ test("admin pages and routes enforce the server administrator boundary", async (
     "app/api/admin/billing/invoices/route.ts",
     "app/api/admin/billing/webhooks/route.ts",
     "app/api/admin/billing/catalog/route.ts",
+    "app/api/admin/billing/reconciliation/route.ts",
   ];
   for (const file of routes) {
     assert.match(await fs.readFile(file, "utf8"), /createAdminBillingHandler/);
