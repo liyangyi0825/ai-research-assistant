@@ -124,6 +124,18 @@ function assertProviderConfigured(
   }
 }
 
+function assertProviderImplemented(mode: PaymentMode): void {
+  if (mode === "mock") return;
+
+  // Remove this gate only after the selected provider has complete request,
+  // signature-verification, and callback-settlement implementations.
+  throw new BillingError(
+    "PROVIDER_NOT_IMPLEMENTED",
+    "The selected payment provider is not implemented.",
+    503,
+  );
+}
+
 export function getBillingConfig(
   env: BillingEnvironment = process.env,
 ): BillingConfig {
@@ -163,6 +175,7 @@ export function getBillingConfig(
 
   if (config.featureEnabled) {
     assertProviderConfigured(config.paymentMode, paymentEnv);
+    assertProviderImplemented(config.paymentMode);
   }
 
   return config;

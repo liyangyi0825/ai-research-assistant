@@ -1,4 +1,5 @@
 import type { Json } from "./database.types";
+import { getBillingConfig, type BillingConfig } from "./config";
 import { BillingError } from "./errors";
 import {
   billingRepository,
@@ -55,7 +56,8 @@ export async function listPublicProducts(
 }
 
 export type ListPublicProductsHandlerDependencies = {
-  listProducts: () => Promise<PublicBillingProduct[]>;
+  getConfig?: () => BillingConfig;
+  listProducts?: () => Promise<PublicBillingProduct[]>;
 };
 
 function errorResponse(error: unknown): Response {
@@ -80,13 +82,15 @@ function errorResponse(error: unknown): Response {
 }
 
 export function createListPublicProductsHandler(
-  dependencies: ListPublicProductsHandlerDependencies = {
-    listProducts: listPublicProducts,
-  },
+  dependencies: ListPublicProductsHandlerDependencies = {},
 ): () => Promise<Response> {
   return async function listProductsHandler() {
     try {
-      const products = await dependencies.listProducts();
+      const config = (dependencies.getConfig ?? getBillingConfig)();
+      if (!config.featureEnabled) {
+        return Response.json({ products: [] });
+      }
+      const products = await (dependencies.listProducts ?? listPublicProducts)();
       return Response.json({ products });
     } catch (error) {
       return errorResponse(error);

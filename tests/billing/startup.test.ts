@@ -100,23 +100,28 @@ test("startup rejects incomplete WeChat and Alipay configuration without leaking
   }
 });
 
-test("startup accepts fully configured formal providers", () => {
-  assert.doesNotThrow(() =>
-    validateBillingRuntimeAtStartup({
-      NODE_ENV: "production",
-      BILLING_FEATURE_ENABLED: "true",
-      PAYMENT_MODE: "wechat",
-      ...configuredWechat,
-    }),
-  );
-  assert.doesNotThrow(() =>
-    validateBillingRuntimeAtStartup({
-      NODE_ENV: "production",
-      BILLING_FEATURE_ENABLED: "true",
-      PAYMENT_MODE: "alipay",
-      ...configuredAlipay,
-    }),
-  );
+test("startup rejects fully configured formal providers until their implementations exist", () => {
+  for (const [paymentMode, providerConfig, secret] of [
+    ["wechat", configuredWechat, configuredWechat.WECHAT_PAY_API_V3_KEY],
+    ["alipay", configuredAlipay, configuredAlipay.ALIPAY_PRIVATE_KEY],
+  ] as const) {
+    assert.throws(
+      () =>
+        validateBillingRuntimeAtStartup({
+          NODE_ENV: "production",
+          BILLING_FEATURE_ENABLED: "true",
+          PAYMENT_MODE: paymentMode,
+          ...providerConfig,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof BillingError);
+        assert.equal(error.code, "PROVIDER_NOT_IMPLEMENTED");
+        assert.match(error.message, /provider is not implemented/i);
+        assert.doesNotMatch(error.message, new RegExp(secret));
+        return true;
+      },
+    );
+  }
 });
 
 test("Next instrumentation invokes the explicit billing startup validator", () => {

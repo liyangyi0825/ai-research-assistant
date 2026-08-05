@@ -503,6 +503,57 @@ test("the webhook route preserves exact bytes and rejects providers outside serv
   assert.equal(mismatchedBodyRead, false);
 });
 
+test("the webhook route continues verified settlement while new billing sales are disabled", async () => {
+  let settlementAttempts = 0;
+  const handler = createPaymentWebhookPostHandler({
+    getConfig: () => ({ ...config, featureEnabled: false }),
+    processWebhook: async (_provider, rawBody) => {
+      assert.equal(rawBody, "settle-this-paid-callback");
+      settlementAttempts += 1;
+      return {
+        status: "PROCESSED",
+        eventStatus: "PROCESSED",
+        eventId: "event-1",
+        orderId: "order-1",
+      };
+    },
+  });
+  const request = new Request("http://localhost/api/billing/webhooks/mock", {
+    method: "POST",
+    body: "settle-this-paid-callback",
+  });
+
+  const response = await handler(request, {
+    params: Promise.resolve({ provider: "mock" }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    webhook: {
+      status: "PROCESSED",
+      eventStatus: "PROCESSED",
+      eventId: "event-1",
+      orderId: "order-1",
+    },
+  });
+  assert.equal(settlementAttempts, 1);
+});
+
+test("webhook processing settles a verified paid callback while new billing sales are disabled", async () => {
+  const repository = new MemoryWebhookRepository();
+  const rawBody = eventBody();
+
+  const result = await processPaymentWebhook("mock", rawBody, signed(rawBody), {
+    repository,
+    getConfig: () => ({ ...config, featureEnabled: false }),
+    getProvider: () => mockProvider(),
+  });
+
+  assert.equal(result.status, "PROCESSED");
+  assert.deepEqual(repository.operations, ["persist:RECEIVED", "settle"]);
+  assert.equal(repository.settlementCalls, 1);
+});
+
 test("the webhook route rejects a declared body over 64 KiB before reading", async () => {
   let processed = 0;
   const handler = createPaymentWebhookPostHandler({

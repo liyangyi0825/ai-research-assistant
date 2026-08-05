@@ -98,6 +98,7 @@ test("billing route modules expose the expected HTTP methods", () => {
 
 test("GET products returns only the public product DTO", async () => {
   const handler = createListPublicProductsHandler({
+    getConfig: () => config,
     listProducts: async () => [publicProduct],
   });
 
@@ -106,6 +107,23 @@ test("GET products returns only the public product DTO", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await responseBody(response), { products: [publicProduct] });
   assert.equal("entitlementVersion" in publicProduct, false);
+});
+
+test("GET products returns an empty catalog while billing is disabled without reading storage", async () => {
+  let storageReads = 0;
+  const handler = createListPublicProductsHandler({
+    getConfig: () => ({ ...config, featureEnabled: false }),
+    listProducts: async () => {
+      storageReads += 1;
+      return [publicProduct];
+    },
+  });
+
+  const response = await handler();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await responseBody(response), { products: [] });
+  assert.equal(storageReads, 0);
 });
 
 test("POST orders performs auth, feature access, atomic rate limiting, then order creation", async () => {
@@ -394,6 +412,7 @@ test("GET an order awaits Next.js 16 params and uses the authenticated owner", a
 
 test("billing handlers fail closed without leaking unexpected errors", async () => {
   const productsHandler = createListPublicProductsHandler({
+    getConfig: () => config,
     listProducts: async () => {
       throw new Error("database password=secret");
     },
