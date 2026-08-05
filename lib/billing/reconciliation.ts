@@ -1,4 +1,5 @@
 import { BillingError } from "./errors";
+import { getSupabaseAdminClient } from "../supabase";
 
 export type ReconciliationCode =
   | "ORDER_EXPIRED_PENDING"
@@ -98,6 +99,27 @@ export type InternalReconciliationSnapshot = {
   refundRecords: InternalReconciliationRefundRecord[];
 };
 
+type ReconciliationReadResult = {
+  data: unknown;
+  error: unknown | null;
+};
+
+type ReconciliationReadQuery = {
+  select(columns: string): {
+    order(column: string, options: { ascending: boolean }): {
+      limit(count: number): PromiseLike<ReconciliationReadResult>;
+    };
+  };
+};
+
+export type ReconciliationAdminClient = {
+  from(table: string): ReconciliationReadQuery;
+};
+
+export type ReconciliationRepository = {
+  loadSnapshot(): Promise<InternalReconciliationSnapshot>;
+};
+
 const CODES: ReconciliationCode[] = [
   "ORDER_EXPIRED_PENDING",
   "PAID_ORDER_PAYMENT_MISSING",
@@ -152,6 +174,28 @@ function date(value: unknown): string {
   return value;
 }
 
+function timestamptz(value: unknown): string {
+  if (typeof value !== "string") throw storageError();
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) throw storageError();
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, offset] = match;
+  const [year, month, day, hour, minute, second] = [yearText, monthText, dayText, hourText, minuteText, secondText].map(Number);
+  const [offsetHour, offsetMinute] = offset === "Z" ? [0, 0] : offset.slice(1).split(":").map(Number);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59 || offsetHour > 23 || offsetMinute > 59) throw storageError();
+  const calendar = new Date(0);
+  calendar.setUTCFullYear(year, month - 1, day);
+  calendar.setUTCHours(hour, minute, second, 0);
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) throw storageError();
+  const normalized = new Date(value);
+  if (Number.isNaN(normalized.getTime())) throw storageError();
+  return normalized.toISOString();
+}
+
+function nullableTimestamptz(value: unknown): string | null {
+  if (value === null) return null;
+  return timestamptz(value);
+}
+
 function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T {
   if (typeof value !== "string" || !allowed.includes(value as T)) throw storageError();
   return value as T;
@@ -160,6 +204,111 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T {
 function array(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) throw storageError();
   return value.map(record);
+}
+
+const reconciliationQueries = {
+  orders: ["billing_orders", "id, order_number, user_id, provider, status, amount_minor, currency, snapshot_product_type, snapshot_credit_grant, expires_at, paid_at, refund_status"],
+  payments: ["billing_payments", "id, order_id, user_id, provider, status, amount_minor, currency"],
+  webhookEvents: ["billing_webhook_events", "id, order_id, provider_event_id, status, created_at, updated_at"],
+  subscriptions: ["billing_subscriptions", "id, source_order_id"],
+  creditLedgerEntries: ["billing_credit_ledger", "id, entry_type, reference_type, reference_id"],
+  refundRequests: ["billing_refund_requests", "id, order_id, status"],
+  refundRecords: ["billing_refunds", "id, refund_request_id, order_id, status"],
+} as const;
+
+async function readRows(client: ReconciliationAdminClient, table: string, columns: string): Promise<Record<string, unknown>[]> {
+  const result = await client.from(table).select(columns).order("id", { ascending: true }).limit(1000);
+  if (!result || typeof result !== "object" || result.error || !Array.isArray(result.data)) throw storageError();
+  return result.data.map(record);
+}
+
+function mapSnapshot(rows: {
+  orders: Record<string, unknown>[];
+  payments: Record<string, unknown>[];
+  webhookEvents: Record<string, unknown>[];
+  subscriptions: Record<string, unknown>[];
+  creditLedgerEntries: Record<string, unknown>[];
+  refundRequests: Record<string, unknown>[];
+  refundRecords: Record<string, unknown>[];
+}): InternalReconciliationSnapshot {
+  return {
+    orders: rows.orders.map((row) => {
+      nullableTimestamptz(row.paid_at);
+      return {
+        id: id(row.id), orderNumber: id(row.order_number), userId: id(row.user_id),
+        provider: oneOf(row.provider, ["MOCK", "WECHAT", "ALIPAY"]),
+        status: oneOf(row.status, ["PENDING", "PAID", "FAILED", "CANCELLED", "CLOSED", "REFUNDING", "REFUNDED"]),
+        amountMinor: amount(row.amount_minor), currency: oneOf(row.currency, ["CNY"]),
+        snapshotProductType: oneOf(row.snapshot_product_type, ["SUBSCRIPTION", "CREDIT_PACK"]),
+        snapshotCreditGrant: amount(row.snapshot_credit_grant), expiresAt: timestamptz(row.expires_at),
+        refundStatus: oneOf(row.refund_status, ["NONE", "REQUESTED", "PARTIAL", "FULL"]),
+      };
+    }),
+    payments: rows.payments.map((row) => ({
+      id: id(row.id), orderId: id(row.order_id), userId: id(row.user_id),
+      provider: oneOf(row.provider, ["MOCK", "WECHAT", "ALIPAY"]),
+      status: oneOf(row.status, ["PENDING", "PAID", "FAILED", "CLOSED", "REFUNDED"]),
+      amountMinor: amount(row.amount_minor), currency: oneOf(row.currency, ["CNY"]),
+    })),
+    webhookEvents: rows.webhookEvents.map((row) => {
+      nullableId(row.order_id);
+      id(row.provider_event_id);
+      timestamptz(row.created_at);
+      return { id: id(row.id), status: oneOf(row.status, ["RECEIVED", "PROCESSING", "PROCESSED", "FAILED"]), updatedAt: timestamptz(row.updated_at) };
+    }),
+    subscriptions: rows.subscriptions.map((row) => ({ id: id(row.id), sourceOrderId: nullableId(row.source_order_id) })),
+    creditLedgerEntries: rows.creditLedgerEntries.map((row) => {
+      const referenceType = nullableId(row.reference_type);
+      const referenceId = nullableId(row.reference_id);
+      return { id: id(row.id), entryType: oneOf(row.entry_type, ["PURCHASE", "GRANT", "RESERVE", "CONSUME", "RELEASE", "ADJUSTMENT"]), referenceOrderId: referenceType === "ORDER" ? referenceId : null };
+    }),
+    refundRequests: rows.refundRequests.map((row) => ({ id: id(row.id), orderId: id(row.order_id), status: oneOf(row.status, ["PENDING", "APPROVED", "REJECTED", "CANCELLED"]) })),
+    refundRecords: rows.refundRecords.map((row) => {
+      id(row.refund_request_id);
+      return { id: id(row.id), orderId: id(row.order_id), status: oneOf(row.status, ["PENDING", "SUCCEEDED", "FAILED"]) };
+    }),
+  };
+}
+
+export function createReconciliationRepository(client: ReconciliationAdminClient): ReconciliationRepository {
+  return {
+    async loadSnapshot() {
+      try {
+        const [orders, payments, webhookEvents, subscriptions, creditLedgerEntries, refundRequests, refundRecords] = await Promise.all([
+          readRows(client, ...reconciliationQueries.orders),
+          readRows(client, ...reconciliationQueries.payments),
+          readRows(client, ...reconciliationQueries.webhookEvents),
+          readRows(client, ...reconciliationQueries.subscriptions),
+          readRows(client, ...reconciliationQueries.creditLedgerEntries),
+          readRows(client, ...reconciliationQueries.refundRequests),
+          readRows(client, ...reconciliationQueries.refundRecords),
+        ]);
+        return mapSnapshot({ orders, payments, webhookEvents, subscriptions, creditLedgerEntries, refundRequests, refundRecords });
+      } catch {
+        throw storageError();
+      }
+    },
+  };
+}
+
+export function getReconciliationRepository(): ReconciliationRepository {
+  const client = getSupabaseAdminClient();
+  if (!client) return { async loadSnapshot() { throw storageError(); } };
+  return createReconciliationRepository(client as unknown as ReconciliationAdminClient);
+}
+
+export async function generateInternalReconciliationReport(input?: {
+  repository?: ReconciliationRepository;
+  now?: () => Date;
+}): Promise<InternalReconciliationReport> {
+  try {
+    const repository = input?.repository ?? getReconciliationRepository();
+    const now = input?.now ?? (() => new Date());
+    return buildInternalReconciliationReport({ snapshot: await repository.loadSnapshot(), now: now() });
+  } catch (error) {
+    if (error instanceof BillingError && error.code === "BILLING_STORAGE_UNAVAILABLE" && error.status === 503 && error.message === "Billing data is temporarily unavailable.") throw error;
+    throw storageError();
+  }
 }
 
 function validateSnapshot(value: unknown): InternalReconciliationSnapshot {

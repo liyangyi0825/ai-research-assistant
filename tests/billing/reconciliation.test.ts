@@ -4,6 +4,8 @@ import test from "node:test";
 import { BillingError } from "../../lib/billing/errors";
 import {
   buildInternalReconciliationReport,
+  createReconciliationRepository,
+  generateInternalReconciliationReport,
   type InternalReconciliationSnapshot,
   type InternalReconciliationOrder,
 } from "../../lib/billing/reconciliation";
@@ -170,5 +172,161 @@ test("uses indexed relationships instead of repeatedly scanning snapshot rows", 
     })));
   } finally {
     Array.prototype.some = originalSome;
+  }
+});
+
+const reconciliationRows = {
+  billing_orders: [{ id: "order-id", order_number: "ORD-001", user_id: "user-id", provider: "MOCK", status: "PAID", amount_minor: 100, currency: "CNY", snapshot_product_type: "SUBSCRIPTION", snapshot_credit_grant: 0, expires_at: "2026-08-05T13:00:00.000Z", paid_at: "2026-08-05T12:00:00.000Z", refund_status: "NONE" }],
+  billing_payments: [{ id: "payment-id", order_id: "order-id", user_id: "user-id", provider: "MOCK", status: "PAID", amount_minor: 100, currency: "CNY" }],
+  billing_webhook_events: [{ id: "webhook-id", order_id: "order-id", provider_event_id: "event-id", status: "PROCESSED", created_at: "2026-08-05T11:00:00.000Z", updated_at: "2026-08-05T11:30:00.000Z" }],
+  billing_subscriptions: [{ id: "subscription-id", source_order_id: "order-id" }],
+  billing_credit_ledger: [{ id: "ledger-id", entry_type: "PURCHASE", reference_type: "ORDER", reference_id: "order-id" }],
+  billing_refund_requests: [{ id: "refund-request-id", order_id: "order-id", status: "APPROVED" }],
+  billing_refunds: [{ id: "refund-id", refund_request_id: "refund-request-id", order_id: "order-id", status: "SUCCEEDED" }],
+};
+
+type ReadResult = { data: unknown; error: unknown | null };
+
+function createReadClient(rows: Record<string, ReadResult> = Object.fromEntries(
+  Object.entries(reconciliationRows).map(([table, data]) => [table, { data, error: null }]),
+)): {
+  client: { from(table: string): { select(columns: string): { order(column: string, options: { ascending: boolean }): { limit(count: number): Promise<ReadResult> } } } };
+  calls: Array<{ table: string; columns: string; column: string; ascending: boolean; count: number }>;
+} {
+  const calls: Array<{ table: string; columns: string; column: string; ascending: boolean; count: number }> = [];
+  return {
+    client: {
+      from(table) {
+        return {
+          select(columns) {
+            return {
+              order(column, options) {
+                return {
+                  async limit(count) {
+                    calls.push({ table, columns, column, ascending: options.ascending, count });
+                    return rows[table] ?? { data: null, error: { message: "missing fixture" } };
+                  },
+                };
+              },
+            };
+          },
+        };
+      },
+    },
+    calls,
+  };
+}
+
+test("loads exactly the seven read-only reconciliation sources with bounded deterministic queries", async () => {
+  const { client, calls } = createReadClient();
+  assert.equal("insert" in client, false);
+  assert.equal("update" in client, false);
+  assert.equal("delete" in client, false);
+  assert.equal("upsert" in client, false);
+  assert.equal("rpc" in client, false);
+
+  await createReconciliationRepository(client).loadSnapshot();
+
+  assert.deepEqual(calls, [
+    { table: "billing_orders", columns: "id, order_number, user_id, provider, status, amount_minor, currency, snapshot_product_type, snapshot_credit_grant, expires_at, paid_at, refund_status", column: "id", ascending: true, count: 1000 },
+    { table: "billing_payments", columns: "id, order_id, user_id, provider, status, amount_minor, currency", column: "id", ascending: true, count: 1000 },
+    { table: "billing_webhook_events", columns: "id, order_id, provider_event_id, status, created_at, updated_at", column: "id", ascending: true, count: 1000 },
+    { table: "billing_subscriptions", columns: "id, source_order_id", column: "id", ascending: true, count: 1000 },
+    { table: "billing_credit_ledger", columns: "id, entry_type, reference_type, reference_id", column: "id", ascending: true, count: 1000 },
+    { table: "billing_refund_requests", columns: "id, order_id, status", column: "id", ascending: true, count: 1000 },
+    { table: "billing_refunds", columns: "id, refund_request_id, order_id, status", column: "id", ascending: true, count: 1000 },
+  ]);
+});
+
+test("maps selected snake_case rows to the engine snapshot contracts", async () => {
+  const { client } = createReadClient();
+  const result = await createReconciliationRepository(client).loadSnapshot();
+  assert.deepEqual(result, {
+    orders: [{ id: "order-id", orderNumber: "ORD-001", userId: "user-id", provider: "MOCK", status: "PAID", amountMinor: 100, currency: "CNY", snapshotProductType: "SUBSCRIPTION", snapshotCreditGrant: 0, expiresAt: "2026-08-05T13:00:00.000Z", refundStatus: "NONE" }],
+    payments: [{ id: "payment-id", orderId: "order-id", userId: "user-id", provider: "MOCK", status: "PAID", amountMinor: 100, currency: "CNY" }],
+    webhookEvents: [{ id: "webhook-id", status: "PROCESSED", updatedAt: "2026-08-05T11:30:00.000Z" }],
+    subscriptions: [{ id: "subscription-id", sourceOrderId: "order-id" }],
+    creditLedgerEntries: [{ id: "ledger-id", entryType: "PURCHASE", referenceOrderId: "order-id" }],
+    refundRequests: [{ id: "refund-request-id", orderId: "order-id", status: "APPROVED" }],
+    refundRecords: [{ id: "refund-id", orderId: "order-id", status: "SUCCEEDED" }],
+  });
+});
+
+test("fails closed when a reconciliation read errors, is not an array, or contains a malformed row", async () => {
+  const fixtures: Record<string, ReadResult>[] = [
+    { ...Object.fromEntries(Object.entries(reconciliationRows).map(([table, data]) => [table, { data, error: null }])), billing_orders: { data: null, error: { message: "query failed" } } },
+    { ...Object.fromEntries(Object.entries(reconciliationRows).map(([table, data]) => [table, { data, error: null }])), billing_payments: { data: {}, error: null } },
+    { ...Object.fromEntries(Object.entries(reconciliationRows).map(([table, data]) => [table, { data, error: null }])), billing_refunds: { data: [{ id: "refund-id", refund_request_id: "refund-request-id", order_id: "order-id", status: "INVALID" }], error: null } },
+  ];
+  for (const rows of fixtures) {
+    await assert.rejects(
+      createReconciliationRepository(createReadClient(rows).client).loadSnapshot(),
+      (error: unknown) => error instanceof BillingError && error.code === "BILLING_STORAGE_UNAVAILABLE" && error.message === "Billing data is temporarily unavailable." && error.status === 503,
+    );
+  }
+});
+
+test("generates a report from one loaded snapshot and the injected clock", async () => {
+  let loads = 0;
+  const generatedAt = "2026-08-05T12:00:00.000Z";
+  const result = await generateInternalReconciliationReport({
+    repository: {
+      async loadSnapshot() {
+        loads += 1;
+        return snapshot({ orders: [order({ status: "PENDING", expiresAt: generatedAt })] });
+      },
+    },
+    now: () => new Date(generatedAt),
+  });
+  assert.equal(loads, 1);
+  assert.equal(result.generatedAt, generatedAt);
+  assert.equal(result.items[0]?.code, "ORDER_EXPIRED_PENDING");
+});
+
+test("normalizes valid PostgREST timestamptz values before passing them to the reconciliation engine", async () => {
+  const rows = Object.fromEntries(Object.entries(reconciliationRows).map(([table, data]) => [table, { data, error: null }])) as Record<string, ReadResult>;
+  rows.billing_orders = {
+    data: [{ ...reconciliationRows.billing_orders[0], expires_at: "2026-08-05T13:00:00+00:00", paid_at: "2026-08-05T12:00:00.123456+08:00" }],
+    error: null,
+  };
+  rows.billing_webhook_events = {
+    data: [{ ...reconciliationRows.billing_webhook_events[0], created_at: "2026-08-05T11:00:00.123456+00:00", updated_at: "2026-08-05T11:30:00.123456+08:00" }],
+    error: null,
+  };
+
+  const result = await createReconciliationRepository(createReadClient(rows).client).loadSnapshot();
+
+  assert.equal(result.orders[0]?.expiresAt, "2026-08-05T13:00:00.000Z");
+  assert.equal(result.webhookEvents[0]?.updatedAt, "2026-08-05T03:30:00.123Z");
+});
+
+test("fails closed for impossible PostgREST timestamptz calendar and offset values", async () => {
+  const fixtures: Record<string, ReadResult>[] = [
+    { ...Object.fromEntries(Object.entries(reconciliationRows).map(([table, data]) => [table, { data, error: null }])), billing_orders: { data: [{ ...reconciliationRows.billing_orders[0], expires_at: "2026-02-30T12:00:00+00:00" }], error: null } },
+    { ...Object.fromEntries(Object.entries(reconciliationRows).map(([table, data]) => [table, { data, error: null }])), billing_webhook_events: { data: [{ ...reconciliationRows.billing_webhook_events[0], updated_at: "2026-08-05T11:30:00+24:00" }], error: null } },
+  ];
+  for (const rows of fixtures) {
+    await assert.rejects(
+      createReconciliationRepository(createReadClient(rows).client).loadSnapshot(),
+      (error: unknown) => error instanceof BillingError && error.code === "BILLING_STORAGE_UNAVAILABLE" && error.message === "Billing data is temporarily unavailable." && error.status === 503,
+    );
+  }
+});
+
+test("normalizes non-storage repository and clock errors to the safe storage error", async () => {
+  const unsafeErrors = [
+    new BillingError("UNSAFE_CODE", "unsafe billing detail", 400),
+    new BillingError("BILLING_STORAGE_UNAVAILABLE", "unsafe storage detail", 503),
+    new Error("unsafe implementation detail"),
+  ];
+  for (const unsafeError of unsafeErrors) {
+    await assert.rejects(
+      generateInternalReconciliationReport({ repository: { async loadSnapshot() { throw unsafeError; } } }),
+      (error: unknown) => error instanceof BillingError && error.code === "BILLING_STORAGE_UNAVAILABLE" && error.message === "Billing data is temporarily unavailable." && error.status === 503,
+    );
+    await assert.rejects(
+      generateInternalReconciliationReport({ repository: { async loadSnapshot() { return snapshot(); } }, now: () => { throw unsafeError; } }),
+      (error: unknown) => error instanceof BillingError && error.code === "BILLING_STORAGE_UNAVAILABLE" && error.message === "Billing data is temporarily unavailable." && error.status === 503,
+    );
   }
 });
