@@ -98,6 +98,70 @@ function optionalString(value: unknown): string | null {
   return normalized || null;
 }
 
+function rows(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value) || value.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
+    throw storageError();
+  }
+  return value as Record<string, unknown>[];
+}
+
+function payloadHash(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const hash = (value as Record<string, unknown>).payload_hash;
+  return typeof hash === "string" && /^[a-f0-9]{64}$/i.test(hash) ? hash : null;
+}
+
+function maskTaxIdentifier(value: unknown): string | null {
+  const identifier = optionalString(value);
+  if (!identifier) return null;
+  if (identifier.length <= 8) return "****";
+  return `${identifier.slice(0, 4)}${"*".repeat(identifier.length - 8)}${identifier.slice(-4)}`;
+}
+
+function maskDeliveryEmail(value: unknown): string | null {
+  const email = optionalString(value);
+  if (!email) return null;
+  const at = email.lastIndexOf("@");
+  if (at <= 0 || at === email.length - 1) return "***";
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const maskedLocal = local.length === 1
+    ? "***"
+    : local.length === 2
+      ? `${local[0]}***`
+    : `${local[0]}${"*".repeat(Math.max(1, local.length - 2))}${local.at(-1)}`;
+  return `${maskedLocal}@${domain}`;
+}
+
+function mapInvoiceRow(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    order_id: row.order_id,
+    invoice_title: row.invoice_title,
+    tax_identifier: maskTaxIdentifier(row.tax_identifier),
+    amount_minor: row.amount_minor,
+    currency: row.currency,
+    delivery_email: maskDeliveryEmail(row.delivery_email),
+    status: row.status,
+    created_at: row.created_at,
+  };
+}
+
+function mapWebhookEventRow(row: Record<string, unknown>) {
+  return {
+    id: row.id,
+    provider: row.provider,
+    provider_event_id: row.provider_event_id,
+    order_id: row.order_id,
+    payload_hash: payloadHash(row.payload_summary),
+    status: row.status,
+    error_code: row.error_code,
+    created_at: row.created_at,
+    processed_at: row.processed_at,
+  };
+}
+
 function parseMutation(data: unknown): AdminMutationResult {
   if (!data || typeof data !== "object" || Array.isArray(data)) throw storageError();
   const row = data as Record<string, unknown>;
@@ -156,10 +220,12 @@ export function createBillingAdminRepository(client: Client): BillingAdminReposi
       return (await result(client.from("billing_refund_requests").select("id, user_id, order_id, requested_amount_minor, currency, reason, status, created_at").order("created_at", { ascending: false }).limit(100))) as unknown[];
     },
     async listInvoices() {
-      return (await result(client.from("billing_invoice_requests").select("id, user_id, order_id, invoice_title, tax_identifier, amount_minor, currency, delivery_email, status, created_at").order("created_at", { ascending: false }).limit(100))) as unknown[];
+      const data = await result(client.from("billing_invoice_requests").select("id, user_id, order_id, invoice_title, tax_identifier, amount_minor, currency, delivery_email, status, created_at").order("created_at", { ascending: false }).limit(100));
+      return rows(data).map(mapInvoiceRow);
     },
     async listWebhookEvents() {
-      return (await result(client.from("billing_webhook_events").select("id, provider, provider_event_id, order_id, payload_hash, status, error_code, received_at, processed_at").order("received_at", { ascending: false }).limit(100))) as unknown[];
+      const data = await result(client.from("billing_webhook_events").select("id, provider, provider_event_id, order_id, payload_summary, status, error_code, created_at, processed_at").order("created_at", { ascending: false }).limit(100));
+      return rows(data).map(mapWebhookEventRow);
     },
     async listCatalog() {
       const [plans, products] = await Promise.all([

@@ -1,15 +1,61 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
+import { AdminBillingView } from "../../app/admin/billing/AdminBillingView";
 import { BillingError } from "../../lib/billing/errors";
 import {
   adjustUserCredit,
+  createBillingAdminRepository,
   createAdminBillingHandler,
   grantUserSubscription,
   reviewRefundRequest,
   upsertBillingPlan,
   type BillingAdminRepository,
 } from "../../lib/billing/admin";
+
+type QueryResponse = { data: unknown; error: { message: string } | null };
+
+class QueryStub implements PromiseLike<QueryResponse> {
+  constructor(
+    private readonly table: string,
+    private readonly response: QueryResponse,
+    private readonly selections: Array<{ table: string; columns: string }> ,
+  ) {}
+
+  select(columns: string): this {
+    this.selections.push({ table: this.table, columns });
+    return this;
+  }
+
+  eq(): this { return this; }
+  order(): this { return this; }
+  limit(): this { return this; }
+  maybeSingle(): this { return this; }
+
+  then<TResult1 = QueryResponse, TResult2 = never>(
+    onfulfilled?: ((value: QueryResponse) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): PromiseLike<TResult1 | TResult2> {
+    return Promise.resolve(this.response).then(onfulfilled, onrejected);
+  }
+}
+
+function queryClient(rows: Record<string, unknown>): {
+  selections: Array<{ table: string; columns: string }>;
+  from(table: string): QueryStub;
+  rpc(): Promise<QueryResponse>;
+} {
+  const selections: Array<{ table: string; columns: string }> = [];
+  return {
+    selections,
+    from(table) {
+      return new QueryStub(table, { data: rows[table] ?? [], error: null }, selections);
+    },
+    async rpc() { return { data: null, error: { message: "not used" } }; },
+  };
+}
 
 const admin = {
   id: "admin-1",
@@ -99,6 +145,121 @@ test("admin query handlers return repository data without exposing secrets", asy
   const response = await handler(new Request("http://localhost/admin"));
   assert.equal(response.status, 200);
   assert.equal(JSON.stringify(await response.json()).includes("private_key"), false);
+});
+
+test("admin webhook list selects the actual schema and exposes only a validated payload hash", async () => {
+  const client = queryClient({
+    billing_webhook_events: [{
+      id: "event-1",
+      provider: "MOCK",
+      provider_event_id: "provider-event-1",
+      order_id: "order-1",
+      payload_summary: {
+        payload_hash: "a".repeat(64),
+        provider_secret: "must-not-leak",
+        nested: { raw_payload: "must-not-leak" },
+      },
+      status: "PROCESSED",
+      error_code: null,
+      created_at: "2026-08-05T00:00:00.000Z",
+      processed_at: "2026-08-05T00:01:00.000Z",
+    }, {
+      id: "event-2",
+      provider: "MOCK",
+      provider_event_id: "provider-event-2",
+      order_id: "order-2",
+      payload_summary: { payload_hash: "not-a-sha256" },
+      status: "FAILED",
+      error_code: "INVALID_SIGNATURE",
+      created_at: "2026-08-05T00:02:00.000Z",
+      processed_at: null,
+    }],
+  });
+
+  const events = await createBillingAdminRepository(client).listWebhookEvents();
+
+  assert.deepEqual(client.selections, [{
+    table: "billing_webhook_events",
+    columns: "id, provider, provider_event_id, order_id, payload_summary, status, error_code, created_at, processed_at",
+  }]);
+  assert.deepEqual(events, [{
+    id: "event-1", provider: "MOCK", provider_event_id: "provider-event-1", order_id: "order-1",
+    payload_hash: "a".repeat(64), status: "PROCESSED", error_code: null,
+    created_at: "2026-08-05T00:00:00.000Z", processed_at: "2026-08-05T00:01:00.000Z",
+  }, {
+    id: "event-2", provider: "MOCK", provider_event_id: "provider-event-2", order_id: "order-2",
+    payload_hash: null, status: "FAILED", error_code: "INVALID_SIGNATURE",
+    created_at: "2026-08-05T00:02:00.000Z", processed_at: null,
+  }]);
+  assert.equal(JSON.stringify(events).includes("must-not-leak"), false);
+});
+
+test("admin invoice list masks tax identifiers and delivery email before returning rows to the UI", async () => {
+  const rawTaxIdentifier = "91310000MA1K123456";
+  const rawEmail = "student.research@example.edu.cn";
+  const client = queryClient({
+    billing_invoice_requests: [{
+      id: "invoice-1", user_id: "user-1", order_id: "order-1", invoice_title: "Research Lab",
+      tax_identifier: rawTaxIdentifier, amount_minor: 1990, currency: "CNY",
+      delivery_email: rawEmail, status: "PENDING", created_at: "2026-08-05T00:00:00.000Z",
+    }],
+  });
+
+  const invoices = await createBillingAdminRepository(client).listInvoices();
+  const rendered = JSON.stringify(invoices);
+  const managementUi = renderToStaticMarkup(createElement(AdminBillingView, {
+    title: "Invoice requests",
+    description: "Masked billing fields only.",
+    data: invoices,
+  }));
+
+  assert.deepEqual(client.selections, [{
+    table: "billing_invoice_requests",
+    columns: "id, user_id, order_id, invoice_title, tax_identifier, amount_minor, currency, delivery_email, status, created_at",
+  }]);
+  assert.equal(rendered.includes(rawTaxIdentifier), false);
+  assert.equal(rendered.includes(rawEmail), false);
+  assert.equal(managementUi.includes(rawTaxIdentifier), false);
+  assert.equal(managementUi.includes(rawEmail), false);
+  assert.deepEqual(invoices, [{
+    id: "invoice-1", user_id: "user-1", order_id: "order-1", invoice_title: "Research Lab",
+    tax_identifier: "9131**********3456", amount_minor: 1990, currency: "CNY",
+    delivery_email: "s**************h@example.edu.cn", status: "PENDING",
+    created_at: "2026-08-05T00:00:00.000Z",
+  }]);
+});
+
+test("admin invoice list never exposes one- or two-character email local parts", async () => {
+  const oneCharacterEmail = "a@example.com";
+  const twoCharacterEmail = "ab@example.com";
+  const client = queryClient({
+    billing_invoice_requests: [{
+      id: "invoice-2", user_id: "user-2", order_id: "order-2", invoice_title: "One character",
+      tax_identifier: null, amount_minor: 100, currency: "CNY", delivery_email: oneCharacterEmail,
+      status: "PENDING", created_at: "2026-08-05T00:00:00.000Z",
+    }, {
+      id: "invoice-3", user_id: "user-3", order_id: "order-3", invoice_title: "Two characters",
+      tax_identifier: null, amount_minor: 100, currency: "CNY", delivery_email: twoCharacterEmail,
+      status: "PENDING", created_at: "2026-08-05T00:00:00.000Z",
+    }],
+  });
+
+  const invoices = await createBillingAdminRepository(client).listInvoices();
+  const managementUi = renderToStaticMarkup(createElement(AdminBillingView, {
+    title: "Invoice requests",
+    description: "Masked billing fields only.",
+    data: invoices,
+  }));
+  const returned = JSON.stringify(invoices);
+
+  assert.equal(returned.includes(oneCharacterEmail), false);
+  assert.equal(returned.includes(twoCharacterEmail), false);
+  assert.equal(managementUi.includes(oneCharacterEmail), false);
+  assert.equal(managementUi.includes(twoCharacterEmail), false);
+  assert.deepEqual(invoices.map((invoice) => (invoice as { delivery_email: string }).delivery_email), [
+    "***@example.com",
+    "a***@example.com",
+  ]);
 });
 
 test("manual credit adjustment requires a non-empty reason", async () => {

@@ -10,7 +10,8 @@ PAYMENT_MODE=mock
 BILLING_TEST_USER_IDS=
 ```
 
-- `BILLING_FEATURE_ENABLED=false` 时不展示公开购买入口，订单、支付及售后写接口拒绝访问。
+- `BILLING_FEATURE_ENABLED=false` 时不展示公开购买入口，创建订单、创建支付、Mock 确认及售后写接口拒绝访问；已付款订单的已验签支付回调仍会继续结算，避免商户扣款后未发放权益。
+- 此功能开关不是支付回调硬停开关。需要硬停 Provider 时，必须使用独立、经审批的运维机制并保留对账与人工处置路径。
 - `PAYMENT_MODE=mock` 只用于本地、测试环境，以及生产环境中明确列入 `BILLING_TEST_USER_IDS` 的测试账号或服务端确认的管理员。
 - 生产环境不能将 Mock 支付公开给普通用户。程序启动和每次支付访问都会执行安全校验。
 - 根目录 `instrumentation.ts` 的 `register()` 会在 Next.js 服务实例就绪前调用 Billing 启动校验；默认关闭配置可正常构建和启动，不安全的生产 Mock 或缺少正式 Provider 配置会阻止实例就绪。
@@ -50,7 +51,7 @@ ALIPAY_RETURN_URL=
 
 `WECHAT_PAY_PRIVATE_KEY` 是商户私钥，`WECHAT_PAY_CERT_SERIAL_NO` 是商户证书序列号；`WECHAT_PAY_PLATFORM_CERT` 用于平台证书/公钥材料。`ALIPAY_PRIVATE_KEY` 是支付宝应用私钥。旧变量 `WECHAT_PAY_MCH_PRIVATE_KEY`、`WECHAT_PAY_MCH_SERIAL_NO` 和 `ALIPAY_APP_PRIVATE_KEY` 仅作为兼容别名；若新旧变量同时设置且值不同，程序会拒绝启动收费功能。所有值只应通过受控的服务端密钥管理注入，日志不得输出其内容。
 
-当 `PAYMENT_MODE=wechat` 或 `PAYMENT_MODE=alipay` 且收费功能开启时，缺少任一对应配置都会拒绝启用支付功能。错误信息只报告缺少的变量名，不输出变量值。
+当 `PAYMENT_MODE=wechat` 或 `PAYMENT_MODE=alipay` 且收费功能开启时，缺少任一对应配置会拒绝启用支付功能；即使配置完整，在 Provider 仍为接口骨架期间也会以 `PROVIDER_NOT_IMPLEMENTED` 拒绝启动。错误信息不输出变量值。
 
 ## 独立测试数据库
 
@@ -67,6 +68,16 @@ ALIPAY_RETURN_URL=
 7. `202607290007_billing_admin_rpc_hardening.sql`
 8. `202607290008_revoke_legacy_billing_credit_rpc.sql`
 9. `202607290009_billing_feature_usage_costs.sql`
+10. `202608050010_billing_catalog_seed.sql`
+
+### 2026-08-05 独立测试库验收记录
+
+本记录对应独立、可销毁的 Supabase 测试项目 `fqnpzsecalhrsqhpdaxs`，不是生产数据库。仅记录公开 Project Ref；不要在本文、提交记录或日志中写入连接串、访问令牌或密钥。
+
+- 已验收迁移 `001`–`010`，本地迁移目录与该测试项目的远程迁移记录一致。
+- 已在该测试库验证真实 RPC 的额度并发预占、确认、失败返还及重复请求幂等；并验证支付结算重复回调不会重复入账，金额或币种不一致会被拒绝。
+- 已验收目录数据：Free、Pro Monthly、Pro Semester、Credit Pack 100；Free 不创建零元商品，所有 Plan 与 Product 均保持 `is_active=false`，匿名用户不可见商品。
+- 此验收不构成生产迁移、生产支付或公开销售授权。生产环境须另行完成备份、变更审批、回滚演练和上线验收。
 
 本地 Supabase 可使用：
 
