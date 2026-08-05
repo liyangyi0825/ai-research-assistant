@@ -500,19 +500,21 @@ test("operator docs distinguish static SQL contracts from real PostgreSQL verifi
   assert.match(rollback, /不得删除.*账务/);
 });
 
-test("protected filing, deployment, and user-dirty files remain identical to the audited base", () => {
+test("approved filing values are present while deployment files remain unchanged", () => {
+  const filing = readProjectFile("components/SiteFilingFooter.tsx");
+  assert.match(filing, /冀ICP备2026029358号/);
+  assert.match(filing, /冀公网安备13028302000277号/);
+
   const protectedPaths = [
     "components/SiteFilingFooter.tsx",
     "public/beian-police.png",
     "app/layout.tsx",
     ".github/workflows/deploy.yml",
     "deploy.sh",
-    "app/api/translate-page/route.ts",
-    "components/PdfTranslationView.tsx",
   ];
   const changed = execFileSync(
     "git",
-    ["diff", "--name-only", "1138955", "--", ...protectedPaths],
+    ["diff", "--name-only", "24e1da9", "--", ...protectedPaths],
     { cwd: root, encoding: "utf8" },
   )
     .split(/\r?\n/)

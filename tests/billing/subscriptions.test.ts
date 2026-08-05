@@ -190,6 +190,7 @@ test("SubscriptionService fails closed when subscription storage fails", async (
 });
 
 test("EntitlementService accepts an active immutable plan snapshot", async () => {
+  const now = new Date("2026-07-15T08:00:00.000Z");
   const repository: EntitlementRepository = {
     async findCurrentEntitlement() {
       return {
@@ -210,7 +211,7 @@ test("EntitlementService accepts an active immutable plan snapshot", async () =>
     },
   };
 
-  const entitlement = await new EntitlementService(repository)
+  const entitlement = await new EntitlementService(repository, () => now)
     .requireEntitlement("user-1", "deep_research");
 
   assert.equal(entitlement.sourceType, "PLAN");

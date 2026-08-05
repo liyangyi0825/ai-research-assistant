@@ -9,6 +9,7 @@ export const AI_CONTINUATION_OPERATIONS = {
   concept: "concept_explorer",
   pptContent: "ppt_generate_content",
   pptSections: "ppt_generate_sections",
+  translation: "translate_document",
 } as const;
 
 const PPT_BATCH_SIZE = 4;
@@ -64,6 +65,49 @@ type ContinuationPolicy = {
   };
   continuationStages?: ContinuationStageProvision[];
 };
+
+const MAX_TRANSLATION_PAGES = 200;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+export function translationContinuationPolicy(input: {
+  pageNum: number;
+  textHash: string;
+  manifest: readonly { pageNum: number; textHash: string }[];
+}): ContinuationPolicy {
+  if (
+    !Array.isArray(input.manifest) ||
+    input.manifest.length === 0 ||
+    input.manifest.length > MAX_TRANSLATION_PAGES
+  ) {
+    throw new BillingError("INVALID_CONTINUATION_STAGE", "Invalid translation manifest.", 400);
+  }
+  const pageNumbers = new Set<number>();
+  for (const page of input.manifest) {
+    if (
+      !Number.isSafeInteger(page.pageNum) ||
+      page.pageNum < 1 ||
+      !SHA256_HEX.test(page.textHash) ||
+      pageNumbers.has(page.pageNum)
+    ) {
+      throw new BillingError("INVALID_CONTINUATION_STAGE", "Invalid translation manifest.", 400);
+    }
+    pageNumbers.add(page.pageNum);
+  }
+  const index = input.manifest.findIndex((page) => page.pageNum === input.pageNum);
+  if (index < 0 || input.manifest[index].textHash !== input.textHash) {
+    throw new BillingError("INVALID_CONTINUATION_STAGE", "Translation page does not match its manifest.", 400);
+  }
+  const boundStage = (page: { pageNum: number; textHash: string }) => ({
+    stageKey: `page:${page.pageNum}`,
+    requestHash: canonicalAiRequestHash(page),
+  });
+  return {
+    operationKey: AI_CONTINUATION_OPERATIONS.translation,
+    ...(index === 0
+      ? { continuationStages: input.manifest.slice(1).map(boundStage) }
+      : { continuation: boundStage(input.manifest[index]) }),
+  };
+}
 
 export function conceptContinuationPolicy(input: {
   block: number;

@@ -66,6 +66,7 @@ ALIPAY_RETURN_URL=
 6. `202607290006_billing_admin_hardening.sql`
 7. `202607290007_billing_admin_rpc_hardening.sql`
 8. `202607290008_revoke_legacy_billing_credit_rpc.sql`
+9. `202607290009_billing_feature_usage_costs.sql`
 
 本地 Supabase 可使用：
 

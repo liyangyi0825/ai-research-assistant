@@ -30,9 +30,20 @@ test("paper recommendation is a finite continuation of the charged search", asyn
   assert.match(recommend, /if \(!getBillingConfig\(\)\.featureEnabled\)/);
 });
 
-test("the protected dirty translation route remains untouched by this phase", async () => {
+test("the translation route uses the centralized billing adapter", async () => {
   const status = await source("app/api/translate-page/route.ts");
-  assert.doesNotMatch(status, /withAiUsage/);
+  const client = await source("components/PdfTranslationView.tsx");
+  assert.match(status, /import \{ withAiUsage/);
+  assert.match(status, /return await withAiUsage\(/);
+  assert.doesNotMatch(status, /checkUsageLimit|insertUsageRecord/);
+  assert.doesNotMatch(status, /if \(!isFirst\)/);
+  assert.match(status, /translationContinuationPolicy/);
+  assert.match(status, /continuationStages: continuationPolicy\.continuationStages/);
+  assert.match(
+    client,
+    /if \(!safeRootRetryRef\.current\)[\s\S]*translationTaskKeyRef\.current = crypto\.randomUUID\(\)/,
+  );
+  assert.match(client, /e instanceof TranslationProviderError[\s\S]*safeRootRetryRef\.current = true/);
 });
 
 test("concept paper fallback releases enabled usage while preserving its legacy 200 DTO", async () => {

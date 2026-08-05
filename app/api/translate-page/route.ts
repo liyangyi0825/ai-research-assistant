@@ -1,44 +1,17 @@
-﻿// 按页翻译接口：每次翻译 PDF 的一页
+// 按页翻译接口：每次翻译 PDF 的一页
 // 只在第一页（isFirst=true）检查并记录用量，整篇 PDF 只消耗一次配额
+import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
-import { after } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
+import { translationContinuationPolicy } from "@/lib/billing/ai-continuation";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
-export async function POST(req: NextRequest) {
-  try {
-    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
-    if (!apiKey) {
-      return Response.json({ error: "服务器未配置 API Key" }, { status: 500 });
-    }
+const MAX_RETRIES = 3;
+const RETRY_DELAYS_MS = [1000, 2000, 4000];
+const PER_ATTEMPT_TIMEOUT_MS = 90000;
 
-    const { pageNum, text, isFirst } = (await req.json()) as {
-      pageNum: number;
-      text: string;
-      isFirst: boolean;
-    };
-
-    // 只在第一页检查用量，整篇 PDF 只扣一次配额
-    let userId: string | null = null;
-    if (isFirst) {
-      const { allowed, used, limit, userId: uid } = await checkUsageLimit("translate");
-      if (!allowed) {
-        return Response.json(
-          { error: `本月全文翻译次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
-          { status: 429 },
-        );
-      }
-      userId = uid;
-    }
-
-    // 页面无文字（如纯图片页）直接返回空流
-    if (!text?.trim()) {
-      return new Response("data: [DONE]\n\n", {
-        headers: { "Content-Type": "text/event-stream" },
-      });
-    }
-
-    const prompt = `本页文字从双栏PDF提取，可能存在左右栏交叉混排。
+function buildPrompt(text: string, pageNum: number, isChunk = false): string {
+  return `本页文字从双栏PDF提取，可能存在左右栏交叉混排。
 请先理解全文内容和逻辑，然后按正确阅读顺序（先读完左栏，再读右栏）重新整理后翻译，
 确保译文段落顺序与论文原始逻辑一致。
 
@@ -90,11 +63,39 @@ PDF 文字提取时会丢失 $ 符号，原文中公式以裸 LaTeX 形式出现
 - PDF 提取出乱码符号：用 [公式：描述含义] 代替
 - 孤立数学符号（α β γ Σ ∫ 等）直接原样保留
 
-以下是第 ${pageNum} 页的原文：
+以下是第 ${pageNum} 页${isChunk ? "的部分内容" : "的原文"}：
 
 ${text}`;
+}
 
-    const anthropicRes = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
+// 把长文本按空行切成若干段，每段不超过 maxChunkChars，用于截断兜底翻译
+function splitIntoChunks(text: string, maxChunkChars = 3000): string[] {
+  const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  if (paragraphs.length <= 1) return [text];
+
+  const chunks: string[] = [];
+  let cur = "";
+  for (const p of paragraphs) {
+    if (cur && cur.length + p.length + 2 > maxChunkChars) {
+      chunks.push(cur);
+      cur = p;
+    } else {
+      cur = cur ? `${cur}\n\n${p}` : p;
+    }
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+type AttemptResult =
+  | { ok: true; text: string }
+  | { ok: false; retryable: boolean; error: string };
+
+// 单次请求 + 消费完整流，返回完整译文或失败原因（不直接转发给客户端）
+async function callOnce(prompt: string, pageNum: number, apiKey: string): Promise<AttemptResult> {
+  let res: Response;
+  try {
+    res = await fetchWithProxy("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "x-api-key": apiKey,
@@ -108,85 +109,198 @@ ${text}`;
         stream: true,
         messages: [{ role: "user", content: prompt }],
       }),
+      signal: AbortSignal.timeout(PER_ATTEMPT_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[translate-page] 第${pageNum}页 请求异常: ${msg}`, e instanceof Error ? e.stack : "");
+    return { ok: false, retryable: true, error: `网络请求失败: ${msg}` };
+  }
+
+  if (!res.ok) {
+    const status = res.status;
+    const errBody = await res.text().catch(() => "");
+    console.error(`[translate-page] 第${pageNum}页 HTTP ${status}: ${errBody.slice(0, 300)}`);
+    const retryable = status === 429 || status >= 500;
+    return { ok: false, retryable, error: `API 错误 ${status}: ${errBody}` };
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  const thinkingBlocks = new Set<number>();
+  let buffer = "";
+  let text = "";
+  let stopReason: string | null = null;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const raw = line.slice(6).trim();
+        if (!raw || raw === "[DONE]") continue;
+        let evt: { type?: string; index?: number; content_block?: { type?: string }; delta?: { type?: string; text?: string; stop_reason?: string } };
+        try {
+          evt = JSON.parse(raw);
+        } catch {
+          continue;
+        }
+        if (evt.type === "content_block_start" && evt.content_block?.type === "thinking") {
+          thinkingBlocks.add(evt.index ?? -1);
+        }
+        if (typeof evt.index === "number" && thinkingBlocks.has(evt.index)) continue;
+        if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta" && typeof evt.delta.text === "string") {
+          text += evt.delta.text;
+        }
+        if (evt.type === "message_delta" && evt.delta?.stop_reason) {
+          stopReason = evt.delta.stop_reason;
+        }
+      }
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[translate-page] 第${pageNum}页 流读取异常: ${msg}`, e instanceof Error ? e.stack : "");
+    return { ok: false, retryable: true, error: `流读取失败: ${msg}` };
+  }
+
+  console.log(`[translate-page] 第${pageNum}页 input长度=${prompt.length} stop_reason=${stopReason} 输出长度=${text.length}`);
+
+  if (stopReason === "max_tokens") {
+    return { ok: false, retryable: true, error: "输出被截断（max_tokens）" };
+  }
+
+  return { ok: true, text };
+}
+
+// 自动重试 + 指数退避：最多 3 次，1s/2s/4s；429、5xx、超时、网络错误、截断均重试
+async function callWithRetry(prompt: string, pageNum: number, apiKey: string): Promise<string> {
+  let lastError = "翻译失败";
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const r = await callOnce(prompt, pageNum, apiKey);
+    if (r.ok) return r.text;
+
+    lastError = r.error;
+    if (!r.retryable || attempt === MAX_RETRIES) {
+      throw new Error(lastError);
+    }
+    const delay = RETRY_DELAYS_MS[attempt - 1];
+    console.warn(`[translate-page] 第${pageNum}页 第${attempt}次尝试失败（${lastError}），${delay}ms 后重试`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+  throw new Error(lastError);
+}
+
+// 截断重试仍失败后的降级方案：按段落切分后分别翻译再拼接
+async function translateWithSplitFallback(text: string, pageNum: number, apiKey: string): Promise<string> {
+  const chunks = splitIntoChunks(text);
+  console.warn(`[translate-page] 第${pageNum}页 截断重试仍失败，降级为分段翻译（共${chunks.length}段）`);
+  const results: string[] = [];
+  for (const chunk of chunks) {
+    const prompt = buildPrompt(chunk, pageNum, true);
+    const translated = await callWithRetry(prompt, pageNum, apiKey);
+    results.push(translated.trim());
+  }
+  return results.join("\n\n");
+}
+
+// 在等待较慢的翻译请求期间持续发心跳，防止 Nginx proxy_read_timeout 断开连接
+async function withHeartbeat<T>(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  encoder: TextEncoder,
+  work: Promise<T>,
+): Promise<T> {
+  let stopped = false;
+  const beat = (async () => {
+    while (!stopped) {
+      await new Promise(resolve => setTimeout(resolve, 4000));
+      if (stopped) break;
+      try {
+        await writer.write(encoder.encode(": k\n\n"));
+      } catch {
+        break;
+      }
+    }
+  })();
+  try {
+    return await work;
+  } finally {
+    stopped = true;
+    await beat.catch(() => {});
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const { pageNum, text, documentManifest } = (await req.json()) as {
+      pageNum: number;
+      text: string;
+      documentManifest: { pageNum: number; textHash: string }[];
+    };
+    const textHash = createHash("sha256").update(text ?? "").digest("hex");
+    const continuationPolicy = translationContinuationPolicy({
+      pageNum,
+      textHash,
+      manifest: documentManifest,
     });
 
-    if (!anthropicRes.ok) {
-      const errBody = await anthropicRes.text();
-      return Response.json(
-        { error: `API 错误 ${anthropicRes.status}: ${errBody}` },
-        { status: 500 },
-      );
+    const execute = async () => {
+    const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
+    if (!apiKey) {
+      return Response.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }
 
-    // 第一页成功后记录一次用量（整篇 PDF 只计一次）
-    if (isFirst && userId) {
-      after(async () => {
-        await insertUsageRecord({
-          userId: userId!,
-          actionType: "translate",
-          tokensInput: 0,
-          tokensOutput: 0,
-          cacheCreationTokens: 0,
-          cacheReadTokens: 0,
-        });
+    // 页面无文字（如纯图片页）直接返回空流
+    if (!text?.trim()) {
+      return new Response("data: [DONE]\n\n", {
+        headers: { "Content-Type": "text/event-stream" },
       });
     }
 
-    // TransformStream 透传 + 心跳，防止 Nginx proxy_read_timeout 断开 SSE 流
+    const prompt = buildPrompt(text, pageNum);
+
+    // TransformStream：先在服务端确认翻译成功（含重试/降级），期间用心跳保活，
+    // 成功后再把完整译文分片发给客户端，失败则发一条 error 事件让前端标记该页失败
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();
     const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-    let sseBuffer = "";
-    let firstChunkLogged = false;
 
     void (async () => {
-      const reader = anthropicRes.body!.getReader();
-      const thinkingBlocks = new Set<number>();
-      let lastHeartbeat = Date.now();
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          // 每 5 秒发一次心跳，防止 Nginx proxy_read_timeout 断开
-          if (Date.now() - lastHeartbeat > 5000) {
-            await writer.write(encoder.encode(": k\n\n"));
-            lastHeartbeat = Date.now();
-          }
-
-          const chunk = decoder.decode(value, { stream: true });
-          if (!firstChunkLogged) {
-            console.log("[translate-page] first chunk:", chunk.slice(0, 200));
-            firstChunkLogged = true;
-          }
-          sseBuffer += chunk;
-          const lines = sseBuffer.split("\n");
-          sseBuffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            if (!line.startsWith("data: ")) {
-              await writer.write(encoder.encode(line + "\n"));
-              continue;
-            }
-            const raw = line.slice(6).trim();
-            if (!raw || raw === "[DONE]") {
-              await writer.write(encoder.encode(line + "\n"));
-              continue;
-            }
-            try {
-              const evt = JSON.parse(raw);
-              if (evt.type === "content_block_start" && evt.content_block?.type === "thinking") {
-                thinkingBlocks.add(evt.index ?? -1);
-              }
-              if (typeof evt.index === "number" && thinkingBlocks.has(evt.index)) continue;
-              await writer.write(encoder.encode(line + "\n"));
-            } catch { await writer.write(encoder.encode(line + "\n")); }
+        let finalText: string;
+        try {
+          finalText = await withHeartbeat(writer, encoder, callWithRetry(prompt, pageNum, apiKey));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "翻译失败";
+          if (msg.includes("截断")) {
+            finalText = await withHeartbeat(writer, encoder, translateWithSplitFallback(text, pageNum, apiKey));
+          } else {
+            throw e;
           }
         }
+
+        const CHUNK_SIZE = 80;
+        for (let i = 0; i < finalText.length; i += CHUNK_SIZE) {
+          const piece = finalText.slice(i, i + CHUNK_SIZE);
+          const evt = { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: piece } };
+          await writer.write(encoder.encode(`data: ${JSON.stringify(evt)}\n\n`));
+        }
+        await writer.write(encoder.encode("data: [DONE]\n\n"));
         await writer.close();
       } catch (e) {
-        await writer.abort(e);
+        const msg = e instanceof Error ? e.message : "翻译失败";
+        console.error(`[translate-page] 第${pageNum}页 最终失败: ${msg}`, e instanceof Error ? e.stack : "");
+        try {
+          const errEvt = { type: "error", error: { message: msg } };
+          await writer.write(encoder.encode(`data: ${JSON.stringify(errEvt)}\n\n`));
+          await writer.close();
+        } catch {
+          /* 连接已断开，忽略 */
+        }
       }
     })();
 
@@ -197,6 +311,22 @@ ${text}`;
         "X-Accel-Buffering": "no",
       },
     });
+    };
+
+    return await withAiUsage(
+      req,
+      "translate",
+      ({ used, limit }) => Response.json(
+        { error: `本月全文翻译次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 },
+      ),
+      execute,
+      {
+        operationKey: continuationPolicy.operationKey,
+        continuation: continuationPolicy.continuation,
+        continuationStages: continuationPolicy.continuationStages,
+      },
+    );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "请求失败，请重试";
     return Response.json({ error: msg }, { status: 500 });

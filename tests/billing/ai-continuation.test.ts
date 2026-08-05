@@ -6,6 +6,7 @@ import {
   canonicalAiRequestHash,
   conceptContinuationPolicy,
   pptSectionContinuationPolicy,
+  translationContinuationPolicy,
 } from "../../lib/billing/ai-continuation";
 
 test("canonical request hashes are key-order independent but payload sensitive", () => {
@@ -75,6 +76,38 @@ test("concept roots provision exactly blocks 2 through 4 and bind later payloads
         conceptsText: "",
       }),
     /invalid concept continuation stage/i,
+  );
+});
+
+test("translation pages are finite continuations bound to one document manifest", () => {
+  const manifest = [
+    { pageNum: 1, textHash: "a".repeat(64) },
+    { pageNum: 3, textHash: "b".repeat(64) },
+  ];
+  const root = translationContinuationPolicy({
+    pageNum: 1,
+    textHash: manifest[0].textHash,
+    manifest,
+  });
+  assert.equal(root.continuation, undefined);
+  assert.deepEqual(root.continuationStages, [{
+    stageKey: "page:3",
+    requestHash: canonicalAiRequestHash(manifest[1]),
+  }]);
+
+  const continuation = translationContinuationPolicy({
+    pageNum: 3,
+    textHash: manifest[1].textHash,
+    manifest,
+  });
+  assert.deepEqual(continuation.continuation, root.continuationStages?.[0]);
+  assert.throws(
+    () => translationContinuationPolicy({
+      pageNum: 3,
+      textHash: "c".repeat(64),
+      manifest,
+    }),
+    /manifest/i,
   );
 });
 
