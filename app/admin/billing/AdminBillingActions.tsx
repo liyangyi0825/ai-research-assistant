@@ -22,7 +22,7 @@ const actions: Action[] = [
   { title: "保存套餐", endpoint: "/api/admin/billing/catalog", method: "PATCH", fixed: { kind: "plan" }, fields: [
     { name: "planId", label: "套餐 ID（新建留空）" }, { name: "code", label: "套餐编码" },
     { name: "name", label: "套餐名称" }, { name: "description", label: "说明" },
-    { name: "billingPeriod", label: "周期", options: ["FREE", "MONTHLY", "YEARLY"] },
+    { name: "billingPeriod", label: "周期", options: ["FREE", "MONTHLY", "YEARLY", "SEMESTER"] },
     { name: "isActive", label: "启用", options: ["false", "true"] }, { name: "reason", label: "操作原因" },
   ] },
   { title: "保存商品", endpoint: "/api/admin/billing/catalog", method: "PATCH", fixed: { kind: "product" }, fields: [

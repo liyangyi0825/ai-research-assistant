@@ -52,6 +52,8 @@ const functionsPath =
   "supabase/migrations/202607210003_billing_functions.sql";
 const afterSalesPath =
   "supabase/migrations/202607230004_billing_after_sales.sql";
+const catalogSeedPath =
+  "supabase/migrations/202608050010_billing_catalog_seed.sql";
 
 const tables = [
   "billing_plans",
@@ -829,6 +831,116 @@ test("database guide only documents local or isolated test database execution", 
   assert.match(guide, /独立测试数据库/);
   assert.match(guide, /禁止.*线上数据库/);
   assert.doesNotMatch(guide, /(?:project-ref|db[_ -]?password|postgres(?:ql)?:\/\/)/i);
+});
+
+test("catalog seed safely adds the semester period and provisions only inactive configured products", () => {
+  const seed = compactSql(catalogSeedPath);
+
+  assert.match(
+    seed,
+    /alter table public\.billing_plans drop constraint if exists billing_plans_billing_period_check/,
+  );
+  assert.match(
+    seed,
+    /add constraint billing_plans_billing_period_check check \(billing_period in \('free', 'monthly', 'yearly', 'semester'\)\)/,
+  );
+
+  for (const [code, name, billingPeriod] of [
+    ["FREE", "Free", "FREE"],
+    ["PRO", "Pro", "MONTHLY"],
+    ["PRO_SEMESTER", "Pro Semester", "SEMESTER"],
+  ]) {
+    assert.match(
+      seed,
+      new RegExp(
+        `\\('${code.toLowerCase()}', '${name.toLowerCase()}', '${billingPeriod.toLowerCase()}', false\\)`,
+      ),
+    );
+  }
+
+  for (const [planCode, featureKey, version, periodicLimit] of [
+    ["FREE", "summarize", "free-v1", 5],
+    ["FREE", "chat", "free-v1", 30],
+    ["FREE", "translate", "free-v1", 3],
+    ["FREE", "ppt_generate", "free-v1", 3],
+    ["FREE", "concept_explore", "free-v1", 10],
+    ["FREE", "keyword_gen", "free-v1", 20],
+    ["FREE", "bibtex_export", "free-v1", 30],
+    ["FREE", "extract_refs", "free-v1", 10],
+    ["FREE", "profile_summarize", "free-v1", 5],
+    ["FREE", "literature_review", "free-v1", 3],
+    ["FREE", "latex_export", "free-v1", 5],
+    ["FREE", "data_clean", "free-v1", 10],
+    ["FREE", "polish", "free-v1", 10],
+    ["PRO", "summarize", "pro-v1", 100],
+    ["PRO", "chat", "pro-v1", 1000],
+    ["PRO", "translate", "pro-v1", 30],
+    ["PRO", "ppt_generate", "pro-v1", 30],
+    ["PRO", "concept_explore", "pro-v1", 100],
+    ["PRO", "keyword_gen", "pro-v1", 200],
+    ["PRO", "bibtex_export", "pro-v1", 1000],
+    ["PRO", "extract_refs", "pro-v1", 100],
+    ["PRO", "profile_summarize", "pro-v1", 100],
+    ["PRO", "literature_review", "pro-v1", 30],
+    ["PRO", "latex_export", "pro-v1", 100],
+    ["PRO", "data_clean", "pro-v1", 100],
+    ["PRO", "polish", "pro-v1", 100],
+    ["PRO_SEMESTER", "summarize", "pro-semester-v1", 500],
+    ["PRO_SEMESTER", "chat", "pro-semester-v1", 5000],
+    ["PRO_SEMESTER", "translate", "pro-semester-v1", 150],
+    ["PRO_SEMESTER", "ppt_generate", "pro-semester-v1", 150],
+    ["PRO_SEMESTER", "concept_explore", "pro-semester-v1", 500],
+    ["PRO_SEMESTER", "keyword_gen", "pro-semester-v1", 1000],
+    ["PRO_SEMESTER", "bibtex_export", "pro-semester-v1", 5000],
+    ["PRO_SEMESTER", "extract_refs", "pro-semester-v1", 500],
+    ["PRO_SEMESTER", "profile_summarize", "pro-semester-v1", 500],
+    ["PRO_SEMESTER", "literature_review", "pro-semester-v1", 150],
+    ["PRO_SEMESTER", "latex_export", "pro-semester-v1", 500],
+    ["PRO_SEMESTER", "data_clean", "pro-semester-v1", 500],
+    ["PRO_SEMESTER", "polish", "pro-semester-v1", 500],
+  ] as Array<[string, string, string, number]>) {
+    assert.match(
+      seed,
+      new RegExp(
+        `\\('${planCode.toLowerCase()}', '${featureKey}', '${version}', ${periodicLimit}\\)`,
+      ),
+    );
+  }
+
+  assert.match(
+    seed,
+    /\('pro_monthly', 'pro monthly', 'subscription', 'pro', 1990, 'cny', 30, 0, 'pro-v1', false\)/,
+  );
+  assert.match(
+    seed,
+    /\('pro_semester', 'pro semester', 'subscription', 'pro_semester', 7900, 'cny', 150, 0, 'pro-semester-v1', false\)/,
+  );
+  assert.match(
+    seed,
+    /\('credit_pack_100', 'credit pack 100', 'credit_pack', null, 990, 'cny', null, 100, 'credit-v1', false\)/,
+  );
+  const products = seed.match(
+    /with desired_products[\s\S]*?\) insert into public\.billing_products/,
+  );
+  assert.ok(products);
+  assert.doesNotMatch(products[0], /'free'/);
+  assert.match(seed, /on conflict \(code\) do update/);
+  assert.match(seed, /on conflict \(plan_id, feature_key, entitlement_version\) do update/);
+  assert.match(seed, /on conflict \(sku\) do update/);
+  assert.match(seed, /is_active = excluded\.is_active/);
+});
+
+test("database types model the forward-added semester billing period", () => {
+  const types = projectFile("lib/billing/database.types.ts");
+
+  assert.match(
+    types,
+    /billing_period: "FREE" \| "MONTHLY" \| "YEARLY" \| "SEMESTER";/,
+  );
+  assert.match(
+    types,
+    /p_billing_period: "FREE" \| "MONTHLY" \| "YEARLY" \| "SEMESTER";/,
+  );
 });
 
 test("after-sales uniqueness is a forward-only upgrade and does not rewrite the original schema migration", () => {

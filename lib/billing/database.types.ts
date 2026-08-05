@@ -17,7 +17,7 @@ export type BillingPlanRow = {
   code: string;
   name: string;
   description: string | null;
-  billing_period: "FREE" | "MONTHLY" | "YEARLY";
+  billing_period: "FREE" | "MONTHLY" | "YEARLY" | "SEMESTER";
   is_active: boolean;
   display_metadata: Json;
   created_at: Timestamp;
@@ -917,7 +917,7 @@ export type Database = {
           p_code: string;
           p_name: string;
           p_description: string | null;
-          p_billing_period: "FREE" | "MONTHLY" | "YEARLY";
+          p_billing_period: "FREE" | "MONTHLY" | "YEARLY" | "SEMESTER";
           p_is_active: boolean;
           p_reason: string;
           p_idempotency_key: string;

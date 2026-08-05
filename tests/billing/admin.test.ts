@@ -7,6 +7,7 @@ import {
   createAdminBillingHandler,
   grantUserSubscription,
   reviewRefundRequest,
+  upsertBillingPlan,
   type BillingAdminRepository,
 } from "../../lib/billing/admin";
 
@@ -159,6 +160,40 @@ test("manual subscription requires a reason and positive whole duration", async 
       ),
     (error: BillingError) => error.code === "INVALID_ADMIN_INPUT",
   );
+});
+
+test("admin catalog accepts a semester billing period and exposes it in the writer UI", async () => {
+  let received: unknown;
+  await upsertBillingPlan(
+    admin,
+    {
+      code: "PRO_SEMESTER",
+      name: "Pro Semester",
+      billingPeriod: "SEMESTER",
+      isActive: false,
+      reason: "configure semester catalog",
+      idempotencyKey: "semester-plan-1",
+    },
+    repository({
+      upsertPlan: async (input) => {
+        received = input;
+        return {
+          status: "APPLIED",
+          auditId: "audit-semester-plan",
+          resourceId: "plan-semester",
+        };
+      },
+    }),
+  );
+
+  assert.equal(
+    (received as { p_billing_period: string }).p_billing_period,
+    "SEMESTER",
+  );
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile("app/admin/billing/AdminBillingActions.tsx", "utf8"),
+  );
+  assert.match(source, /options: \["FREE", "MONTHLY", "YEARLY", "SEMESTER"\]/);
 });
 
 test("refund review ignores client amounts and delegates only request id and decision", async () => {

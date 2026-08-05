@@ -247,7 +247,7 @@ export async function reviewInvoiceRequest(admin: BillingAdmin, input: {
 export async function upsertBillingPlan(admin: BillingAdmin, input: Record<string, unknown>,
   repository = getBillingAdminRepository()): Promise<AdminMutationResult> {
   assertWriter(admin);
-  if (!["FREE", "MONTHLY", "YEARLY"].includes(String(input.billingPeriod)) ||
+  if (!["FREE", "MONTHLY", "YEARLY", "SEMESTER"].includes(String(input.billingPeriod)) ||
       typeof input.isActive !== "boolean") {
     throw new BillingError("INVALID_ADMIN_INPUT", "Invalid plan configuration.", 400);
   }
