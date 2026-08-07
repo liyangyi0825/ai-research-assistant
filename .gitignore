@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/.artifacts/billing-db-drill/
 
 # local git worktrees
 /.worktrees/
