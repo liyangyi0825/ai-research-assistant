@@ -60,6 +60,7 @@
 - Administrators can view the read-only report at `/admin/billing/reconciliation`, or retrieve the same safe DTO from `GET /api/admin/billing/reconciliation`. Both require server-side administrator authorization.
 - The scope is always `INTERNAL_DATABASE_ONLY`: it reads no WeChat, Alipay, Provider, or merchant-side data and does not establish completion of external payment reconciliation.
 - The report renders no more than 200 findings; if the total exceeds that limit, `truncated=true` while the summary retains the complete count.
+- Each of the seven internal sources has a 1000-row safety cap. If any source returns exactly 1000 rows, snapshot completeness is unknown and generation fails closed with `BILLING_STORAGE_UNAVAILABLE`; it must not be interpreted as a healthy or partial report. Report summary counts are complete only when generation succeeds.
 - The seven finding codes are `ORDER_EXPIRED_PENDING`, `PAID_ORDER_PAYMENT_MISSING`, `PAYMENT_ORDER_MISMATCH`, `WEBHOOK_STALLED`, `SUBSCRIPTION_GRANT_MISSING`, `CREDIT_GRANT_MISSING`, and `REFUND_STATE_MISMATCH`.
 - Findings are for manual investigation, recording, and review only. This page and API never automatically change orders, payments, refunds, subscriptions, credits, ledgers, or webhook states; any follow-up must use an approved, auditable manual process.
 

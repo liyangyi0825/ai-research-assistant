@@ -216,8 +216,10 @@ const reconciliationQueries = {
   refundRecords: ["billing_refunds", "id, refund_request_id, order_id, status"],
 } as const;
 
+const RECONCILIATION_SOURCE_LIMIT = 1000;
+
 async function readRows(client: ReconciliationAdminClient, table: string, columns: string): Promise<Record<string, unknown>[]> {
-  const result = await client.from(table).select(columns).order("id", { ascending: true }).limit(1000);
+  const result = await client.from(table).select(columns).order("id", { ascending: true }).limit(RECONCILIATION_SOURCE_LIMIT);
   if (!result || typeof result !== "object" || result.error || !Array.isArray(result.data)) throw storageError();
   return result.data.map(record);
 }
@@ -283,6 +285,7 @@ export function createReconciliationRepository(client: ReconciliationAdminClient
           readRows(client, ...reconciliationQueries.refundRequests),
           readRows(client, ...reconciliationQueries.refundRecords),
         ]);
+        if ([orders, payments, webhookEvents, subscriptions, creditLedgerEntries, refundRequests, refundRecords].some((rows) => rows.length === RECONCILIATION_SOURCE_LIMIT)) throw storageError();
         return mapSnapshot({ orders, payments, webhookEvents, subscriptions, creditLedgerEntries, refundRequests, refundRecords });
       } catch {
         throw storageError();

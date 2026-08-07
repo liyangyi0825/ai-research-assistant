@@ -330,3 +330,31 @@ test("normalizes non-storage repository and clock errors to the safe storage err
     );
   }
 });
+
+test("fails closed when any source reaches the safety cap while allowing 999 rows", async (t) => {
+  const cases = [
+    { table: "billing_orders", count: 1000, rejects: true },
+    { table: "billing_refunds", count: 1000, rejects: true },
+    { table: "billing_subscriptions", count: 999, rejects: false },
+  ] as const;
+
+  for (const testCase of cases) {
+    await t.test(`${testCase.table} with ${testCase.count} rows`, async () => {
+      const rows = Object.fromEntries(Object.entries(reconciliationRows).map(([table, data]) => [table, { data, error: null }])) as Record<string, ReadResult>;
+      rows[testCase.table] = {
+        data: Array.from({ length: testCase.count }, () => reconciliationRows[testCase.table][0]),
+        error: null,
+      };
+      const load = () => createReconciliationRepository(createReadClient(rows).client).loadSnapshot();
+
+      if (testCase.rejects) {
+        await assert.rejects(
+          load,
+          (error: unknown) => error instanceof BillingError && error.code === "BILLING_STORAGE_UNAVAILABLE" && error.message === "Billing data is temporarily unavailable." && error.status === 503,
+        );
+      } else {
+        await assert.doesNotReject(load);
+      }
+    });
+  }
+});
