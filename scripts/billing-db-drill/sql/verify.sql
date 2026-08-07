@@ -27,16 +27,6 @@ declare
     'billing_rate_limits',
     'billing_feature_usage_costs'
   ];
-  expected_indexes constant text[] := array[
-    'billing_orders_user_created_idx',
-    'billing_payments_order_idx',
-    'billing_subscriptions_user_status_idx',
-    'billing_user_entitlements_active_idx',
-    'billing_usage_records_user_created_idx',
-    'billing_credit_ledger_account_created_idx',
-    'billing_webhook_events_order_idx',
-    'billing_refund_requests_user_created_idx'
-  ];
   missing_items text[];
 begin
   select array_agg(item order by item)
@@ -47,94 +37,156 @@ begin
     raise exception 'missing billing tables: %', missing_items;
   end if;
 
-  select array_agg(item order by item)
+  with expected_indexes(table_name, index_name, column_names, expected_predicate) as (
+    values
+      ('billing_orders', 'billing_orders_user_created_idx', array['user_id', 'created_at'], null::text),
+      ('billing_payments', 'billing_payments_order_idx', array['order_id'], null::text),
+      ('billing_subscriptions', 'billing_subscriptions_user_status_idx', array['user_id', 'status', 'ends_at'], null::text),
+      ('billing_user_entitlements', 'billing_user_entitlements_active_idx', array['user_id', 'feature_key', 'valid_until'], null::text),
+      ('billing_usage_records', 'billing_usage_records_user_created_idx', array['user_id', 'created_at'], null::text),
+      ('billing_credit_ledger', 'billing_credit_ledger_account_created_idx', array['account_id', 'created_at'], null::text),
+      ('billing_webhook_events', 'billing_webhook_events_order_idx', array['order_id'], null::text),
+      ('billing_refund_requests', 'billing_refund_requests_user_created_idx', array['user_id', 'created_at'], null::text)
+  )
+  select array_agg(format('%I.%I', expected.table_name, expected.index_name) order by expected.index_name)
   into missing_items
-  from unnest(expected_indexes) as item
-  where not exists (
-    select 1
-    from pg_catalog.pg_class
-    where relnamespace = 'public'::regnamespace
-      and relname = item
-      and relkind = 'i'
-  );
+  from expected_indexes as expected
+  left join pg_catalog.pg_class as index_class
+    on index_class.relnamespace = 'public'::regnamespace
+   and index_class.relname = expected.index_name
+   and index_class.relkind = 'i'
+  left join pg_catalog.pg_index as index_meta on index_meta.indexrelid = index_class.oid
+  where index_meta.indexrelid is null
+     or index_meta.indrelid is distinct from to_regclass(format('public.%I', expected.table_name))
+     or index_meta.indisvalid is not true
+     or (
+       select array_agg(attribute.attname order by key_position.ordinality)
+       from unnest(index_meta.indkey) with ordinality as key_position(attnum, ordinality)
+       join pg_catalog.pg_attribute as attribute
+         on attribute.attrelid = index_meta.indrelid
+         and attribute.attnum = key_position.attnum
+       where key_position.ordinality <= index_meta.indnkeyatts
+     ) is distinct from expected.column_names
+     or pg_catalog.pg_get_expr(index_meta.indpred, index_meta.indrelid)
+        is distinct from expected.expected_predicate;
   if missing_items is not null then
-    raise exception 'missing billing indexes: %', missing_items;
+    raise exception 'missing, invalid, or mismatched billing indexes: %', missing_items;
   end if;
 
-  with expected(table_name, constraint_name, constraint_type) as (
+  with expected_constraints(table_name, constraint_name, constraint_type, expected_definition) as (
     values
-      ('billing_plans', 'billing_plans_pkey', 'p'),
-      ('billing_plans', 'billing_plans_code_key', 'u'),
-      ('billing_plans', 'billing_plans_billing_period_check', 'c'),
-      ('billing_products', 'billing_products_pkey', 'p'),
-      ('billing_products', 'billing_products_sku_key', 'u'),
-      ('billing_orders', 'billing_orders_pkey', 'p'),
-      ('billing_orders', 'billing_orders_order_number_key', 'u'),
-      ('billing_payment_intents', 'billing_payment_intents_order_id_key', 'u'),
-      ('billing_payments', 'billing_payments_request_idempotency_key_key', 'u'),
-      ('billing_subscriptions', 'billing_subscriptions_source_order_id_key', 'u'),
-      ('billing_credit_accounts', 'billing_credit_accounts_user_id_currency_key', 'u'),
-      ('billing_credit_ledger', 'billing_credit_ledger_idempotency_key_key', 'u'),
-      ('billing_credit_ledger', 'billing_credit_ledger_audit_log_id_fkey', 'f'),
-      ('billing_webhook_events', 'billing_webhook_events_provider_provider_event_id_key', 'u'),
-      ('billing_refund_requests', 'billing_refund_requests_user_order_key', 'u'),
-      ('billing_invoice_requests', 'billing_invoice_requests_user_order_key', 'u')
+      ('billing_plans', 'billing_plans_pkey', 'p', '^PRIMARY KEY \(id\)$'),
+      ('billing_plans', 'billing_plans_code_key', 'u', '^UNIQUE \(code\)$'),
+      ('billing_plans', 'billing_plans_billing_period_check', 'c', '^CHECK .*billing_period.*FREE.*MONTHLY.*YEARLY.*SEMESTER'),
+      ('billing_products', 'billing_products_plan_id_fkey', 'f', '^FOREIGN KEY \(plan_id\) REFERENCES billing_plans\(id\) ON DELETE RESTRICT$'),
+      ('billing_products', 'billing_products_price_minor_check', 'c', '^CHECK .*price_minor.*>= 0'),
+      ('billing_products', 'billing_products_currency_check', 'c', '^CHECK .*currency.*CNY'),
+      ('billing_products', 'billing_products_check', 'c', '^CHECK .*product_type.*SUBSCRIPTION.*plan_id.*CREDIT_PACK.*credit_grant'),
+      ('billing_orders', 'billing_orders_order_number_key', 'u', '^UNIQUE \(order_number\)$'),
+      ('billing_orders', 'billing_orders_user_id_fkey', 'f', '^FOREIGN KEY \(user_id\) REFERENCES auth.users\(id\) ON DELETE RESTRICT$'),
+      ('billing_orders', 'billing_orders_product_id_fkey', 'f', '^FOREIGN KEY \(product_id\) REFERENCES billing_products\(id\) ON DELETE RESTRICT$'),
+      ('billing_orders', 'billing_orders_snapshot_plan_id_fkey', 'f', '^FOREIGN KEY \(snapshot_plan_id\) REFERENCES billing_plans\(id\) ON DELETE RESTRICT$'),
+      ('billing_orders', 'billing_orders_provider_check', 'c', '^CHECK .*provider.*MOCK.*WECHAT.*ALIPAY'),
+      ('billing_orders', 'billing_orders_status_check', 'c', '^CHECK .*status.*PENDING.*PAID.*FAILED.*CANCELLED.*CLOSED.*REFUNDING.*REFUNDED'),
+      ('billing_orders', 'billing_orders_amount_minor_check', 'c', '^CHECK .*amount_minor.*>= 0'),
+      ('billing_orders', 'billing_orders_currency_check', 'c', '^CHECK .*currency.*CNY'),
+      ('billing_payment_intents', 'billing_payment_intents_pkey', 'p', '^PRIMARY KEY \(id\)$'),
+      ('billing_payment_intents', 'billing_payment_intents_order_id_fkey', 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
+      ('billing_payment_intents', 'billing_payment_intents_user_id_fkey', 'f', '^FOREIGN KEY \(user_id\) REFERENCES auth.users\(id\) ON DELETE RESTRICT$'),
+      ('billing_payment_intents', 'billing_payment_intents_order_id_key', 'u', '^UNIQUE \(order_id\)$'),
+      ('billing_payment_intents', 'billing_payment_intents_request_idempotency_key_key', 'u', '^UNIQUE \(request_idempotency_key\)$'),
+      ('billing_payment_intents', 'billing_payment_intents_provider_provider_transaction_id_key', 'u', '^UNIQUE \(provider, provider_transaction_id\)$'),
+      ('billing_payment_intents', 'billing_payment_intents_provider_check', 'c', '^CHECK .*provider.*MOCK.*WECHAT.*ALIPAY'),
+      ('billing_payment_intents', 'billing_payment_intents_status_check', 'c', '^CHECK .*status.*CREATING.*CREATED.*FAILED'),
+      ('billing_payment_intents', 'billing_payment_intents_payment_status_check', 'c', '^CHECK .*payment_status.*PENDING.*PAID.*FAILED.*CLOSED'),
+      ('billing_payment_intents', 'billing_payment_intents_amount_minor_check', 'c', '^CHECK .*amount_minor.*>= 0'),
+      ('billing_payment_intents', 'billing_payment_intents_currency_check', 'c', '^CHECK .*currency.*CNY'),
+      ('billing_payment_intents', 'billing_payment_intents_attempt_count_check', 'c', '^CHECK .*attempt_count.*> 0'),
+      ('billing_payment_intents', 'billing_payment_intents_check', 'c', '^CHECK .*CREATING.*claim_token.*CREATED.*provider_transaction_id.*FAILED.*last_error_code'),
+      ('billing_payments', 'billing_payments_request_idempotency_key_key', 'u', '^UNIQUE \(request_idempotency_key\)$'),
+      ('billing_payments', 'billing_payments_provider_provider_transaction_id_key', 'u', '^UNIQUE \(provider, provider_transaction_id\)$'),
+      ('billing_subscriptions', 'billing_subscriptions_source_order_id_key', 'u', '^UNIQUE \(source_order_id\)$'),
+      ('billing_usage_quotas', 'billing_usage_quotas_check1', 'c', '^CHECK .*reserved_units.*used_units.*quota_limit'),
+      ('billing_credit_accounts', 'billing_credit_accounts_user_id_currency_key', 'u', '^UNIQUE \(user_id, currency\)$'),
+      ('billing_credit_accounts', 'billing_credit_accounts_available_balance_check', 'c', '^CHECK .*available_balance.*>= 0'),
+      ('billing_credit_accounts', 'billing_credit_accounts_reserved_balance_check', 'c', '^CHECK .*reserved_balance.*>= 0'),
+      ('billing_usage_records', 'billing_usage_records_task_idempotency_key_key', 'u', '^UNIQUE \(task_idempotency_key\)$'),
+      ('billing_credit_ledger', 'billing_credit_ledger_idempotency_key_key', 'u', '^UNIQUE \(idempotency_key\)$'),
+      ('billing_credit_ledger', 'billing_credit_ledger_audit_log_id_fkey', 'f', '^FOREIGN KEY \(audit_log_id\) REFERENCES billing_admin_audit_logs\(id\) ON DELETE RESTRICT$'),
+      ('billing_webhook_events', 'billing_webhook_events_provider_provider_event_id_key', 'u', '^UNIQUE \(provider, provider_event_id\)$'),
+      ('billing_webhook_events', 'billing_webhook_events_check1', 'c', '^CHECK .*status.*RECEIVED.*PROCESSING.*PROCESSED.*FAILED.*signature_valid'),
+      ('billing_refund_requests', 'billing_refund_requests_user_order_key', 'u', '^UNIQUE \(user_id, order_id\)$'),
+      ('billing_invoice_requests', 'billing_invoice_requests_user_order_key', 'u', '^UNIQUE \(user_id, order_id\)$'),
+      ('billing_feature_usage_costs', 'billing_feature_usage_costs_check', 'c', '^CHECK .*quota_units.*credit_amount'),
+      ('billing_feature_usage_costs', 'billing_feature_usage_costs_check1', 'c', '^CHECK .*allow_credit_fallback.*credit_amount')
   )
-  select array_agg(format('%I.%I', table_name, constraint_name) order by table_name, constraint_name)
+  select array_agg(format('%I.%I', expected.table_name, expected.constraint_name) order by expected.table_name, expected.constraint_name)
   into missing_items
-  from expected
-  where not exists (
-    select 1
-    from pg_catalog.pg_constraint
-    where conrelid = to_regclass(format('public.%I', table_name))
-      and conname = constraint_name
-      and contype = constraint_type::"char"
-  );
+  from expected_constraints as expected
+  left join pg_catalog.pg_constraint as constraint_meta
+    on constraint_meta.conrelid = to_regclass(format('public.%I', expected.table_name))
+   and constraint_meta.conname = expected.constraint_name
+   and constraint_meta.contype = expected.constraint_type::"char"
+  where constraint_meta.oid is null
+     or constraint_meta.convalidated is not true
+     or pg_catalog.pg_get_constraintdef(constraint_meta.oid) !~ expected.expected_definition;
   if missing_items is not null then
     raise exception 'missing billing constraints: %', missing_items;
   end if;
 
-  with expected_constraint_counts(table_name, constraint_count) as (
+  with expected_constraint_counts(
+    table_name, primary_count, foreign_count, unique_count, check_count
+  ) as (
     values
-      ('billing_plans', 3),
-      ('billing_products', 9),
-      ('billing_plan_entitlements', 5),
-      ('billing_orders', 16),
-      ('billing_payment_intents', 12),
-      ('billing_payments', 9),
-      ('billing_subscriptions', 8),
-      ('billing_user_entitlements', 7),
-      ('billing_usage_quotas', 10),
-      ('billing_credit_accounts', 7),
-      ('billing_usage_records', 10),
-      ('billing_usage_continuations', 7),
-      ('billing_credit_ledger', 8),
-      ('billing_webhook_events', 10),
-      ('billing_refund_requests', 8),
-      ('billing_refunds', 12),
-      ('billing_invoice_requests', 7),
-      ('billing_admins', 4),
-      ('billing_admin_audit_logs', 3),
-      ('billing_rate_limits', 4),
-      ('billing_feature_usage_costs', 5)
+      ('billing_plans', 1, 0, 1, 1),
+      ('billing_products', 1, 1, 1, 6),
+      ('billing_plan_entitlements', 1, 1, 1, 2),
+      ('billing_orders', 1, 3, 1, 12),
+      ('billing_payment_intents', 1, 2, 3, 7),
+      ('billing_payments', 1, 2, 2, 4),
+      ('billing_subscriptions', 1, 3, 1, 3),
+      ('billing_user_entitlements', 1, 3, 1, 2),
+      ('billing_usage_quotas', 1, 2, 2, 5),
+      ('billing_credit_accounts', 1, 1, 1, 4),
+      ('billing_usage_records', 1, 3, 1, 5),
+      ('billing_usage_continuations', 1, 2, 1, 3),
+      ('billing_credit_ledger', 1, 3, 1, 3),
+      ('billing_webhook_events', 1, 2, 1, 6),
+      ('billing_refund_requests', 1, 3, 1, 3),
+      ('billing_refunds', 1, 4, 3, 4),
+      ('billing_invoice_requests', 1, 2, 1, 3),
+      ('billing_admins', 1, 1, 1, 1),
+      ('billing_admin_audit_logs', 1, 2, 0, 0),
+      ('billing_rate_limits', 1, 1, 1, 1),
+      ('billing_feature_usage_costs', 1, 0, 0, 4)
   ),
   actual_constraint_counts as (
-    select class.relname as table_name, count(constraint.oid)::integer as constraint_count
+    select
+      class.relname as table_name,
+      count(constraint_meta.oid) filter (where constraint_meta.contype = 'p')::integer as primary_count,
+      count(constraint_meta.oid) filter (where constraint_meta.contype = 'f')::integer as foreign_count,
+      count(constraint_meta.oid) filter (where constraint_meta.contype = 'u')::integer as unique_count,
+      count(constraint_meta.oid) filter (where constraint_meta.contype = 'c')::integer as check_count,
+      bool_and(constraint_meta.convalidated) as all_validated
     from pg_catalog.pg_class as class
-    left join pg_catalog.pg_constraint as constraint on constraint.conrelid = class.oid
+    left join pg_catalog.pg_constraint as constraint_meta on constraint_meta.conrelid = class.oid
     where class.relnamespace = 'public'::regnamespace
       and class.relname like 'billing\_%' escape '\'
       and class.relkind = 'r'
     group by class.relname
   )
   select array_agg(
-    format('%I(expected=%s)', expected.table_name, expected.constraint_count)
+    format('%I', expected.table_name)
     order by expected.table_name
   )
   into missing_items
   from expected_constraint_counts as expected
   left join actual_constraint_counts as actual using (table_name)
-  where actual.constraint_count is distinct from expected.constraint_count;
+  where actual.primary_count is distinct from expected.primary_count
+     or actual.foreign_count is distinct from expected.foreign_count
+     or actual.unique_count is distinct from expected.unique_count
+     or actual.check_count is distinct from expected.check_count
+     or actual.all_validated is not true;
   if missing_items is not null then
     raise exception 'billing constraint inventory mismatch: %', missing_items;
   end if;
@@ -481,7 +533,24 @@ declare
   result jsonb;
   replay jsonb;
   expected_failure boolean;
+  quota_before public.billing_usage_quotas%rowtype;
+  quota_after public.billing_usage_quotas%rowtype;
+  account_before public.billing_credit_accounts%rowtype;
+  account_after public.billing_credit_accounts%rowtype;
+  usage_after public.billing_usage_records%rowtype;
+  payment_count_before bigint;
+  ledger_count_before bigint;
+  subscription_count_before bigint;
+  refund_count_before bigint;
+  audit_count_before bigint;
 begin
+  select * into strict quota_before
+  from public.billing_usage_quotas
+  where id = '00000000-0000-4000-8000-00000000b042';
+  select * into strict account_before
+  from public.billing_credit_accounts
+  where id = '00000000-0000-4000-8000-00000000b050';
+
   result := public.billing_reserve_usage(
     '00000000-0000-4000-8000-00000000b001',
     'verify-finalize-009',
@@ -492,6 +561,34 @@ begin
   );
   if result ->> 'status' is distinct from 'RESERVED' then
     raise exception 'usage reservation did not enter RESERVED state';
+  end if;
+
+  select * into strict quota_after
+  from public.billing_usage_quotas
+  where id = quota_before.id;
+  select * into strict account_after
+  from public.billing_credit_accounts
+  where id = account_before.id;
+  select * into strict usage_after
+  from public.billing_usage_records
+  where task_idempotency_key = 'verify-finalize-009';
+  if quota_after.reserved_units is distinct from quota_before.reserved_units + 1
+    or quota_after.used_units is distinct from quota_before.used_units
+    or account_after.available_balance is distinct from account_before.available_balance - 5
+    or account_after.reserved_balance is distinct from account_before.reserved_balance + 5
+    or usage_after.status is distinct from 'RESERVED'
+    or usage_after.quota_id is distinct from quota_before.id
+    or usage_after.credit_account_id is distinct from account_before.id
+    or usage_after.quota_units is distinct from 1
+    or usage_after.credit_amount is distinct from 5
+    or not exists (
+      select 1 from public.billing_credit_ledger
+      where idempotency_key = 'usage:verify-finalize-009:reserve'
+        and entry_type = 'RESERVE'
+        and delta_available = -5
+        and delta_reserved = 5
+    ) then
+    raise exception 'usage reservation persisted state mismatch';
   end if;
 
   result := public.billing_finalize_usage(
@@ -508,6 +605,39 @@ begin
     or replay ->> 'idempotent' is distinct from 'true' then
     raise exception 'usage finalization or replay contract failed';
   end if;
+
+  select * into strict quota_after
+  from public.billing_usage_quotas
+  where id = quota_before.id;
+  select * into strict account_after
+  from public.billing_credit_accounts
+  where id = account_before.id;
+  select * into strict usage_after
+  from public.billing_usage_records
+  where task_idempotency_key = 'verify-finalize-009'
+    and status = 'FINALIZED';
+  if quota_after.reserved_units is distinct from quota_before.reserved_units
+    or quota_after.used_units is distinct from quota_before.used_units + 1
+    or account_after.available_balance is distinct from account_before.available_balance - 5
+    or account_after.reserved_balance is distinct from account_before.reserved_balance
+    or usage_after.finalized_at is null
+    or (
+      select count(*) from public.billing_credit_ledger
+      where idempotency_key in (
+        'usage:verify-finalize-009:reserve',
+        'usage:verify-finalize-009:finalize'
+      )
+        and entry_type in ('RESERVE', 'CONSUME')
+    ) is distinct from 2::bigint then
+    raise exception 'usage finalization persisted state mismatch';
+  end if;
+
+  select * into strict quota_before
+  from public.billing_usage_quotas
+  where id = '00000000-0000-4000-8000-00000000b042';
+  select * into strict account_before
+  from public.billing_credit_accounts
+  where id = '00000000-0000-4000-8000-00000000b050';
 
   result := public.billing_reserve_usage(
     '00000000-0000-4000-8000-00000000b001',
@@ -536,6 +666,36 @@ begin
     raise exception 'usage release or replay contract failed';
   end if;
 
+  select * into strict quota_after
+  from public.billing_usage_quotas
+  where id = quota_before.id;
+  select * into strict account_after
+  from public.billing_credit_accounts
+  where id = account_before.id;
+  select * into strict usage_after
+  from public.billing_usage_records
+  where task_idempotency_key = 'verify-release-009'
+    and status = 'RELEASED';
+  if quota_after.reserved_units is distinct from quota_before.reserved_units
+    or quota_after.used_units is distinct from quota_before.used_units
+    or account_after.available_balance is distinct from account_before.available_balance
+    or account_after.reserved_balance is distinct from account_before.reserved_balance
+    or usage_after.released_at is null
+    or (
+      select count(*) from public.billing_credit_ledger
+      where idempotency_key in (
+        'usage:verify-release-009:reserve',
+        'usage:verify-release-009:release'
+      )
+        and entry_type in ('RESERVE', 'RELEASE')
+    ) is distinct from 2::bigint then
+    raise exception 'usage release persisted state mismatch';
+  end if;
+
+  select * into strict account_before
+  from public.billing_credit_accounts
+  where id = '00000000-0000-4000-8000-00000000b050';
+
   expected_failure := false;
   begin
     perform public.billing_reserve_usage(
@@ -554,6 +714,36 @@ begin
     raise exception 'insufficient credit balance was accepted';
   end if;
 
+  if exists (
+    select 1 from public.billing_usage_records
+    where task_idempotency_key = 'verify-insufficient-balance-009'
+  ) or exists (
+    select 1 from public.billing_credit_ledger
+    where idempotency_key like 'usage:verify-insufficient-balance-009:%'
+  ) or not exists (
+    select 1 from public.billing_credit_accounts
+    where id = account_before.id
+      and available_balance = account_before.available_balance
+      and reserved_balance = account_before.reserved_balance
+      and version = account_before.version
+  ) then
+    raise exception 'insufficient balance attempt changed persisted state';
+  end if;
+
+  select count(*) into payment_count_before
+  from public.billing_payments
+  where order_id = '00000000-0000-4000-8000-00000000b022';
+  select count(*) into ledger_count_before
+  from public.billing_credit_ledger
+  where reference_type = 'ORDER'
+    and reference_id = '00000000-0000-4000-8000-00000000b022';
+  select count(*) into subscription_count_before
+  from public.billing_subscriptions
+  where user_id = '00000000-0000-4000-8000-00000000b001';
+  select * into strict account_before
+  from public.billing_credit_accounts
+  where id = '00000000-0000-4000-8000-00000000b050';
+
   result := public.billing_settle_paid_order(
     'DRILL-CREDIT-009',
     'MOCK',
@@ -567,6 +757,29 @@ begin
   );
   if result ->> 'status' is distinct from 'ALREADY_PROCESSED' then
     raise exception 'duplicate settlement was not idempotent';
+  end if;
+
+  if (
+    select count(*) from public.billing_payments
+    where order_id = '00000000-0000-4000-8000-00000000b022'
+  ) is distinct from payment_count_before
+    or (
+      select count(*) from public.billing_credit_ledger
+      where reference_type = 'ORDER'
+        and reference_id = '00000000-0000-4000-8000-00000000b022'
+    ) is distinct from ledger_count_before
+    or (
+      select count(*) from public.billing_subscriptions
+      where user_id = '00000000-0000-4000-8000-00000000b001'
+    ) is distinct from subscription_count_before
+    or not exists (
+      select 1 from public.billing_credit_accounts
+      where id = account_before.id
+        and available_balance = account_before.available_balance
+        and reserved_balance = account_before.reserved_balance
+        and version = account_before.version
+    ) then
+    raise exception 'duplicate settlement changed persisted state';
   end if;
 
   expected_failure := false;
@@ -611,19 +824,43 @@ begin
     raise exception 'mismatched settlement currency was accepted';
   end if;
 
+  select count(*) into refund_count_before
+  from public.billing_refund_requests
+  where user_id = '00000000-0000-4000-8000-00000000b001'
+    and order_id = '00000000-0000-4000-8000-00000000b022';
+  if refund_count_before is distinct from 0::bigint then
+    raise exception 'refund verification requires an unused paid order';
+  end if;
+
   result := public.billing_request_refund(
     '00000000-0000-4000-8000-00000000b001',
-    '00000000-0000-4000-8000-00000000b021',
+    '00000000-0000-4000-8000-00000000b022',
     'Synthetic billing recovery drill refund request'
   );
   replay := public.billing_request_refund(
     '00000000-0000-4000-8000-00000000b001',
-    '00000000-0000-4000-8000-00000000b021',
+    '00000000-0000-4000-8000-00000000b022',
     'Synthetic billing recovery drill refund request'
   );
-  if result ->> 'id' is distinct from '00000000-0000-4000-8000-00000000b060'
-    or replay ->> 'id' is distinct from result ->> 'id' then
+  if replay ->> 'id' is distinct from result ->> 'id'
+    or (
+      select count(*) from public.billing_refund_requests
+      where user_id = '00000000-0000-4000-8000-00000000b001'
+        and order_id = '00000000-0000-4000-8000-00000000b022'
+        and id = (result ->> 'id')::uuid
+        and status = 'PENDING'
+        and requested_amount_minor = 990
+        and currency = 'CNY'
+    ) is distinct from refund_count_before + 1 then
     raise exception 'refund request replay was not idempotent';
+  end if;
+
+  select count(*) into audit_count_before
+  from public.billing_admin_audit_logs
+  where action = 'REVIEW_INVOICE'
+    and after_value ->> 'idempotency_key' = 'verify-admin-review-009';
+  if audit_count_before is distinct from 0::bigint then
+    raise exception 'administrator verification idempotency key already exists';
   end if;
 
   result := public.billing_admin_review_invoice(
@@ -644,6 +881,24 @@ begin
     or replay ->> 'status' is distinct from 'ALREADY_APPLIED'
     or replay ->> 'audit_id' is distinct from result ->> 'audit_id' then
     raise exception 'administrator replay was not idempotent';
+  end if;
+
+  if not exists (
+    select 1 from public.billing_invoice_requests
+    where id = '00000000-0000-4000-8000-00000000b061'
+      and status = 'ISSUED'
+      and issued_at is not null
+  ) or (
+    select count(*) from public.billing_admin_audit_logs
+    where action = 'REVIEW_INVOICE'
+      and after_value ->> 'idempotency_key' = 'verify-admin-review-009'
+  ) <> 1 or not exists (
+    select 1 from public.billing_admin_audit_logs
+    where action = 'REVIEW_INVOICE'
+      and after_value ->> 'idempotency_key' = 'verify-admin-review-009'
+      and id = (result ->> 'audit_id')::uuid
+  ) then
+    raise exception 'administrator review persisted state mismatch';
   end if;
 end;
 $$;

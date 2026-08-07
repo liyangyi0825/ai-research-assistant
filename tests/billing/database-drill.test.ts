@@ -88,12 +88,13 @@ function splitSqlArguments(sql: string): string[] {
   return values;
 }
 
-function insertedRows(sql: string): Array<{ columns: string[]; values: string[] }> {
-  const rows: Array<{ columns: string[]; values: string[] }> = [];
-  const inserts = sql.matchAll(/insert\s+into\s+[\w.]+\s*\(([^)]+)\)\s*values\s*([\s\S]*?);/gi);
+function insertedRows(sql: string): Array<{ table: string; columns: string[]; values: string[] }> {
+  const rows: Array<{ table: string; columns: string[]; values: string[] }> = [];
+  const inserts = sql.matchAll(/insert\s+into\s+([\w.]+)\s*\(([^)]+)\)\s*values\s*([\s\S]*?);/gi);
   for (const match of inserts) {
-    const columns = match[1].split(",").map((column) => column.trim());
-    const valuesSql = match[2];
+    const table = match[1].toLowerCase();
+    const columns = match[2].split(",").map((column) => column.trim());
+    const valuesSql = match[3];
     let rowStart = -1;
     let depth = 0;
     let quoted = false;
@@ -115,13 +116,21 @@ function insertedRows(sql: string): Array<{ columns: string[]; values: string[] 
       if (character === ")") {
         depth -= 1;
         if (depth === 0 && rowStart !== -1) {
-          rows.push({ columns, values: splitSqlArguments(valuesSql.slice(rowStart, index)) });
+          rows.push({ table, columns, values: splitSqlArguments(valuesSql.slice(rowStart, index)) });
           rowStart = -1;
         }
       }
     }
   }
   return rows;
+}
+
+function sqlBetween(sql: string, start: string, end: string): string {
+  const startIndex = sql.indexOf(start);
+  assert.notEqual(startIndex, -1, `missing SQL start marker ${start}`);
+  const endIndex = sql.indexOf(end, startIndex + start.length);
+  assert.notEqual(endIndex, -1, `missing SQL end marker ${end}`);
+  return sql.slice(startIndex, endIndex);
 }
 
 function databaseUrl(parts: { username?: string; host: string; protocol?: string } ): string {
@@ -317,6 +326,23 @@ test("009 fixtures are deterministic, synthetic, and transaction-safe", async ()
   for (const value of monetaryValues) {
     assert.match(value, /^\d+$/, `monetary fixture value must be an integer literal: ${value}`);
   }
+
+  const rows = insertedRows(fixtures009);
+  const cell = (row: (typeof rows)[number], column: string) => row.values[row.columns.indexOf(column)];
+  const providerRows = rows.filter((row) => row.columns.includes("provider"));
+  assert.ok(providerRows.length >= 5);
+  assert.ok(providerRows.every((row) => cell(row, "provider") === "'MOCK'"));
+
+  const currencyRows = rows.filter((row) => row.columns.includes("currency"));
+  assert.ok(currencyRows.length >= 10);
+  assert.ok(currencyRows.every((row) =>
+    cell(row, "currency") === (row.table === "public.billing_credit_accounts" ? "'CREDITS'" : "'CNY'")),
+  );
+
+  const catalogRows = rows.filter((row) =>
+    row.table === "public.billing_plans" || row.table === "public.billing_products");
+  assert.equal(catalogRows.length, 3);
+  assert.ok(catalogRows.every((row) => cell(row, "is_active") === "false"));
 });
 
 test("manifest emits only the six safe top-level sections", async () => {
@@ -358,6 +384,20 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /begin;[\s\S]*rollback;/i);
   assert.doesNotMatch(verify, /--[^\r\n]*(?:reserve|finalize|release|settlement|idempotenc)/i);
   assert.match(verify, /expected_constraint_counts/i);
+  for (const [table, expectedCounts] of [
+    ["billing_orders", [1, 3, 1, 12]],
+    ["billing_payment_intents", [1, 2, 3, 7]],
+  ] as const) {
+    const constraintCounts = verify.match(
+      new RegExp(`\\('${table}',\\s*(\\d+),\\s*(\\d+),\\s*(\\d+),\\s*(\\d+)\\)`, "i"),
+    );
+    assert.ok(constraintCounts);
+    assert.deepEqual(constraintCounts.slice(1).map(Number), expectedCounts);
+  }
+  assert.match(verify, /expected_indexes\s*\(\s*table_name\s*,\s*index_name\s*,\s*column_names\s*,\s*expected_predicate\s*\)/i);
+  assert.match(verify, /pg_index\s+as\s+index_meta[\s\S]*index_meta\.indrelid[\s\S]*index_meta\.indisvalid[\s\S]*index_meta\.indkey[\s\S]*with\s+ordinality[\s\S]*pg_get_expr\s*\(\s*index_meta\.indpred/i);
+  assert.match(verify, /expected_constraints\s*\(\s*table_name\s*,\s*constraint_name\s*,\s*constraint_type\s*,\s*expected_definition\s*\)/i);
+  assert.match(verify, /pg_get_constraintdef[\s\S]*convalidated/i);
   for (const triggerFunction of [
     "billing_set_updated_at",
     "billing_protect_order_snapshot",
@@ -371,6 +411,38 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /billing_settle_paid_order\s*\([\s\S]*ALREADY_PROCESSED[\s\S]*duplicate settlement was not idempotent/i);
   assert.match(verify, /991[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement amount was accepted/i);
   assert.match(verify, /'USD'[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement currency was accepted/i);
-  assert.match(verify, /billing_request_refund\s*\([\s\S]*b060[\s\S]*refund request replay was not idempotent/i);
+  assert.match(verify, /billing_request_refund\s*\([\s\S]*b022[\s\S]*refund request replay was not idempotent/i);
   assert.match(verify, /billing_admin_review_invoice\s*\([\s\S]*ALREADY_APPLIED[\s\S]*administrator replay was not idempotent/i);
+
+  const finalizedStateChecks = sqlBetween(verify, "'verify-finalize-009'", "'verify-release-009'");
+  assert.match(finalizedStateChecks, /from\s+public\.billing_usage_quotas[\s\S]*reserved_units[\s\S]*used_units/i);
+  assert.match(finalizedStateChecks, /from\s+public\.billing_credit_accounts[\s\S]*available_balance[\s\S]*reserved_balance/i);
+  assert.match(finalizedStateChecks, /from\s+public\.billing_usage_records[\s\S]*status\s*=\s*'FINALIZED'/i);
+  assert.match(finalizedStateChecks, /from\s+public\.billing_credit_ledger[\s\S]*entry_type[\s\S]*CONSUME/i);
+
+  const releasedStateChecks = sqlBetween(verify, "'verify-release-009'", "'verify-insufficient-balance-009'");
+  assert.match(releasedStateChecks, /from\s+public\.billing_usage_quotas[\s\S]*reserved_units[\s\S]*used_units/i);
+  assert.match(releasedStateChecks, /from\s+public\.billing_credit_accounts[\s\S]*available_balance[\s\S]*reserved_balance/i);
+  assert.match(releasedStateChecks, /from\s+public\.billing_usage_records[\s\S]*status\s*=\s*'RELEASED'/i);
+  assert.match(releasedStateChecks, /from\s+public\.billing_credit_ledger[\s\S]*entry_type[\s\S]*RELEASE/i);
+
+  const insufficientStateChecks = sqlBetween(verify, "'verify-insufficient-balance-009'", "'DRILL-CREDIT-009'");
+  assert.match(insufficientStateChecks, /billing_usage_records[\s\S]*billing_credit_ledger[\s\S]*available_balance[\s\S]*reserved_balance/i);
+
+  const settlementStateChecks = sqlBetween(verify, "'DRILL-CREDIT-009'", "991");
+  assert.match(settlementStateChecks, /billing_payments[\s\S]*billing_credit_ledger[\s\S]*billing_subscriptions[\s\S]*billing_credit_accounts/i);
+  assert.match(settlementStateChecks, /count\s*\([^)]+\)[\s\S]*is\s+distinct\s+from/i);
+
+  const refundStateChecks = sqlBetween(verify, "result := public.billing_request_refund", "result := public.billing_admin_review_invoice");
+  assert.match(refundStateChecks, /00000000-0000-4000-8000-00000000b022/i);
+  assert.match(refundStateChecks, /from\s+public\.billing_refund_requests[\s\S]*count\s*\(/i);
+
+  const adminStateChecks = verify.slice(verify.indexOf("result := public.billing_admin_review_invoice"));
+  assert.match(adminStateChecks, /from\s+public\.billing_invoice_requests[\s\S]*status\s*=\s*'ISSUED'[\s\S]*issued_at\s+is\s+not\s+null/i);
+  const auditCountCheck = adminStateChecks.match(
+    /select\s+count\s*\(\s*\*\s*\)\s+from\s+public\.billing_admin_audit_logs([\s\S]*?)\)\s*<>\s*1/i,
+  );
+  assert.ok(auditCountCheck);
+  assert.doesNotMatch(auditCountCheck[1], /\bid\s*=\s*\(result\s*->>\s*'audit_id'\)/i);
+  assert.match(adminStateChecks, /exists\s*\([\s\S]*from\s+public\.billing_admin_audit_logs[\s\S]*id\s*=\s*\(result\s*->>\s*'audit_id'\)::uuid/i);
 });
