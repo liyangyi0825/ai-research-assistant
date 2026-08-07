@@ -114,9 +114,9 @@ test("rejects non-zero child exits with bounded, sanitized diagnostics", async (
   const secret = "explicit-child-secret";
   const url = databaseUrl({ host: `db.${restoreRef}.supabase.co` });
   await assert.rejects(
-    runRedacted(process.execPath, ["-e", `process.stderr.write(${JSON.stringify(`${secret} ${url} ${"x".repeat(512)}`)}); process.exit(7)`], {
+    runRedacted(process.execPath, ["-e", `process.stderr.write(${JSON.stringify(`${secret} ${url}`)}); process.exit(7)`], {
       secretValues: [secret],
-      maxOutputBytes: 96,
+      maxOutputBytes: 1024,
     }),
     (error: unknown) => error instanceof Error
       && error.message.includes("PROCESS_EXIT_NONZERO")
@@ -125,6 +125,31 @@ test("rejects non-zero child exits with bounded, sanitized diagnostics", async (
       && !error.message.includes("test-password")
       && !error.message.includes(secret)
       && error.message.length <= 256,
+  );
+});
+
+test("does not return a secret prefix when successful child output is truncated", async () => {
+  const secret = "boundary-secret";
+  const result = await runRedacted(process.execPath, ["-e", `process.stdout.write(${JSON.stringify(secret)});`], {
+    secretValues: [secret],
+    maxOutputBytes: 8,
+  });
+  assert.equal(result.stdout, "[REDACTED_TRUNCATED_OUTPUT]");
+  assert.equal(result.stderr, "");
+  assert.equal(result.stdout.includes("boundary"), false);
+});
+
+test("does not emit a secret prefix when non-zero diagnostics are truncated", async () => {
+  const secret = "boundary-secret";
+  await assert.rejects(
+    runRedacted(process.execPath, ["-e", `process.stderr.write(${JSON.stringify(secret)}); process.exit(7)`], {
+      secretValues: [secret],
+      maxOutputBytes: 8,
+    }),
+    (error: unknown) => error instanceof Error
+      && error.message.includes("PROCESS_EXIT_NONZERO")
+      && error.message.includes("[REDACTED_TRUNCATED_OUTPUT]")
+      && !error.message.includes("boundary"),
   );
 });
 

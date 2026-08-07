@@ -3,6 +3,7 @@ import { createReadStream } from "node:fs";
 import { spawn } from "node:child_process";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 16 * 1024;
+const REDACTED_TRUNCATED_OUTPUT = "[REDACTED_TRUNCATED_OUTPUT]";
 
 export interface RunOptions {
   cwd?: string;
@@ -20,20 +21,26 @@ function fail(code: string): never {
   throw new Error(code);
 }
 
-function boundedBuffer(chunks: Buffer[], maxBytes: number): { append(chunk: Buffer): void; value(): Buffer } {
+function boundedBuffer(chunks: Buffer[], maxBytes: number): { append(chunk: Buffer): void; value(): Buffer; wasTruncated(): boolean } {
   let totalBytes = 0;
+  let truncated = false;
   return {
     append(chunk) {
       if (totalBytes >= maxBytes) {
+        truncated = true;
         return;
       }
       const remainingBytes = maxBytes - totalBytes;
       const boundedChunk = chunk.subarray(0, remainingBytes);
       chunks.push(boundedChunk);
       totalBytes += boundedChunk.length;
+      truncated ||= boundedChunk.length < chunk.length;
     },
     value() {
       return Buffer.concat(chunks, totalBytes);
+    },
+    wasTruncated() {
+      return truncated;
     },
   };
 }
@@ -77,8 +84,8 @@ export function runRedacted(command: string, args: string[], options: RunOptions
     child.once("error", () => settle(() => reject(new Error("PROCESS_SPAWN_FAILED"))));
     child.once("close", (code) => settle(() => {
       const result = {
-        stdout: redactText(stdout.value().toString("utf8"), options.secretValues),
-        stderr: redactText(stderr.value().toString("utf8"), options.secretValues),
+        stdout: stdout.wasTruncated() ? REDACTED_TRUNCATED_OUTPUT : redactText(stdout.value().toString("utf8"), options.secretValues),
+        stderr: stderr.wasTruncated() ? REDACTED_TRUNCATED_OUTPUT : redactText(stderr.value().toString("utf8"), options.secretValues),
       };
       if (code !== 0) {
         const diagnostics = [result.stdout, result.stderr].filter(Boolean).join("\n");
