@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
+import { createBillingSecurityLogger } from "../../lib/billing/security-logger";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
 import {
   createOrderPayment,
@@ -40,6 +41,7 @@ function order(
 
 class MemoryPaymentRepository implements PaymentServiceRepository {
   failWith: Error | null = null;
+  completeFailWith: Error | null = null;
   claimState: "EMPTY" | "CREATING" | "CREATED" | "FAILED" = "EMPTY";
   claimCalls = 0;
   completeCalls = 0;
@@ -69,6 +71,7 @@ class MemoryPaymentRepository implements PaymentServiceRepository {
 
   async completePaymentIntent(input: { payment: Awaited<ReturnType<MockPaymentProvider["createPayment"]>> }) {
     this.completeCalls += 1;
+    if (this.completeFailWith) throw this.completeFailWith;
     this.intentPayment = {
       providerTransactionId: input.payment.providerTransactionId,
       status: input.payment.status,
@@ -248,6 +251,7 @@ test("createOrderPayment allows only the database claim holder to call the provi
 
 test("createOrderPayment safely releases a failed claim without persisting provider details", async () => {
   const repository = new MemoryPaymentRepository();
+  const logs: string[] = [];
   const provider = new MockPaymentProvider({
     secret: "provider-secret-do-not-leak",
     now: () => now,
@@ -261,7 +265,10 @@ test("createOrderPayment safely releases a failed claim without persisting provi
       createOrderPayment(
         "user-1",
         "order-id-1",
-        dependencies(repository, provider),
+        {
+          ...dependencies(repository, provider),
+          logger: createBillingSecurityLogger((line) => logs.push(line)),
+        },
       ),
     (error: unknown) =>
       expectBillingError(error, "PAYMENT_PROVIDER_UNAVAILABLE", 503) &&
@@ -270,6 +277,86 @@ test("createOrderPayment safely releases a failed claim without persisting provi
   );
   assert.deepEqual(repository.failCalls, ["PROVIDER_CREATE_FAILED"]);
   assert.equal(repository.intentPayment, null);
+  assert.equal(logs.length, 1);
+  assert.deepEqual(
+    JSON.parse(logs[0].slice("billing_security_event ".length)),
+    {
+      eventCode: "PAYMENT_CREATE_FAILED",
+      provider: "MOCK",
+      orderNumber: order().orderNumber,
+      errorCode: "PROVIDER_CREATE_FAILED",
+      status: "FAILED",
+    },
+  );
+  assert.equal(logs[0].includes("provider-secret-do-not-leak"), false);
+});
+
+test("createOrderPayment logs one safe event when payment-intent persistence fails", async () => {
+  const repository = new MemoryPaymentRepository();
+  const logs: string[] = [];
+  repository.completeFailWith = new Error("database password=do-not-log");
+
+  await assert.rejects(
+    () =>
+      createOrderPayment("user-1", "order-id-1", {
+        ...dependencies(repository),
+        logger: createBillingSecurityLogger((line) => logs.push(line)),
+      }),
+    (error: unknown) =>
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
+  );
+
+  assert.equal(repository.completeCalls, 1);
+  assert.equal(logs.length, 1);
+  assert.deepEqual(
+    JSON.parse(logs[0].slice("billing_security_event ".length)),
+    {
+      eventCode: "PAYMENT_INTENT_PERSIST_FAILED",
+      provider: "MOCK",
+      orderNumber: order().orderNumber,
+      errorCode: "PAYMENT_INTENT_PERSIST_FAILED",
+      status: "FAILED",
+    },
+  );
+  assert.equal(logs[0].includes("database password=do-not-log"), false);
+});
+
+test("createOrderPayment preserves safe failures when the security log sink throws", async () => {
+  const providerRepository = new MemoryPaymentRepository();
+  const provider = new MockPaymentProvider({
+    secret: "provider-secret-do-not-leak",
+    now: () => now,
+  });
+  provider.createPayment = async () => {
+    throw new Error("provider token=do-not-leak");
+  };
+  const throwingLogger = createBillingSecurityLogger(() => {
+    throw new Error("log sink unavailable");
+  });
+
+  await assert.rejects(
+    () =>
+      createOrderPayment("user-1", "order-id-1", {
+        ...dependencies(providerRepository, provider),
+        logger: throwingLogger,
+      }),
+    (error: unknown) =>
+      expectBillingError(error, "PAYMENT_PROVIDER_UNAVAILABLE", 503),
+  );
+  assert.deepEqual(providerRepository.failCalls, ["PROVIDER_CREATE_FAILED"]);
+
+  const persistenceRepository = new MemoryPaymentRepository();
+  persistenceRepository.completeFailWith = new Error("database password=do-not-log");
+  await assert.rejects(
+    () =>
+      createOrderPayment("user-1", "order-id-1", {
+        ...dependencies(persistenceRepository),
+        logger: throwingLogger,
+      }),
+    (error: unknown) =>
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
+  );
+  assert.equal(persistenceRepository.completeCalls, 1);
 });
 
 test("createOrderPayment does not reveal whether another user's order exists", async () => {

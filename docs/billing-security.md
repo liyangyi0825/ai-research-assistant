@@ -48,6 +48,12 @@
 
 平台仅用于科研辅助，禁止论文代写、伪造实验或研究数据、考试作弊及其他学术不端。AI 输出可能有误，用户必须自行核查引用、数据与结论。
 
+## Billing security event logging
+
+- The server emits only five allowlisted security event codes: `WEBHOOK_SIGNATURE_REJECTED`, `WEBHOOK_PARSE_REJECTED`, `WEBHOOK_SETTLEMENT_FAILED`, `PAYMENT_CREATE_FAILED`, and `PAYMENT_INTENT_PERSIST_FAILED`.
+- The default sink writes one `billing_security_event` JSON record per event to server stderr. Records are built only from the allowlisted event code, provider, verified or server-owned identifiers, fixed error code, and fixed status; raw webhook bodies, signatures, headers, keys, tokens, email addresses, tax identifiers, raw errors, and stacks are excluded.
+- External alert delivery is not configured. Production monitoring remains incomplete until an approved monitoring, alert-routing, retention, and response process is configured and tested.
+
 ## 上线前安全门
 
 在正式收费前必须完成：

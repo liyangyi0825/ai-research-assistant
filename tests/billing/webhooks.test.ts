@@ -7,6 +7,7 @@ import { POST as webhookPOST } from "../../app/api/billing/webhooks/[provider]/r
 import type { BillingUser } from "../../lib/billing/auth";
 import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
+import { createBillingSecurityLogger } from "../../lib/billing/security-logger";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
 import type {
   PaymentOrderSnapshot,
@@ -71,6 +72,7 @@ class MemoryWebhookRepository implements WebhookRepository {
   settlementCalls = 0;
   grants = 0;
   simulateProcessedRace = false;
+  simulateProcessingRace = false;
 
   constructor(readonly order = settlementOrder()) {}
 
@@ -101,6 +103,10 @@ class MemoryWebhookRepository implements WebhookRepository {
     if (this.simulateProcessedRace) {
       event.status = "PROCESSED";
       event.orderId = this.order.id;
+      return cloneEvent(event);
+    }
+    if (this.simulateProcessingRace) {
+      event.status = "PROCESSING";
       return cloneEvent(event);
     }
     if (event.status === "RECEIVED") {
@@ -266,8 +272,8 @@ test("a valid callback is persisted as RECEIVED before the exact nine-argument s
 
 test("invalid signatures never trust business fields and persist only a rejected payload hash", async () => {
   const repository = new MemoryWebhookRepository();
-  const rawBody = eventBody({ orderNumber: "attacker-order", amountMinor: 1 });
-  const logs: unknown[] = [];
+  const rawBody = `${eventBody({ orderNumber: "attacker-order", amountMinor: 1 }).slice(0, -1)},"email":"student@example.com","taxIdentifier":"tax-id"}`;
+  const logs: string[] = [];
 
   await assert.rejects(
     () =>
@@ -280,7 +286,7 @@ test("invalid signatures never trust business fields and persist only a rejected
         },
         {
           ...webhookDependencies(repository),
-          logger: { warn: (_message, context) => logs.push(context) },
+          logger: createBillingSecurityLogger((line) => logs.push(line)),
         },
       ),
     (error: unknown) =>
@@ -296,9 +302,22 @@ test("invalid signatures never trust business fields and persist only a rejected
   assert.equal(stored?.amountMinor, null);
   assert.equal(stored?.currency, null);
   assert.deepEqual(stored?.payloadSummary, { payload_hash: hash });
+  assert.equal(logs.length, 1);
+  assert.deepEqual(
+    JSON.parse(logs[0].slice("billing_security_event ".length)),
+    {
+      eventCode: "WEBHOOK_SIGNATURE_REJECTED",
+      provider: "MOCK",
+      providerEventId: `rejected:${hash}`,
+      errorCode: "INVALID_WEBHOOK_SIGNATURE",
+      status: "FAILED",
+    },
+  );
   const auditText = JSON.stringify({ stored, logs });
   assert.equal(auditText.includes(rawBody), false);
   assert.equal(auditText.includes("secret-header"), false);
+  assert.equal(auditText.includes("student@example.com"), false);
+  assert.equal(auditText.includes("tax-id"), false);
   assert.equal(repository.settlementCalls, 0);
 });
 
@@ -354,6 +373,190 @@ test("a signed but malformed callback is retained as a hash-only FAILED audit", 
   assert.equal(stored?.status, "FAILED");
   assert.equal(stored?.orderNumber, null);
   assert.deepEqual(stored?.payloadSummary, { payload_hash: hash });
+});
+
+test("a signed parse rejection writes one allowlisted security event", async () => {
+  const repository = new MemoryWebhookRepository();
+  const logs: string[] = [];
+  const rawBody = "not-json-with-email=student@example.com";
+
+  await assert.rejects(
+    () =>
+      processPaymentWebhook("mock", rawBody, signed(rawBody), {
+        ...webhookDependencies(repository),
+        logger: createBillingSecurityLogger((line) => logs.push(line)),
+      }),
+    (error: unknown) => expectBillingError(error, "INVALID_WEBHOOK", 400),
+  );
+
+  const hash = createHash("sha256").update(rawBody).digest("hex");
+  assert.equal(logs.length, 1);
+  assert.deepEqual(
+    JSON.parse(logs[0].slice("billing_security_event ".length)),
+    {
+      eventCode: "WEBHOOK_PARSE_REJECTED",
+      provider: "MOCK",
+      providerEventId: `rejected:${hash}`,
+      errorCode: "WEBHOOK_PARSE_REJECTED",
+      status: "FAILED",
+    },
+  );
+  assert.equal(logs[0].includes(rawBody), false);
+  assert.equal(logs[0].includes("student@example.com"), false);
+});
+
+test("a verified settlement failure writes one safe security event", async () => {
+  const repository = new MemoryWebhookRepository();
+  const logs: string[] = [];
+  const rawBody = `${eventBody().slice(0, -1)},"email":"student@example.com"}`;
+  repository.settlePaidOrder = async () => {
+    throw new Error("database password=do-not-log");
+  };
+
+  await assert.rejects(
+    () =>
+      processPaymentWebhook("mock", rawBody, signed(rawBody), {
+        ...webhookDependencies(repository),
+        logger: createBillingSecurityLogger((line) => logs.push(line)),
+      }),
+    (error: unknown) =>
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
+  );
+
+  assert.equal(logs.length, 1);
+  assert.deepEqual(
+    JSON.parse(logs[0].slice("billing_security_event ".length)),
+    {
+      eventCode: "WEBHOOK_SETTLEMENT_FAILED",
+      provider: "MOCK",
+      orderNumber: settlementOrder().orderNumber,
+      providerEventId: "mock-event-1",
+      errorCode: "WEBHOOK_SETTLEMENT_FAILED",
+      status: "FAILED",
+    },
+  );
+  assert.equal(logs[0].includes(rawBody), false);
+  assert.equal(logs[0].includes("student@example.com"), false);
+  assert.equal(logs[0].includes("database password=do-not-log"), false);
+});
+
+test("a settlement failure logs FAILED when failure marking observes a PROCESSING race", async () => {
+  const repository = new MemoryWebhookRepository();
+  repository.simulateProcessingRace = true;
+  repository.settlePaidOrder = async () => {
+    throw new Error("database password=do-not-log");
+  };
+  const logs: string[] = [];
+  const rawBody = eventBody();
+
+  await assert.rejects(
+    () =>
+      processPaymentWebhook("mock", rawBody, signed(rawBody), {
+        ...webhookDependencies(repository),
+        logger: createBillingSecurityLogger((line) => logs.push(line)),
+      }),
+    (error: unknown) =>
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
+  );
+
+  assert.equal(repository.events.get("MOCK:mock-event-1")?.status, "PROCESSING");
+  assert.equal(logs.length, 1);
+  assert.equal(
+    JSON.parse(logs[0].slice("billing_security_event ".length)).status,
+    "FAILED",
+  );
+});
+
+test("webhook failures preserve safe errors when the security log sink throws", async () => {
+  const throwingLogger = createBillingSecurityLogger(() => {
+    throw new Error("log sink unavailable");
+  });
+
+  const invalidSignatureRepository = new MemoryWebhookRepository();
+  const invalidSignatureBody = eventBody();
+  await assert.rejects(
+    () =>
+      processPaymentWebhook("mock", invalidSignatureBody, {}, {
+        ...webhookDependencies(invalidSignatureRepository),
+        logger: throwingLogger,
+      }),
+    (error: unknown) =>
+      expectBillingError(error, "INVALID_WEBHOOK_SIGNATURE", 401),
+  );
+
+  const parseRepository = new MemoryWebhookRepository();
+  const malformedBody = "not-json";
+  await assert.rejects(
+    () =>
+      processPaymentWebhook("mock", malformedBody, signed(malformedBody), {
+        ...webhookDependencies(parseRepository),
+        logger: throwingLogger,
+      }),
+    (error: unknown) => expectBillingError(error, "INVALID_WEBHOOK", 400),
+  );
+
+  const settlementRepository = new MemoryWebhookRepository();
+  settlementRepository.settlePaidOrder = async () => {
+    throw new Error("database password=do-not-log");
+  };
+  const settlementBody = eventBody();
+  await assert.rejects(
+    () =>
+      processPaymentWebhook("mock", settlementBody, signed(settlementBody), {
+        ...webhookDependencies(settlementRepository),
+        logger: throwingLogger,
+      }),
+    (error: unknown) =>
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
+  );
+});
+
+test("webhook logs use fixed error codes instead of dependency BillingError codes", async () => {
+  const maliciousCode = "provider-secret\u0085not-for-log";
+  const parseLogs: string[] = [];
+  const parseRepository = new MemoryWebhookRepository();
+  const parseProvider = mockProvider();
+  parseProvider.parseWebhook = async () => {
+    throw new BillingError(maliciousCode, "Provider parse failure.", 400);
+  };
+  const rawBody = eventBody();
+
+  await assert.rejects(
+    () =>
+      processPaymentWebhook("mock", rawBody, signed(rawBody), {
+        ...webhookDependencies(parseRepository, parseProvider),
+        logger: createBillingSecurityLogger((line) => parseLogs.push(line)),
+      }),
+    (error: unknown) => expectBillingError(error, maliciousCode, 400),
+  );
+  assert.equal(parseLogs.length, 1);
+  const parseRecord = parseLogs[0];
+  assert.equal(parseRecord.includes(maliciousCode), false);
+  assert.deepEqual(
+    JSON.parse(parseRecord.slice("billing_security_event ".length)).errorCode,
+    "WEBHOOK_PARSE_REJECTED",
+  );
+
+  const settlementLogs: string[] = [];
+  const settlementRepository = new MemoryWebhookRepository();
+  settlementRepository.settlePaidOrder = async () => {
+    throw new BillingError(maliciousCode, "Provider settlement failure.", 400);
+  };
+  await assert.rejects(
+    () =>
+      processPaymentWebhook("mock", rawBody, signed(rawBody), {
+        ...webhookDependencies(settlementRepository),
+        logger: createBillingSecurityLogger((line) => settlementLogs.push(line)),
+      }),
+    (error: unknown) => expectBillingError(error, maliciousCode, 400),
+  );
+  assert.equal(settlementLogs.length, 1);
+  const settlementRecord = settlementLogs[0];
+  assert.equal(settlementRecord.includes(maliciousCode), false);
+  assert.deepEqual(
+    JSON.parse(settlementRecord.slice("billing_security_event ".length)).errorCode,
+    "WEBHOOK_SETTLEMENT_FAILED",
+  );
 });
 
 test("an identical callback is idempotent while a reused event ID with different payload is rejected", async () => {

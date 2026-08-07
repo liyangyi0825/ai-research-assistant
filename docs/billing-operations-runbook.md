@@ -62,3 +62,9 @@
 - The report renders no more than 200 findings; if the total exceeds that limit, `truncated=true` while the summary retains the complete count.
 - The seven finding codes are `ORDER_EXPIRED_PENDING`, `PAID_ORDER_PAYMENT_MISSING`, `PAYMENT_ORDER_MISMATCH`, `WEBHOOK_STALLED`, `SUBSCRIPTION_GRANT_MISSING`, `CREDIT_GRANT_MISSING`, and `REFUND_STATE_MISMATCH`.
 - Findings are for manual investigation, recording, and review only. This page and API never automatically change orders, payments, refunds, subscriptions, credits, ledgers, or webhook states; any follow-up must use an approved, auditable manual process.
+
+## Billing security event logger
+
+- The server writes each allowlisted billing security event as one `billing_security_event` JSON record to server stderr. The event codes are `WEBHOOK_SIGNATURE_REJECTED`, `WEBHOOK_PARSE_REJECTED`, `WEBHOOK_SETTLEMENT_FAILED`, `PAYMENT_CREATE_FAILED`, and `PAYMENT_INTENT_PERSIST_FAILED`.
+- Treat these records as a local diagnostic signal only. External alert delivery is not configured, and production monitoring is incomplete until the approved monitoring platform, alert recipients, escalation procedure, retention policy, and response tests are in place.
+- Do not copy raw webhook bodies, signatures, headers, private keys, tokens, email addresses, tax identifiers, raw errors, or stacks into incident records. Use only the allowlisted provider, verified/server-owned order number or provider event ID, fixed error code, and fixed status.

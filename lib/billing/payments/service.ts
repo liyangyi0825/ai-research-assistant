@@ -12,6 +12,11 @@ import type {
   BillingOrderStatus,
   BillingProvider,
 } from "../repositories";
+import {
+  billingSecurityLogger,
+  type BillingSecurityLogger,
+  warnBillingSecurity,
+} from "../security-logger";
 import { getPaymentProvider } from "./registry";
 import type { PaymentProvider } from "./provider";
 import type { PaymentResult } from "./types";
@@ -92,6 +97,7 @@ export type CreateOrderPaymentDependencies = {
     mode: BillingConfig["paymentMode"],
     config: BillingConfig,
   ) => PaymentProvider;
+  logger?: BillingSecurityLogger;
   isAdmin?: boolean;
 };
 
@@ -397,6 +403,7 @@ export async function createOrderPayment(
   dependencies: CreateOrderPaymentDependencies = {},
 ): Promise<PaymentResult> {
   const repository = dependencies.repository ?? defaultRepository();
+  const logger = dependencies.logger ?? billingSecurityLogger;
   let order: PaymentOrderSnapshot | null;
 
   try {
@@ -483,6 +490,13 @@ export async function createOrderPayment(
       expiresAt: normalizedTimestamp(payment.expiresAt),
     };
   } catch {
+    warnBillingSecurity(logger, {
+      eventCode: "PAYMENT_CREATE_FAILED",
+      provider: order.provider,
+      orderNumber: order.orderNumber,
+      errorCode: "PROVIDER_CREATE_FAILED",
+      status: "FAILED",
+    });
     try {
       await repository.failPaymentIntent(
         claim.intentId,
@@ -507,6 +521,13 @@ export async function createOrderPayment(
       payment,
     });
   } catch (error) {
+    warnBillingSecurity(logger, {
+      eventCode: "PAYMENT_INTENT_PERSIST_FAILED",
+      provider: order.provider,
+      orderNumber: order.orderNumber,
+      errorCode: "PAYMENT_INTENT_PERSIST_FAILED",
+      status: "FAILED",
+    });
     if (error instanceof BillingError) throw error;
     throw storageError();
   }

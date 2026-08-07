@@ -11,6 +11,11 @@ import { getBillingConfig, type BillingConfig, type PaymentMode } from "../confi
 import type { Json } from "../database.types";
 import { BillingError } from "../errors";
 import type { BillingProvider } from "../repositories";
+import {
+  billingSecurityLogger,
+  type BillingSecurityLogger,
+  warnBillingSecurity,
+} from "../security-logger";
 import { MockPaymentProvider } from "./mock";
 import type { PaymentProvider } from "./provider";
 import { getPaymentProvider } from "./registry";
@@ -109,17 +114,6 @@ export type WebhookAdminClient = {
   rpc(name: string, args: Record<string, unknown>): Promise<DatabaseResult>;
 };
 
-export type WebhookLogger = {
-  warn(
-    message: string,
-    context: {
-      provider: BillingProvider;
-      eventId: string;
-      errorCode: string;
-    },
-  ): void;
-};
-
 export type ProcessPaymentWebhookDependencies = {
   repository?: WebhookRepository;
   getConfig?: () => BillingConfig;
@@ -127,7 +121,7 @@ export type ProcessPaymentWebhookDependencies = {
     mode: PaymentMode,
     config: BillingConfig,
   ) => PaymentProvider;
-  logger?: WebhookLogger;
+  logger?: BillingSecurityLogger;
 };
 
 const WEBHOOK_COLUMNS = [
@@ -447,15 +441,6 @@ async function persistRejectedEvent(
   return stored;
 }
 
-function warn(
-  logger: WebhookLogger | undefined,
-  provider: BillingProvider,
-  eventId: string,
-  errorCode: string,
-) {
-  logger?.warn("Billing webhook rejected.", { provider, eventId, errorCode });
-}
-
 export async function processPaymentWebhook(
   providerMode: PaymentMode,
   rawBody: string,
@@ -476,6 +461,7 @@ export async function processPaymentWebhook(
     config,
   );
   const repository = dependencies.repository ?? defaultRepository();
+  const logger = dependencies.logger ?? billingSecurityLogger;
   const hash = payloadHash(rawBody);
 
   let signatureValid: boolean;
@@ -491,12 +477,13 @@ export async function processPaymentWebhook(
         false,
         error.code,
       );
-      warn(
-        dependencies.logger,
-        providerNameValue,
-        audit.providerEventId,
-        error.code,
-      );
+      warnBillingSecurity(logger, {
+        eventCode: "WEBHOOK_SIGNATURE_REJECTED",
+        provider: providerNameValue,
+        providerEventId: audit.providerEventId,
+        errorCode: error.code,
+        status: "FAILED",
+      });
     }
     throw error;
   }
@@ -513,7 +500,13 @@ export async function processPaymentWebhook(
       false,
       error.code,
     );
-    warn(dependencies.logger, providerNameValue, audit.providerEventId, error.code);
+    warnBillingSecurity(logger, {
+      eventCode: "WEBHOOK_SIGNATURE_REJECTED",
+      provider: providerNameValue,
+      providerEventId: audit.providerEventId,
+      errorCode: error.code,
+      status: "FAILED",
+    });
     throw error;
   }
 
@@ -536,7 +529,13 @@ export async function processPaymentWebhook(
       true,
       error.code,
     );
-    warn(dependencies.logger, providerNameValue, audit.providerEventId, error.code);
+    warnBillingSecurity(logger, {
+      eventCode: "WEBHOOK_PARSE_REJECTED",
+      provider: providerNameValue,
+      providerEventId: audit.providerEventId,
+      errorCode: "WEBHOOK_PARSE_REJECTED",
+      status: "FAILED",
+    });
     throw error;
   }
 
@@ -603,12 +602,14 @@ export async function processPaymentWebhook(
         orderId: terminal.orderId,
       };
     }
-    warn(
-      dependencies.logger,
-      providerNameValue,
-      parsed.eventId,
-      error.code,
-    );
+    warnBillingSecurity(logger, {
+      eventCode: "WEBHOOK_SETTLEMENT_FAILED",
+      provider: providerNameValue,
+      orderNumber: parsed.orderNumber,
+      providerEventId: parsed.eventId,
+      errorCode: "WEBHOOK_SETTLEMENT_FAILED",
+      status: "FAILED",
+    });
     throw error;
   }
 }
