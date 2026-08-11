@@ -144,6 +144,87 @@ function sqlBetween(sql: string, start: string, end: string): string {
   return sql.slice(startIndex, endIndex);
 }
 
+function skipSqlTrivia(sql: string, start: number): number {
+  let index = start;
+  while (index < sql.length) {
+    if (/\s/.test(sql[index])) {
+      index += 1;
+      continue;
+    }
+    if (sql.startsWith("--", index)) {
+      index = sql.indexOf("\n", index + 2);
+      if (index === -1) return sql.length;
+      continue;
+    }
+    if (sql.startsWith("/*", index)) {
+      let depth = 1;
+      index += 2;
+      while (index < sql.length && depth > 0) {
+        if (sql.startsWith("/*", index)) {
+          depth += 1;
+          index += 2;
+        } else if (sql.startsWith("*/", index)) {
+          depth -= 1;
+          index += 2;
+        } else {
+          index += 1;
+        }
+      }
+      assert.equal(depth, 0, "unterminated SQL block comment");
+      continue;
+    }
+    break;
+  }
+  return index;
+}
+
+function assertDollarQuotedDoBlocks(sql: string, expectedCount: number): void {
+  let index = 0;
+  let doBlockCount = 0;
+  while (index < sql.length) {
+    index = skipSqlTrivia(sql, index);
+    if (index >= sql.length) break;
+
+    if (sql[index] === "'" || sql[index] === '"') {
+      const quote = sql[index];
+      index += 1;
+      while (index < sql.length) {
+        if (sql[index] !== quote) {
+          index += 1;
+          continue;
+        }
+        if (sql[index + 1] === quote) {
+          index += 2;
+          continue;
+        }
+        index += 1;
+        break;
+      }
+      continue;
+    }
+
+    const word = sql.slice(index).match(/^[a-z_][a-z0-9_$]*/i)?.[0];
+    if (!word) {
+      index += 1;
+      continue;
+    }
+    index += word.length;
+    if (word.toLowerCase() !== "do") continue;
+
+    const delimiterIndex = skipSqlTrivia(sql, index);
+    const delimiter = sql.slice(delimiterIndex).match(/^\$(?:[a-z_][a-z0-9_]*)?\$/i)?.[0];
+    assert.ok(delimiter, `DO at offset ${index - word.length} lacks a dollar-quote delimiter`);
+    const bodyStart = delimiterIndex + delimiter.length;
+    const bodyEnd = sql.indexOf(delimiter, bodyStart);
+    assert.notEqual(bodyEnd, -1, `DO at offset ${index - word.length} has no closing ${delimiter}`);
+    const semicolonIndex = skipSqlTrivia(sql, bodyEnd + delimiter.length);
+    assert.equal(sql[semicolonIndex], ";", `DO ${delimiter} block is not terminated by a semicolon`);
+    doBlockCount += 1;
+    index = semicolonIndex + 1;
+  }
+  assert.equal(doBlockCount, expectedCount, "unexpected dollar-quoted DO block count");
+}
+
 function createTableBodies(sql: string): Array<{ table: string; body: string }> {
   const tables: Array<{ table: string; body: string }> = [];
   const declarations = sql.matchAll(/create\s+table\s+public\.([a-z0-9_]+)\s*\(/gi);
@@ -256,12 +337,26 @@ function migrationExplicitConstraintNames(sql: string): string[] {
   )].map((match) => `${match[1]}.${match[2]}`.toLowerCase()).sort();
 }
 
-function assertIndexSortComparison(sql: string): void {
-  const predicate = sql.match(
-    /or\s+\(\s*select\s+array_agg\(sort_option\.option::integer[\s\S]*?from\s+unnest\(index_meta\.indoption\)[\s\S]*?\)\s+is\s+distinct\s+from\s+expected\.expected_indoptions(?:\s+and\s+false)?/i,
-  )?.[0];
-  assert.ok(predicate, "missing exact index indoption comparison");
-  assert.doesNotMatch(predicate, /\band\s+false\b/i, "index indoption comparison is disabled");
+const indexVerificationGates = [
+  ["schema binding", "index_class.relnamespace = expected.schema_name::regnamespace"],
+  ["table binding", "index_meta.indrelid is distinct from to_regclass(format('%I.%I', expected.schema_name, expected.table_name))"],
+  ["valid state", "index_meta.indisvalid is not true"],
+  ["ready state", "index_meta.indisready is not true"],
+  ["live state", "index_meta.indislive is not true"],
+  ["access method", "access_method.amname is distinct from expected.access_method"],
+  ["uniqueness", "index_meta.indisunique is distinct from expected.expected_unique"],
+  ["ordered columns", ") is distinct from expected.column_names"],
+  ["predicate", "is distinct from expected.expected_predicate"],
+  ["sort options", ") is distinct from expected.expected_indoptions"],
+] as const;
+
+function assertIndexVerificationGates(sql: string): void {
+  for (const [name, comparison] of indexVerificationGates) {
+    const comparisonIndex = sql.indexOf(comparison);
+    assert.notEqual(comparisonIndex, -1, `missing index ${name} comparison`);
+    const comparisonTail = sql.slice(comparisonIndex, comparisonIndex + comparison.length + 32);
+    assert.doesNotMatch(comparisonTail, /\band\s+false\b/i, `index ${name} comparison is disabled`);
+  }
 }
 
 function verifyIndexManifest(sql: string) {
@@ -278,6 +373,235 @@ function verifyIndexManifest(sql: string) {
     unique: match[7].toLowerCase() === "true",
     predicate: match[8].toLowerCase() === "null::text" ? null : match[8].slice(1, -1),
   })).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+const expectedConstraintCounts = new Map<string, number>([
+  ["billing_plans", 3], ["billing_products", 9], ["billing_plan_entitlements", 5],
+  ["billing_orders", 17], ["billing_payment_intents", 13], ["billing_payments", 9],
+  ["billing_subscriptions", 8], ["billing_user_entitlements", 7], ["billing_usage_quotas", 10],
+  ["billing_credit_accounts", 7], ["billing_usage_records", 10], ["billing_usage_continuations", 7],
+  ["billing_credit_ledger", 8], ["billing_webhook_events", 10], ["billing_refund_requests", 8],
+  ["billing_refunds", 12], ["billing_invoice_requests", 7], ["billing_admins", 4],
+  ["billing_admin_audit_logs", 3], ["billing_rate_limits", 4], ["billing_feature_usage_costs", 5],
+]);
+
+function assertConstraintInventoryMatchesMigrations(migrations: string, verify: string): void {
+  const manifest = verifyConstraintManifest(verify);
+  const migrationShape = migrationConstraintShape(migrations);
+  const explicitNames = migrationExplicitConstraintNames(migrations);
+  for (const [table, expectedCount] of expectedConstraintCounts) {
+    assert.equal(
+      migrationShape.filter((constraint) => constraint.startsWith(`${table}.`)).length,
+      expectedCount,
+      `migration constraint parser mismatch for ${table}`,
+    );
+    for (const type of ["c", "f", "p", "u"]) {
+      assert.equal(
+        manifest.filter(({ identity }) =>
+          identity.startsWith(`public.${table}.`) && identity.endsWith(`.${type}`)).length,
+        migrationShape.filter((constraint) => constraint === `${table}.${type}`).length,
+        `constraint type count mismatch for ${table}.${type}`,
+      );
+    }
+  }
+  assert.equal(migrationShape.length, 166);
+  assert.deepEqual(
+    manifest.filter(({ name }) => name !== null).map(({ table, name }) => `${table}.${name}`).sort(),
+    explicitNames,
+    "only migration-explicit constraint names may be enforced",
+  );
+  assert.equal(manifest.length, 166);
+  assert.equal(
+    new Set(manifest.map(({ table, type, definition }) => `${table}.${type}.${definition}`)).size,
+    166,
+    "constraint semantic signatures must form an exact multiset",
+  );
+}
+
+const wideConstraintSemantics = [
+  {
+    table: "billing_products",
+    marker: "duration_days.*NOT NULL",
+    migration: /product_type\s*=\s*'SUBSCRIPTION'[\s\S]*plan_id\s+is\s+not\s+null[\s\S]*duration_days\s+is\s+not\s+null[\s\S]*or[\s\S]*product_type\s*=\s*'CREDIT_PACK'/i,
+    valid: "CHECK ((((product_type = 'SUBSCRIPTION'::text) AND (plan_id IS NOT NULL) AND (duration_days IS NOT NULL)) OR ((product_type = 'CREDIT_PACK'::text) AND (plan_id IS NULL) AND (credit_grant > 0))))",
+    invalid: "CHECK (((((product_type = 'SUBSCRIPTION'::text) AND (plan_id IS NOT NULL) AND (duration_days IS NOT NULL)) OR ((product_type = 'CREDIT_PACK'::text) AND (plan_id IS NULL) AND (credit_grant > 0))) OR true))",
+  },
+  {
+    table: "billing_orders",
+    marker: "jsonb_typeof",
+    migration: /jsonb_typeof\s*\(snapshot_entitlements\)\s*=\s*'array'/i,
+    valid: "CHECK ((jsonb_typeof(snapshot_entitlements) = 'array'::text))",
+    invalid: "CHECK (((jsonb_typeof(snapshot_entitlements) = 'array'::text) OR true))",
+  },
+  {
+    table: "billing_orders",
+    marker: "expires_at",
+    migration: /check\s*\(expires_at\s*>\s*created_at\)/i,
+    valid: "CHECK ((expires_at > created_at))",
+    invalid: "CHECK ((expires_at < created_at))",
+  },
+  {
+    table: "billing_orders",
+    marker: "paid_at.*NOT NULL",
+    migration: /status\s+not\s+in\s*\('PAID',\s*'REFUNDING',\s*'REFUNDED'\)[\s\S]*or\s+paid_at\s+is\s+not\s+null/i,
+    valid: "CHECK (((status <> ALL (ARRAY['PAID'::text, 'REFUNDING'::text, 'REFUNDED'::text])) OR (paid_at IS NOT NULL)))",
+    invalid: "CHECK ((((status <> ALL (ARRAY['PAID'::text, 'REFUNDING'::text, 'REFUNDED'::text])) OR (paid_at IS NOT NULL)) OR true))",
+  },
+  {
+    table: "billing_orders",
+    marker: "snapshot_credit_grant.*> 0",
+    migration: /snapshot_product_type\s*=\s*'SUBSCRIPTION'[\s\S]*snapshot_duration_days\s+is\s+not\s+null[\s\S]*or[\s\S]*snapshot_product_type\s*=\s*'CREDIT_PACK'/i,
+    valid: "CHECK ((((snapshot_product_type = 'SUBSCRIPTION'::text) AND (snapshot_plan_id IS NOT NULL) AND (snapshot_duration_days IS NOT NULL)) OR ((snapshot_product_type = 'CREDIT_PACK'::text) AND (snapshot_plan_id IS NULL) AND (snapshot_credit_grant > 0))))",
+    invalid: "CHECK (((((snapshot_product_type = 'SUBSCRIPTION'::text) AND (snapshot_plan_id IS NOT NULL) AND (snapshot_duration_days IS NOT NULL)) OR ((snapshot_product_type = 'CREDIT_PACK'::text) AND (snapshot_plan_id IS NULL) AND (snapshot_credit_grant > 0))) OR true))",
+  },
+  {
+    table: "billing_payment_intents",
+    marker: "last_error_code.*NOT NULL",
+    migration: /status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
+    valid: "CHECK ((((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NOT NULL) AND (payment_status IS NOT NULL) AND (last_error_code IS NULL)) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL))))",
+    invalid: "CHECK (((((status = 'CREATING'::text) AND (claim_token IS NOT NULL)) OR ((status = 'CREATED'::text) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NOT NULL) AND (payment_status IS NOT NULL)) OR ((status = 'FAILED'::text) AND (last_error_code IS NOT NULL))) OR true))",
+  },
+  {
+    table: "billing_subscriptions",
+    marker: "auto_renew",
+    migration: /auto_renew\s+boolean[\s\S]*check\s*\(auto_renew\s*=\s*false\)/i,
+    valid: "CHECK ((auto_renew = false))",
+    invalid: "CHECK ((auto_renew = true))",
+  },
+  {
+    table: "billing_subscriptions",
+    marker: "ends_at",
+    migration: /check\s*\(ends_at\s*>\s*starts_at\)/i,
+    valid: "CHECK ((ends_at > starts_at))",
+    invalid: "CHECK ((ends_at < starts_at))",
+  },
+  {
+    table: "billing_user_entitlements",
+    marker: "valid_until",
+    migration: /valid_until\s+is\s+null\s+or\s+valid_until\s*>\s*valid_from/i,
+    valid: "CHECK (((valid_until IS NULL) OR (valid_until > valid_from)))",
+    invalid: "CHECK ((((valid_until IS NULL) OR (valid_until > valid_from)) OR true))",
+  },
+  {
+    table: "billing_usage_quotas",
+    marker: "period_end",
+    migration: /check\s*\(period_end\s*>\s*period_start\)/i,
+    valid: "CHECK ((period_end > period_start))",
+    invalid: "CHECK ((period_end < period_start))",
+  },
+  {
+    table: "billing_usage_quotas",
+    marker: "reserved_units.*[+]",
+    migration: /reserved_units\s*\+\s*used_units\s*<=\s*quota_limit/i,
+    valid: "CHECK (((reserved_units + used_units) <= quota_limit))",
+    invalid: "CHECK (((reserved_units + used_units) < quota_limit))",
+  },
+  {
+    table: "billing_usage_records",
+    marker: "quota_units.*> 0.*credit_amount",
+    migration: /quota_units\s*>\s*0\s+or\s+credit_amount\s*>\s*0/i,
+    valid: "CHECK (((quota_units > 0) OR (credit_amount > 0)))",
+    invalid: "CHECK (((quota_units >= 0) OR (credit_amount >= 0)))",
+  },
+  {
+    table: "billing_usage_continuations",
+    marker: "0-9a-f",
+    migration: /request_hash\s+is\s+null\s+or\s+request_hash\s*~\s*'\^\[0-9a-f\]\{64\}\$'/i,
+    valid: "CHECK (((request_hash IS NULL) OR (request_hash ~ '^[0-9a-f]{64}$'::text)))",
+    invalid: "CHECK ((((request_hash IS NULL) OR (request_hash ~ '^[0-9a-f]{64}$'::text)) OR true))",
+  },
+  {
+    table: "billing_usage_continuations",
+    marker: "completed_at.*NOT NULL",
+    migration: /status\s*=\s*'AVAILABLE'[\s\S]*claim_token\s+is\s+null[\s\S]*status\s*=\s*'CLAIMED'[\s\S]*request_hash\s+is\s+not\s+null[\s\S]*status\s*=\s*'COMPLETED'[\s\S]*completed_at\s+is\s+not\s+null/i,
+    valid: "CHECK ((((status = 'AVAILABLE'::text) AND (claim_token IS NULL) AND (lease_expires_at IS NULL)) OR ((status = 'CLAIMED'::text) AND (request_hash IS NOT NULL)) OR ((status = 'COMPLETED'::text) AND (completed_at IS NOT NULL))))",
+    invalid: "CHECK (((((status = 'AVAILABLE'::text) AND (claim_token IS NULL) AND (lease_expires_at IS NULL)) OR ((status = 'CLAIMED'::text) AND (request_hash IS NOT NULL)) OR ((status = 'COMPLETED'::text) AND (completed_at IS NOT NULL))) OR true))",
+  },
+  {
+    table: "billing_webhook_events",
+    marker: "error_code.*NOT NULL",
+    migration: /status\s*<>\s*'FAILED'[\s\S]*or\s+nullif\s*\(btrim\s*\(error_code\)/i,
+    valid: "CHECK (((status <> 'FAILED'::text) OR (NULLIF(btrim(error_code), ''::text) IS NOT NULL)))",
+    invalid: "CHECK ((((status <> 'FAILED'::text) OR (NULLIF(btrim(error_code), ''::text) IS NOT NULL)) OR true))",
+  },
+  {
+    table: "billing_webhook_events",
+    marker: "signature_valid.*IS TRUE",
+    migration: /status\s+in\s*\('RECEIVED',\s*'PROCESSING',\s*'PROCESSED'\)[\s\S]*signature_valid\s+is\s+true[\s\S]*status\s*=\s*'FAILED'[\s\S]*order_number\s+is\s+null/i,
+    valid: "CHECK ((((status = ANY (ARRAY['RECEIVED'::text, 'PROCESSING'::text, 'PROCESSED'::text])) AND (signature_valid IS TRUE) AND (order_number IS NOT NULL) AND (provider_transaction_id IS NOT NULL) AND (request_idempotency_key IS NOT NULL) AND (amount_minor IS NOT NULL) AND (currency IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((status = 'FAILED'::text) AND (((signature_valid IS TRUE) AND (order_number IS NOT NULL) AND (provider_transaction_id IS NOT NULL) AND (request_idempotency_key IS NOT NULL) AND (amount_minor IS NOT NULL) AND (currency IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((order_number IS NULL) AND (provider_transaction_id IS NULL) AND (request_idempotency_key IS NULL) AND (amount_minor IS NULL) AND (currency IS NULL) AND (paid_at IS NULL))))))",
+    invalid: "CHECK (((((status = ANY (ARRAY['RECEIVED'::text, 'PROCESSING'::text, 'PROCESSED'::text])) AND (signature_valid IS TRUE) AND (order_number IS NOT NULL) AND (provider_transaction_id IS NOT NULL) AND (request_idempotency_key IS NOT NULL) AND (amount_minor IS NOT NULL) AND (currency IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((status = 'FAILED'::text) AND ((order_number IS NULL) AND (provider_transaction_id IS NULL) AND (request_idempotency_key IS NULL) AND (amount_minor IS NULL) AND (currency IS NULL) AND (paid_at IS NULL)))) OR true))",
+  },
+  {
+    table: "billing_feature_usage_costs",
+    marker: "quota_units.*> 0.*credit_amount",
+    migration: /quota_units\s*>\s*0\s+or\s+credit_amount\s*>\s*0/i,
+    valid: "CHECK (((quota_units > 0) OR (credit_amount > 0)))",
+    invalid: "CHECK (((quota_units >= 0) OR (credit_amount >= 0)))",
+  },
+  {
+    table: "billing_feature_usage_costs",
+    marker: "allow_credit_fallback",
+    migration: /not\s+allow_credit_fallback\s+or\s+credit_amount\s*>\s*0/i,
+    valid: "CHECK (((NOT allow_credit_fallback) OR (credit_amount > 0)))",
+    invalid: "CHECK (((NOT allow_credit_fallback) OR (credit_amount >= 0)))",
+  },
+] as const;
+
+function assertConstraintSemantics(migrations: string, verify: string): void {
+  const manifest = verifyConstraintManifest(verify);
+  const migrationTables = new Map(createTableBodies(migrations).map(({ table, body }) => [table, body]));
+  const matchedWideDefinitions = new Set<string>();
+
+  for (const expected of wideConstraintSemantics) {
+    const migrationBody = migrationTables.get(expected.table);
+    assert.ok(migrationBody, `migration table missing: ${expected.table}`);
+    assert.match(migrationBody, expected.migration, `migration semantic missing: ${expected.table}.${expected.marker}`);
+    const matches = manifest.filter(({ table, type, definition }) =>
+      table === expected.table && type === "c" && definition.includes(expected.marker));
+    assert.equal(matches.length, 1, `expected one wide CHECK: ${expected.table}.${expected.marker}`);
+    const definition = matches[0].definition;
+    matchedWideDefinitions.add(`${matches[0].table}.${definition}`);
+    const pattern = new RegExp(definition, "i");
+    assert.match(expected.valid, pattern, `valid deparsed CHECK rejected: ${expected.table}.${expected.marker}`);
+    assert.doesNotMatch(expected.invalid, pattern, `weakened CHECK accepted: ${expected.table}.${expected.marker}`);
+  }
+  assert.equal(wideConstraintSemantics.length, 18);
+  assert.equal(matchedWideDefinitions.size, 18, "wide CHECK mutation table must cover 18 distinct definitions");
+
+  for (const expected of [
+    {
+      table: "billing_plans", type: "p", marker: "PRIMARY KEY \\(id\\)",
+      migration: /id\s+uuid\s+primary\s+key/i,
+      valid: "PRIMARY KEY (id)", invalid: "PRIMARY KEY (code)",
+    },
+    {
+      table: "billing_products", type: "f", marker: "FOREIGN KEY \\(plan_id\\)",
+      migration: /plan_id\s+uuid\s+references\s+public\.billing_plans\s*\(id\)\s+on\s+delete\s+restrict/i,
+      valid: "FOREIGN KEY (plan_id) REFERENCES billing_plans(id) ON DELETE RESTRICT",
+      invalid: "FOREIGN KEY (plan_id) REFERENCES billing_plans(id) ON DELETE CASCADE",
+    },
+    {
+      table: "billing_plan_entitlements", type: "u", marker: "UNIQUE \\(plan_id, feature_key, entitlement_version\\)",
+      migration: /unique\s*\(plan_id,\s*feature_key,\s*entitlement_version\)/i,
+      valid: "UNIQUE (plan_id, feature_key, entitlement_version)",
+      invalid: "UNIQUE (feature_key, plan_id, entitlement_version)",
+    },
+    {
+      table: "billing_orders", type: "c", marker: "amount_minor >= 0",
+      migration: /amount_minor\s+bigint\s+not\s+null\s+check\s*\(amount_minor\s*>=\s*0\)/i,
+      valid: "CHECK ((amount_minor >= 0))", invalid: "CHECK ((amount_minor >= '-1'::integer))",
+    },
+  ] as const) {
+    const migrationBody = migrationTables.get(expected.table);
+    assert.ok(migrationBody);
+    assert.match(migrationBody, expected.migration);
+    const matches = manifest.filter(({ table, type, definition }) =>
+      table === expected.table && type === expected.type && definition.includes(expected.marker));
+    assert.equal(matches.length, 1, `expected one representative ${expected.type}: ${expected.table}`);
+    const pattern = new RegExp(matches[0].definition, "i");
+    assert.match(expected.valid, pattern);
+    assert.doesNotMatch(expected.invalid, pattern);
+  }
 }
 
 function databaseUrl(parts: { username?: string; host: string; protocol?: string } ): string {
@@ -514,6 +838,18 @@ test("manifest emits only the six safe top-level sections", async () => {
   ]);
 });
 
+test("verification SQL contains nine balanced dollar-quoted DO statements", async () => {
+  const verify = await readDrillSql("verify.sql");
+  assertDollarQuotedDoBlocks(verify, 9);
+
+  const brokenDelimiter = verify.replace(/do\s+\$(?:[a-z_][a-z0-9_]*)?\$/i, "do $");
+  assert.notEqual(brokenDelimiter, verify, "failed to construct delimiter mutation");
+  assert.throws(
+    () => assertDollarQuotedDoBlocks(brokenDelimiter, 9),
+    /lacks a dollar-quote delimiter/,
+  );
+});
+
 test("verification index manifest preserves every migration index definition", async () => {
   const [migrations, verify] = await Promise.all([
     readBillingMigrations(),
@@ -526,14 +862,17 @@ test("verification index manifest preserves every migration index definition", a
     /expected_indexes\s*\(\s*schema_name\s*,\s*table_name\s*,\s*index_name\s*,\s*column_names\s*,\s*expected_indoptions\s*,\s*access_method\s*,\s*expected_unique\s*,\s*expected_predicate\s*\)/i,
   );
   assert.deepEqual(verifyIndexManifest(verify), migrationIndexManifest(migrations));
-  assertIndexSortComparison(verify);
-  assert.throws(
-    () => assertIndexSortComparison(verify.replace(
-      /is\s+distinct\s+from\s+expected\.expected_indoptions/i,
-      "is distinct from expected.expected_indoptions and false",
-    )),
-    /disabled/,
-  );
+  assertIndexVerificationGates(verify);
+  for (const [name, comparison] of indexVerificationGates) {
+    assert.throws(
+      () => assertIndexVerificationGates(verify.replace(comparison, `${comparison} and false`)),
+      new RegExp(`index ${name} comparison is disabled`, "i"),
+    );
+    assert.throws(
+      () => assertIndexVerificationGates(verify.replace(comparison, "true")),
+      new RegExp(`missing index ${name} comparison`, "i"),
+    );
+  }
   assert.match(verify, /pg_am[\s\S]*indisunique[\s\S]*pg_get_expr\s*\(\s*index_meta\.indpred/i);
 });
 
@@ -543,48 +882,11 @@ test("verification constraint manifest covers every migration constraint", async
     readDrillSql("verify.sql"),
   ]);
   const manifest = verifyConstraintManifest(verify);
-  const migrationShape = migrationConstraintShape(migrations);
-  const explicitNames = migrationExplicitConstraintNames(migrations);
-  const expectedPerTable = new Map<string, number>([
-    ["billing_plans", 3], ["billing_products", 9], ["billing_plan_entitlements", 5],
-    ["billing_orders", 17], ["billing_payment_intents", 13], ["billing_payments", 9],
-    ["billing_subscriptions", 8], ["billing_user_entitlements", 7], ["billing_usage_quotas", 10],
-    ["billing_credit_accounts", 7], ["billing_usage_records", 10], ["billing_usage_continuations", 7],
-    ["billing_credit_ledger", 8], ["billing_webhook_events", 10], ["billing_refund_requests", 8],
-    ["billing_refunds", 12], ["billing_invoice_requests", 7], ["billing_admins", 4],
-    ["billing_admin_audit_logs", 3], ["billing_rate_limits", 4], ["billing_feature_usage_costs", 5],
-  ]);
-  for (const [table, expectedCount] of expectedPerTable) {
-    assert.equal(
-      migrationShape.filter((constraint) => constraint.startsWith(`${table}.`)).length,
-      expectedCount,
-      `migration constraint parser mismatch for ${table}`,
-    );
-    for (const type of ["c", "f", "p", "u"]) {
-      assert.equal(
-        manifest.filter(({ identity }) =>
-          identity.startsWith(`public.${table}.`) && identity.endsWith(`.${type}`)).length,
-        migrationShape.filter((constraint) => constraint === `${table}.${type}`).length,
-        `constraint type count mismatch for ${table}.${type}`,
-      );
-    }
-  }
-  assert.equal(migrationShape.length, 166);
-  assert.deepEqual(
-    manifest.filter(({ name }) => name !== null).map(({ table, name }) => `${table}.${name}`).sort(),
-    explicitNames,
-    "only migration-explicit constraint names may be enforced",
-  );
+  assertConstraintInventoryMatchesMigrations(migrations, verify);
 
   assert.match(
     verify,
     /expected_constraints\s*\(\s*schema_name\s*,\s*table_name\s*,\s*constraint_name\s*,\s*constraint_type\s*,\s*expected_definition\s*\)/i,
-  );
-  assert.equal(manifest.length, 166);
-  assert.equal(
-    new Set(manifest.map(({ table, type, definition }) => `${table}.${type}.${definition}`)).size,
-    166,
-    "constraint semantic signatures must form an exact multiset",
   );
   assert.ok(manifest.every(({ definition }) => definition.length >= 12));
   for (const { identity, definition } of manifest.filter(({ identity }) => identity.endsWith(".c"))) {
@@ -607,6 +909,40 @@ test("verification constraint manifest covers every migration constraint", async
   assert.match(verify, /set\s+local\s+search_path\s*=\s*pg_catalog\s*,\s*public/i);
   assert.match(verify, /constraint_meta\.conname[\s\S]*constraint_meta\.contype[\s\S]*constraint_meta\.convalidated[\s\S]*pg_get_constraintdef\s*\(\s*constraint_meta\.oid/i);
   assert.match(verify, /constraint_matches[\s\S]*matched_expected_count[\s\S]*matched_actual_count/i);
+});
+
+test("constraint inventory rejects missing and duplicate canonical entries", async () => {
+  const [migrations, verify] = await Promise.all([
+    readBillingMigrations(),
+    readDrillSql("verify.sql"),
+  ]);
+  const entry = "      ('public', 'billing_plans', null::text, 'p', '^PRIMARY KEY \\(id\\)$'),";
+  assert.ok(verify.includes(entry), "missing mutation target");
+
+  for (const [name, mutated] of [
+    ["missing", verify.replace(entry, "")],
+    ["duplicate", verify.replace(entry, `${entry}\n${entry}`)],
+  ] as const) {
+    assert.throws(
+      () => assertConstraintInventoryMatchesMigrations(migrations, mutated),
+      `${name} constraint entry escaped inventory checks`,
+    );
+  }
+});
+
+test("constraint semantic mutation table covers every broad CHECK and every constraint type", async () => {
+  const [migrations, verify] = await Promise.all([
+    readBillingMigrations(),
+    readDrillSql("verify.sql"),
+  ]);
+  assertConstraintSemantics(migrations, verify);
+
+  const original = "^CHECK .*expires_at.*>.*created_at\\)+$";
+  assert.ok(verify.includes(original), "missing semantic regex mutation target");
+  assert.throws(
+    () => assertConstraintSemantics(migrations, verify.replace(original, "^CHECK .*$")),
+    "weakened constraint regex escaped semantic checks",
+  );
 });
 
 test("constraint patterns reject semantic weakening and expansion", async () => {
