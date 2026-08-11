@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,9 +15,20 @@ import { redactText, runRedacted, sha256File } from "../../scripts/billing-db-dr
 const restoreRef = "abcdefghijklmnopqrst";
 const productionRef = "uvwxyzabcdefghijklmn";
 const drillSqlDirectory = join(process.cwd(), "scripts", "billing-db-drill", "sql");
+const migrationsDirectory = join(process.cwd(), "supabase", "migrations");
 
 async function readDrillSql(name: string): Promise<string> {
   return readFile(join(drillSqlDirectory, name), "utf8");
+}
+
+async function readBillingMigrations(): Promise<string> {
+  const migrationNames = (await readdir(migrationsDirectory))
+    .filter((name) => /^2026\d+_.*\.sql$/.test(name))
+    .sort();
+  assert.equal(migrationNames.length, 10);
+  return (await Promise.all(
+    migrationNames.map((name) => readFile(join(migrationsDirectory, name), "utf8")),
+  )).join("\n");
 }
 
 function jsonbBuildObjectArgumentsAfter(sql: string, marker: string): string[] {
@@ -131,6 +142,142 @@ function sqlBetween(sql: string, start: string, end: string): string {
   const endIndex = sql.indexOf(end, startIndex + start.length);
   assert.notEqual(endIndex, -1, `missing SQL end marker ${end}`);
   return sql.slice(startIndex, endIndex);
+}
+
+function createTableBodies(sql: string): Array<{ table: string; body: string }> {
+  const tables: Array<{ table: string; body: string }> = [];
+  const declarations = sql.matchAll(/create\s+table\s+public\.([a-z0-9_]+)\s*\(/gi);
+  for (const declaration of declarations) {
+    const openIndex = (declaration.index ?? 0) + declaration[0].lastIndexOf("(");
+    let depth = 1;
+    let quoted = false;
+    for (let index = openIndex + 1; index < sql.length; index += 1) {
+      const character = sql[index];
+      if (character === "'") {
+        if (quoted && sql[index + 1] === "'") {
+          index += 1;
+          continue;
+        }
+        quoted = !quoted;
+        continue;
+      }
+      if (quoted) continue;
+      if (character === "(") depth += 1;
+      if (character !== ")") continue;
+      depth -= 1;
+      if (depth === 0) {
+        tables.push({ table: declaration[1].toLowerCase(), body: sql.slice(openIndex + 1, index) });
+        break;
+      }
+    }
+  }
+  return tables;
+}
+
+function migrationConstraintShape(sql: string): string[] {
+  const constraints: string[] = [];
+  for (const { table, body } of createTableBodies(sql)) {
+    const add = (type: "c" | "f" | "p" | "u") => constraints.push(`${table}.${type}`);
+
+    for (const item of splitSqlArguments(body)) {
+      const compact = item.replace(/--.*$/gm, " ").replace(/\s+/g, " ").trim();
+      if (/^unique\s*\(/i.test(compact)) {
+        add("u");
+        continue;
+      }
+      if (/^check\s*\(/i.test(compact)) {
+        add("c");
+        continue;
+      }
+
+      const column = compact.match(/^([a-z_][a-z0-9_]*)\s/i)?.[1];
+      assert.ok(column, `unable to parse table item: ${compact}`);
+      if (/\bprimary\s+key\b/i.test(compact)) add("p");
+      if (/\bunique\b/i.test(compact)) add("u");
+      if (/\breferences\s+(?:public\.|auth\.)?[a-z_]+\s*\(/i.test(compact)) add("f");
+      if (/\bcheck\s*\(/i.test(compact)) add("c");
+    }
+  }
+
+  for (const match of sql.matchAll(
+    /alter\s+table\s+public\.([a-z0-9_]+)\s+add\s+constraint\s+([a-z0-9_]+)\s+(primary\s+key|foreign\s+key|unique|check)\b/gi,
+  )) {
+    if (match[2].toLowerCase() === "billing_plans_billing_period_check") continue;
+    const type = ({ "primary key": "p", "foreign key": "f", unique: "u", check: "c" } as const)[
+      match[3].toLowerCase() as "primary key" | "foreign key" | "unique" | "check"
+    ];
+    constraints.push(`${match[1].toLowerCase()}.${type}`);
+  }
+  return constraints.sort();
+}
+
+function migrationIndexManifest(sql: string) {
+  return [...sql.matchAll(
+    /create\s+(unique\s+)?index\s+([a-z0-9_]+)\s+on\s+public\.([a-z0-9_]+)\s*(?:using\s+([a-z0-9_]+)\s*)?\(([^()]*)\)\s*(?:where\s+([\s\S]*?))?;/gi,
+  )].map((match) => {
+    const definitions = splitSqlArguments(match[5]);
+    return {
+      schema: "public",
+      table: match[3].toLowerCase(),
+      name: match[2].toLowerCase(),
+      columns: definitions.map((definition) => definition.trim().split(/\s+/)[0].toLowerCase()),
+      indoptions: definitions.map((definition) => /\bdesc\b/i.test(definition) ? 3 : 0),
+      method: (match[4] ?? "btree").toLowerCase(),
+      unique: Boolean(match[1]),
+      predicate: match[6]?.replace(/\s+/g, " ").trim() ?? null,
+    };
+  }).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function verifyConstraintManifest(sql: string): Array<{
+  schema: string;
+  table: string;
+  name: string | null;
+  type: "c" | "f" | "p" | "u";
+  identity: string;
+  definition: string;
+}> {
+  const block = sqlBetween(sql, "with expected_constraints", ")\n  select array_agg");
+  return [...block.matchAll(
+    /\('([^']+)',\s*'([^']+)',\s*(null::text|'([^']+)'),\s*'([cfpu])',\s*'((?:''|[^'])*)'\)/gi,
+  )].map((match) => ({
+    schema: match[1].toLowerCase(),
+    table: match[2].toLowerCase(),
+    name: match[4]?.toLowerCase() ?? null,
+    type: match[5].toLowerCase() as "c" | "f" | "p" | "u",
+    identity: `${match[1]}.${match[2]}.${match[4] ?? "<unnamed>"}.${match[5]}`.toLowerCase(),
+    definition: match[6].replace(/''/g, "'"),
+  })).sort((left, right) => left.identity.localeCompare(right.identity));
+}
+
+function migrationExplicitConstraintNames(sql: string): string[] {
+  return [...sql.matchAll(
+    /alter\s+table\s+public\.([a-z0-9_]+)\s+add\s+constraint\s+([a-z0-9_]+)\s+(?:primary\s+key|foreign\s+key|unique|check)\b/gi,
+  )].map((match) => `${match[1]}.${match[2]}`.toLowerCase()).sort();
+}
+
+function assertIndexSortComparison(sql: string): void {
+  const predicate = sql.match(
+    /or\s+\(\s*select\s+array_agg\(sort_option\.option::integer[\s\S]*?from\s+unnest\(index_meta\.indoption\)[\s\S]*?\)\s+is\s+distinct\s+from\s+expected\.expected_indoptions(?:\s+and\s+false)?/i,
+  )?.[0];
+  assert.ok(predicate, "missing exact index indoption comparison");
+  assert.doesNotMatch(predicate, /\band\s+false\b/i, "index indoption comparison is disabled");
+}
+
+function verifyIndexManifest(sql: string) {
+  const block = sqlBetween(sql, "with expected_indexes", ")\n  select array_agg");
+  return [...block.matchAll(
+    /\('([^']+)',\s*'([^']+)',\s*'([^']+)',\s*array\[([^\]]+)\],\s*array\[([^\]]+)\],\s*'([^']+)',\s*(true|false),\s*(null::text|'[^']*')\)/gi,
+  )].map((match) => ({
+    schema: match[1].toLowerCase(),
+    table: match[2].toLowerCase(),
+    name: match[3].toLowerCase(),
+    columns: [...match[4].matchAll(/'([^']+)'/g)].map((column) => column[1].toLowerCase()),
+    indoptions: match[5].split(",").map((option) => Number(option.trim())),
+    method: match[6].toLowerCase(),
+    unique: match[7].toLowerCase() === "true",
+    predicate: match[8].toLowerCase() === "null::text" ? null : match[8].slice(1, -1),
+  })).sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function databaseUrl(parts: { username?: string; host: string; protocol?: string } ): string {
@@ -367,6 +514,136 @@ test("manifest emits only the six safe top-level sections", async () => {
   ]);
 });
 
+test("verification index manifest preserves every migration index definition", async () => {
+  const [migrations, verify] = await Promise.all([
+    readBillingMigrations(),
+    readDrillSql("verify.sql"),
+  ]);
+  assert.equal(migrationIndexManifest(migrations).length, 8);
+
+  assert.match(
+    verify,
+    /expected_indexes\s*\(\s*schema_name\s*,\s*table_name\s*,\s*index_name\s*,\s*column_names\s*,\s*expected_indoptions\s*,\s*access_method\s*,\s*expected_unique\s*,\s*expected_predicate\s*\)/i,
+  );
+  assert.deepEqual(verifyIndexManifest(verify), migrationIndexManifest(migrations));
+  assertIndexSortComparison(verify);
+  assert.throws(
+    () => assertIndexSortComparison(verify.replace(
+      /is\s+distinct\s+from\s+expected\.expected_indoptions/i,
+      "is distinct from expected.expected_indoptions and false",
+    )),
+    /disabled/,
+  );
+  assert.match(verify, /pg_am[\s\S]*indisunique[\s\S]*pg_get_expr\s*\(\s*index_meta\.indpred/i);
+});
+
+test("verification constraint manifest covers every migration constraint", async () => {
+  const [migrations, verify] = await Promise.all([
+    readBillingMigrations(),
+    readDrillSql("verify.sql"),
+  ]);
+  const manifest = verifyConstraintManifest(verify);
+  const migrationShape = migrationConstraintShape(migrations);
+  const explicitNames = migrationExplicitConstraintNames(migrations);
+  const expectedPerTable = new Map<string, number>([
+    ["billing_plans", 3], ["billing_products", 9], ["billing_plan_entitlements", 5],
+    ["billing_orders", 17], ["billing_payment_intents", 13], ["billing_payments", 9],
+    ["billing_subscriptions", 8], ["billing_user_entitlements", 7], ["billing_usage_quotas", 10],
+    ["billing_credit_accounts", 7], ["billing_usage_records", 10], ["billing_usage_continuations", 7],
+    ["billing_credit_ledger", 8], ["billing_webhook_events", 10], ["billing_refund_requests", 8],
+    ["billing_refunds", 12], ["billing_invoice_requests", 7], ["billing_admins", 4],
+    ["billing_admin_audit_logs", 3], ["billing_rate_limits", 4], ["billing_feature_usage_costs", 5],
+  ]);
+  for (const [table, expectedCount] of expectedPerTable) {
+    assert.equal(
+      migrationShape.filter((constraint) => constraint.startsWith(`${table}.`)).length,
+      expectedCount,
+      `migration constraint parser mismatch for ${table}`,
+    );
+    for (const type of ["c", "f", "p", "u"]) {
+      assert.equal(
+        manifest.filter(({ identity }) =>
+          identity.startsWith(`public.${table}.`) && identity.endsWith(`.${type}`)).length,
+        migrationShape.filter((constraint) => constraint === `${table}.${type}`).length,
+        `constraint type count mismatch for ${table}.${type}`,
+      );
+    }
+  }
+  assert.equal(migrationShape.length, 166);
+  assert.deepEqual(
+    manifest.filter(({ name }) => name !== null).map(({ table, name }) => `${table}.${name}`).sort(),
+    explicitNames,
+    "only migration-explicit constraint names may be enforced",
+  );
+
+  assert.match(
+    verify,
+    /expected_constraints\s*\(\s*schema_name\s*,\s*table_name\s*,\s*constraint_name\s*,\s*constraint_type\s*,\s*expected_definition\s*\)/i,
+  );
+  assert.equal(manifest.length, 166);
+  assert.equal(
+    new Set(manifest.map(({ table, type, definition }) => `${table}.${type}.${definition}`)).size,
+    166,
+    "constraint semantic signatures must form an exact multiset",
+  );
+  assert.ok(manifest.every(({ definition }) => definition.length >= 12));
+  for (const { identity, definition } of manifest.filter(({ identity }) => identity.endsWith(".c"))) {
+    assert.match(
+      definition,
+      /(?:>=|<=|<>|=|>|<|\bNULL\b|\bNOT\b|jsonb_typeof|\bANY\b)/,
+      `CHECK pattern lacks an operator or Boolean semantic: ${identity}`,
+    );
+  }
+  for (const { identity, definition } of manifest.filter(({ type, definition }) =>
+    type === "c" && definition.includes("currency ="))) {
+    assert.match(definition, /currency = '(?:CNY|CREDITS)'::text/, `currency pattern is not semantic: ${identity}`);
+    assert.match(definition, /\$$/, `currency pattern is not end-anchored: ${identity}`);
+  }
+  for (const { identity, definition } of manifest.filter(({ definition }) =>
+    definition.includes("= ANY \\(ARRAY\\["))) {
+    assert.ok(definition.includes("= ANY \\(ARRAY\\["), `enum pattern is not semantic: ${identity}`);
+    assert.match(definition, /\$$/, `enum pattern is not end-anchored: ${identity}`);
+  }
+  assert.match(verify, /set\s+local\s+search_path\s*=\s*pg_catalog\s*,\s*public/i);
+  assert.match(verify, /constraint_meta\.conname[\s\S]*constraint_meta\.contype[\s\S]*constraint_meta\.convalidated[\s\S]*pg_get_constraintdef\s*\(\s*constraint_meta\.oid/i);
+  assert.match(verify, /constraint_matches[\s\S]*matched_expected_count[\s\S]*matched_actual_count/i);
+});
+
+test("constraint patterns reject semantic weakening and expansion", async () => {
+  const manifest = verifyConstraintManifest(await readDrillSql("verify.sql"));
+  const pattern = (table: string, marker: string) => {
+    const matches = manifest.filter((entry) =>
+      entry.table === table && entry.type === "c" && entry.definition.includes(marker));
+    assert.equal(matches.length, 1, `expected one ${table}.${marker} CHECK`);
+    return new RegExp(matches[0].definition, "i");
+  };
+
+  const currency = pattern("billing_orders", "currency");
+  assert.match("CHECK ((currency = 'CNY'::text))", currency);
+  assert.doesNotMatch("CHECK ((currency <> 'CNY'::text))", currency);
+  assert.doesNotMatch("CHECK (((currency = 'CNY'::text) OR (currency = 'USD'::text)))", currency);
+
+  const status = pattern("billing_orders", "PENDING");
+  assert.match(
+    "CHECK ((status = ANY (ARRAY['PENDING'::text, 'PAID'::text, 'FAILED'::text, 'CANCELLED'::text, 'CLOSED'::text, 'REFUNDING'::text, 'REFUNDED'::text])))",
+    status,
+  );
+  assert.doesNotMatch(
+    "CHECK ((status = ANY (ARRAY['PENDING'::text, 'PAID'::text, 'FAILED'::text, 'CANCELLED'::text, 'CLOSED'::text, 'REFUNDING'::text, 'REFUNDED'::text, 'FREE'::text])))",
+    status,
+  );
+
+  for (const [table, marker, valid, weakened] of [
+    ["billing_orders", "amount_minor", "CHECK ((amount_minor >= 0))", "CHECK (((amount_minor >= 0) OR true))"],
+    ["billing_refunds", "refunded_amount_minor", "CHECK ((refunded_amount_minor > 0))", "CHECK ((refunded_amount_minor >= 0))"],
+    ["billing_credit_accounts", "available_balance", "CHECK ((available_balance >= 0))", "CHECK ((available_balance >= '-1'::integer))"],
+  ] as const) {
+    const constraint = pattern(table, marker);
+    assert.match(valid, constraint);
+    assert.doesNotMatch(weakened, constraint);
+  }
+});
+
 test("verification SQL enforces structural, security, catalog, and runtime behavior gates", async () => {
   const verify = await readDrillSql("verify.sql");
 
@@ -394,10 +671,6 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
     assert.ok(constraintCounts);
     assert.deepEqual(constraintCounts.slice(1).map(Number), expectedCounts);
   }
-  assert.match(verify, /expected_indexes\s*\(\s*table_name\s*,\s*index_name\s*,\s*column_names\s*,\s*expected_predicate\s*\)/i);
-  assert.match(verify, /pg_index\s+as\s+index_meta[\s\S]*index_meta\.indrelid[\s\S]*index_meta\.indisvalid[\s\S]*index_meta\.indkey[\s\S]*with\s+ordinality[\s\S]*pg_get_expr\s*\(\s*index_meta\.indpred/i);
-  assert.match(verify, /expected_constraints\s*\(\s*table_name\s*,\s*constraint_name\s*,\s*constraint_type\s*,\s*expected_definition\s*\)/i);
-  assert.match(verify, /pg_get_constraintdef[\s\S]*convalidated/i);
   for (const triggerFunction of [
     "billing_set_updated_at",
     "billing_protect_order_snapshot",
