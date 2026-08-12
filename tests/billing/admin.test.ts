@@ -14,8 +14,10 @@ import {
   grantUserSubscription,
   reviewRefundRequest,
   upsertBillingPlan,
+  upsertBillingProduct,
   type BillingAdminRepository,
 } from "../../lib/billing/admin";
+import type { BillingConfig } from "../../lib/billing/config";
 
 type QueryResponse = { data: unknown; error: { message: string } | null };
 
@@ -64,6 +66,25 @@ const admin = {
   email: "admin@example.test",
   isAdmin: true as const,
   role: "BILLING_ADMIN" as const,
+};
+
+const enabledBillingConfig: BillingConfig = {
+  featureEnabled: true,
+  paymentMode: "mock",
+  testUserIds: ["admin-1"],
+  legal: {
+    operatorName: "",
+    operatorCreditCode: "",
+    contactEmail: "",
+  },
+  wechatConfigured: false,
+  alipayConfigured: false,
+  isProduction: false,
+};
+
+const disabledBillingConfig: BillingConfig = {
+  ...enabledBillingConfig,
+  featureEnabled: false,
 };
 
 const reconciliationReport: InternalReconciliationReport = {
@@ -467,6 +488,195 @@ test("admin catalog accepts a semester billing period and exposes it in the writ
     fs.readFile("app/admin/billing/AdminBillingActions.tsx", "utf8"),
   );
   assert.match(source, /options: \["FREE", "MONTHLY", "YEARLY", "SEMESTER"\]/);
+});
+
+test("admin cannot activate any product while the billing feature is disabled", async () => {
+  let written = false;
+
+  await assert.rejects(
+    () =>
+      upsertBillingProduct(
+        admin,
+        {
+          sku: "PRO_SEMESTER",
+          name: "Pro Semester",
+          productType: "SUBSCRIPTION",
+          priceMinor: 7_900,
+          durationDays: 150,
+          creditGrant: 0,
+          entitlementVersion: "pro-semester-v1",
+          isActive: true,
+          reason: "attempt early activation",
+          idempotencyKey: "activate-semester-early",
+        },
+        repository({
+          upsertProduct: async () => {
+            written = true;
+            return {
+              status: "APPLIED",
+              auditId: "audit-activation",
+              resourceId: "product-semester",
+            };
+          },
+        }),
+        disabledBillingConfig,
+      ),
+    (error: BillingError) => error.code === "BILLING_FEATURE_DISABLED",
+  );
+
+  assert.equal(written, false);
+});
+
+test("admin cannot activate products outside the approved fast-launch catalog", async () => {
+  for (const sku of ["PRO_MONTHLY", "PRO_YEARLY", "FREE"]) {
+    let written = false;
+
+    await assert.rejects(
+      () =>
+        upsertBillingProduct(
+          admin,
+          {
+            sku,
+            name: sku,
+            productType: "SUBSCRIPTION",
+            priceMinor: 1_990,
+            durationDays: 30,
+            creditGrant: 0,
+            entitlementVersion: "not-launch-v1",
+            isActive: true,
+            reason: "attempt unapproved activation",
+            idempotencyKey: `activate-${sku.toLowerCase()}`,
+          },
+          repository({
+            upsertProduct: async () => {
+              written = true;
+              return {
+                status: "APPLIED",
+                auditId: "audit-activation",
+                resourceId: "product-not-approved",
+              };
+            },
+          }),
+          enabledBillingConfig,
+        ),
+      (error: BillingError) => error.code === "PRODUCT_ACTIVATION_NOT_APPROVED",
+    );
+
+    assert.equal(written, false);
+  }
+});
+
+test("approved fast-launch products may be activated only through the admin service gate", async () => {
+  for (const sku of ["PRO_SEMESTER", "CREDIT_PACK_100"]) {
+    let received: Record<string, unknown> | undefined;
+
+    await upsertBillingProduct(
+      admin,
+      {
+        sku,
+        name: sku,
+        productType: sku === "PRO_SEMESTER" ? "SUBSCRIPTION" : "CREDIT_PACK",
+        planId: sku === "PRO_SEMESTER" ? "plan-semester" : null,
+        priceMinor: sku === "PRO_SEMESTER" ? 7_900 : 990,
+        durationDays: sku === "PRO_SEMESTER" ? 150 : null,
+        creditGrant: sku === "PRO_SEMESTER" ? 0 : 100,
+        entitlementVersion:
+          sku === "PRO_SEMESTER" ? "pro-semester-v1" : "credit-v1",
+        isActive: true,
+        reason: "approved activation",
+        idempotencyKey: `activate-${sku.toLowerCase()}`,
+      },
+      repository({
+        upsertProduct: async (input) => {
+          received = input;
+          return {
+            status: "APPLIED",
+            auditId: "audit-activation",
+            resourceId: `product-${sku.toLowerCase()}`,
+          };
+        },
+      }),
+      enabledBillingConfig,
+    );
+
+    assert.equal(received?.p_sku, sku);
+    assert.equal(received?.p_is_active, true);
+  }
+});
+
+test("admin cannot activate an approved SKU with drifted price or benefits", async () => {
+  for (const product of [
+    {
+      sku: "PRO_SEMESTER",
+      name: "Pro Semester",
+      planId: "plan-semester",
+      productType: "SUBSCRIPTION",
+      priceMinor: 1,
+      durationDays: 150,
+      creditGrant: 0,
+      entitlementVersion: "pro-semester-v1",
+    },
+    {
+      sku: "CREDIT_PACK_100",
+      name: "Credit Pack 100",
+      planId: null,
+      productType: "CREDIT_PACK",
+      priceMinor: 990,
+      durationDays: null,
+      creditGrant: 101,
+      entitlementVersion: "credit-v1",
+    },
+  ]) {
+    await assert.rejects(
+      () =>
+        upsertBillingProduct(
+          admin,
+          {
+            ...product,
+            isActive: true,
+            reason: "attempt drifted activation",
+            idempotencyKey: `activate-drifted-${product.sku.toLowerCase()}`,
+          },
+          repository(),
+          enabledBillingConfig,
+        ),
+      (error: BillingError) => error.code === "PRODUCT_ACTIVATION_CONFIG_MISMATCH",
+    );
+  }
+});
+
+test("inactive catalog maintenance remains allowed for non-launch products", async () => {
+  let received: Record<string, unknown> | undefined;
+
+  await upsertBillingProduct(
+    admin,
+    {
+      sku: "PRO_MONTHLY",
+      name: "Pro Monthly",
+      productType: "SUBSCRIPTION",
+      priceMinor: 1_990,
+      durationDays: 30,
+      creditGrant: 0,
+      entitlementVersion: "pro-v1",
+      isActive: false,
+      reason: "keep monthly disabled",
+      idempotencyKey: "maintain-monthly-disabled",
+    },
+    repository({
+      upsertProduct: async (input) => {
+        received = input;
+        return {
+          status: "APPLIED",
+          auditId: "audit-monthly",
+          resourceId: "product-monthly",
+        };
+      },
+    }),
+    disabledBillingConfig,
+  );
+
+  assert.equal(received?.p_sku, "PRO_MONTHLY");
+  assert.equal(received?.p_is_active, false);
 });
 
 test("refund review ignores client amounts and delegates only request id and decision", async () => {

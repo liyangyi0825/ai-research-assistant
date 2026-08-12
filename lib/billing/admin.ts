@@ -1,6 +1,7 @@
 import { getSupabaseAdminClient } from "../supabase";
 import { requireBillingAdmin, type BillingAdmin } from "./auth";
 import { BillingError } from "./errors";
+import { getBillingConfig, type BillingConfig } from "./config";
 
 export type AdminMutationResult = {
   status: "APPLIED" | "ALREADY_APPLIED";
@@ -330,8 +331,64 @@ export async function upsertBillingPlan(admin: BillingAdmin, input: Record<strin
   });
 }
 
+const FAST_LAUNCH_PRODUCTS = {
+  PRO_SEMESTER: {
+    productType: "SUBSCRIPTION",
+    priceMinor: 7_900,
+    durationDays: 150,
+    creditGrant: 0,
+    entitlementVersion: "pro-semester-v1",
+  },
+  CREDIT_PACK_100: {
+    productType: "CREDIT_PACK",
+    priceMinor: 990,
+    durationDays: null,
+    creditGrant: 100,
+    entitlementVersion: "credit-v1",
+  },
+} as const;
+
+function assertFastLaunchActivation(
+  input: Record<string, unknown>,
+  config: BillingConfig,
+): void {
+  if (!config.featureEnabled) {
+    throw new BillingError(
+      "BILLING_FEATURE_DISABLED",
+      "Billing must be enabled before a product can be activated.",
+      409,
+    );
+  }
+
+  const sku = String(input.sku ?? "");
+  const approved = FAST_LAUNCH_PRODUCTS[sku as keyof typeof FAST_LAUNCH_PRODUCTS];
+  if (!approved) {
+    throw new BillingError(
+      "PRODUCT_ACTIVATION_NOT_APPROVED",
+      "This product is not approved for the fast-launch catalog.",
+      409,
+    );
+  }
+
+  if (
+    input.productType !== approved.productType ||
+    input.priceMinor !== approved.priceMinor ||
+    (input.durationDays ?? null) !== approved.durationDays ||
+    input.creditGrant !== approved.creditGrant ||
+    input.entitlementVersion !== approved.entitlementVersion ||
+    (sku === "PRO_SEMESTER" && !optionalString(input.planId)) ||
+    (sku === "CREDIT_PACK_100" && optionalString(input.planId) !== null)
+  ) {
+    throw new BillingError(
+      "PRODUCT_ACTIVATION_CONFIG_MISMATCH",
+      "The product configuration does not match the approved fast-launch catalog.",
+      409,
+    );
+  }
+}
+
 export async function upsertBillingProduct(admin: BillingAdmin, input: Record<string, unknown>,
-  repository = getBillingAdminRepository()): Promise<AdminMutationResult> {
+  repository = getBillingAdminRepository(), config?: BillingConfig): Promise<AdminMutationResult> {
   assertWriter(admin);
   if (!Number.isSafeInteger(input.priceMinor) || Number(input.priceMinor) < 0) {
     throw new BillingError("INVALID_ADMIN_INPUT", "Price must be a non-negative integer.", 400);
@@ -345,6 +402,9 @@ export async function upsertBillingProduct(admin: BillingAdmin, input: Record<st
       (!Number.isSafeInteger(input.durationDays) || Number(input.durationDays) <= 0))
   ) {
     throw new BillingError("INVALID_ADMIN_INPUT", "Invalid product configuration.", 400);
+  }
+  if (input.isActive) {
+    assertFastLaunchActivation(input, config ?? getBillingConfig());
   }
   return repository.upsertProduct({
     p_admin_user_id: admin.id,

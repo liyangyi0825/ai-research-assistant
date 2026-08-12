@@ -924,6 +924,16 @@ test("catalog seed safely adds the semester period and provisions only inactive 
   );
   assert.ok(products);
   assert.doesNotMatch(products[0], /'free'/);
+  assert.doesNotMatch(products[0], /'pro_yearly'/);
+  assert.equal(
+    (products[0].match(/\('(?:pro_monthly|pro_semester|credit_pack_100)',/g) ?? [])
+      .length,
+    3,
+  );
+  assert.equal(
+    (products[0].match(/, false\)/g) ?? []).length,
+    3,
+  );
   assert.match(seed, /on conflict \(code\) do update/);
   assert.match(seed, /on conflict \(plan_id, feature_key, entitlement_version\) do update/);
   assert.match(seed, /on conflict \(sku\) do update/);
