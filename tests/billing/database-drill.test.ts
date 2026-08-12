@@ -337,6 +337,11 @@ function migrationExplicitConstraintNames(sql: string): string[] {
   )].map((match) => `${match[1]}.${match[2]}`.toLowerCase()).sort();
 }
 
+const indexAttributeCountGates = [
+  ["key attribute count", "index_meta.indnkeyatts is distinct from cardinality(expected.column_names)"],
+  ["total attribute count", "index_meta.indnatts is distinct from cardinality(expected.column_names)"],
+] as const;
+
 const indexVerificationGates = [
   ["schema binding", "index_class.relnamespace = expected.schema_name::regnamespace"],
   ["table binding", "index_meta.indrelid is distinct from to_regclass(format('%I.%I', expected.schema_name, expected.table_name))"],
@@ -348,6 +353,7 @@ const indexVerificationGates = [
   ["ordered columns", ") is distinct from expected.column_names"],
   ["predicate", "is distinct from expected.expected_predicate"],
   ["sort options", ") is distinct from expected.expected_indoptions"],
+  ...indexAttributeCountGates,
 ] as const;
 
 function assertIndexVerificationGates(sql: string): void {
@@ -418,132 +424,156 @@ function assertConstraintInventoryMatchesMigrations(migrations: string, verify: 
   );
 }
 
+function replaceUnique(source: string, target: string, replacement: string): string {
+  const first = source.indexOf(target);
+  assert.notEqual(first, -1, `missing mutation leaf: ${target}`);
+  assert.equal(source.indexOf(target, first + target.length), -1, `ambiguous mutation leaf: ${target}`);
+  return `${source.slice(0, first)}${replacement}${source.slice(first + target.length)}`;
+}
+
+function deleteBooleanLeaf(checkDefinition: string, leaf: string): string {
+  assert.equal(checkDefinition.split(leaf).length, 2, `expected one deletion leaf: ${leaf}`);
+  for (const [target, replacement] of [
+    [`${leaf} AND `, ""],
+    [` AND ${leaf}`, ""],
+    [`${leaf} OR `, ""],
+    [` OR ${leaf}`, ""],
+  ] as const) {
+    if (checkDefinition.includes(target)) return replaceUnique(checkDefinition, target, replacement);
+  }
+  return replaceUnique(checkDefinition, leaf, "(true)");
+}
+
+function expandBooleanLeaf(checkDefinition: string, leaf: string): string {
+  return replaceUnique(checkDefinition, leaf, `(${leaf} OR true)`);
+}
+
 const wideConstraintSemantics = [
   {
     table: "billing_products",
-    marker: "duration_days.*NOT NULL",
+    marker: "duration_days IS NOT NULL",
     migration: /product_type\s*=\s*'SUBSCRIPTION'[\s\S]*plan_id\s+is\s+not\s+null[\s\S]*duration_days\s+is\s+not\s+null[\s\S]*or[\s\S]*product_type\s*=\s*'CREDIT_PACK'/i,
     valid: "CHECK ((((product_type = 'SUBSCRIPTION'::text) AND (plan_id IS NOT NULL) AND (duration_days IS NOT NULL)) OR ((product_type = 'CREDIT_PACK'::text) AND (plan_id IS NULL) AND (credit_grant > 0))))",
-    invalid: "CHECK (((((product_type = 'SUBSCRIPTION'::text) AND (plan_id IS NOT NULL) AND (duration_days IS NOT NULL)) OR ((product_type = 'CREDIT_PACK'::text) AND (plan_id IS NULL) AND (credit_grant > 0))) OR true))",
+    mutationLeaf: "(plan_id IS NOT NULL)",
   },
   {
     table: "billing_orders",
     marker: "jsonb_typeof",
     migration: /jsonb_typeof\s*\(snapshot_entitlements\)\s*=\s*'array'/i,
     valid: "CHECK ((jsonb_typeof(snapshot_entitlements) = 'array'::text))",
-    invalid: "CHECK (((jsonb_typeof(snapshot_entitlements) = 'array'::text) OR true))",
+    mutationLeaf: "(jsonb_typeof(snapshot_entitlements) = 'array'::text)",
   },
   {
     table: "billing_orders",
-    marker: "expires_at",
+    marker: "expires_at > created_at",
     migration: /check\s*\(expires_at\s*>\s*created_at\)/i,
     valid: "CHECK ((expires_at > created_at))",
-    invalid: "CHECK ((expires_at < created_at))",
+    mutationLeaf: "(expires_at > created_at)",
   },
   {
     table: "billing_orders",
-    marker: "paid_at.*NOT NULL",
+    marker: "paid_at IS NOT NULL",
     migration: /status\s+not\s+in\s*\('PAID',\s*'REFUNDING',\s*'REFUNDED'\)[\s\S]*or\s+paid_at\s+is\s+not\s+null/i,
     valid: "CHECK (((status <> ALL (ARRAY['PAID'::text, 'REFUNDING'::text, 'REFUNDED'::text])) OR (paid_at IS NOT NULL)))",
-    invalid: "CHECK ((((status <> ALL (ARRAY['PAID'::text, 'REFUNDING'::text, 'REFUNDED'::text])) OR (paid_at IS NOT NULL)) OR true))",
+    mutationLeaf: "(paid_at IS NOT NULL)",
   },
   {
     table: "billing_orders",
-    marker: "snapshot_credit_grant.*> 0",
+    marker: "snapshot_credit_grant > 0",
     migration: /snapshot_product_type\s*=\s*'SUBSCRIPTION'[\s\S]*snapshot_duration_days\s+is\s+not\s+null[\s\S]*or[\s\S]*snapshot_product_type\s*=\s*'CREDIT_PACK'/i,
     valid: "CHECK ((((snapshot_product_type = 'SUBSCRIPTION'::text) AND (snapshot_plan_id IS NOT NULL) AND (snapshot_duration_days IS NOT NULL)) OR ((snapshot_product_type = 'CREDIT_PACK'::text) AND (snapshot_plan_id IS NULL) AND (snapshot_credit_grant > 0))))",
-    invalid: "CHECK (((((snapshot_product_type = 'SUBSCRIPTION'::text) AND (snapshot_plan_id IS NOT NULL) AND (snapshot_duration_days IS NOT NULL)) OR ((snapshot_product_type = 'CREDIT_PACK'::text) AND (snapshot_plan_id IS NULL) AND (snapshot_credit_grant > 0))) OR true))",
+    mutationLeaf: "(snapshot_plan_id IS NOT NULL)",
   },
   {
     table: "billing_payment_intents",
-    marker: "last_error_code.*NOT NULL",
+    marker: "claim_expires_at IS NOT NULL",
     migration: /status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
     valid: "CHECK ((((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NOT NULL) AND (payment_status IS NOT NULL) AND (last_error_code IS NULL)) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL))))",
-    invalid: "CHECK (((((status = 'CREATING'::text) AND (claim_token IS NOT NULL)) OR ((status = 'CREATED'::text) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NOT NULL) AND (payment_status IS NOT NULL)) OR ((status = 'FAILED'::text) AND (last_error_code IS NOT NULL))) OR true))",
+    mutationLeaf: "(claim_expires_at IS NOT NULL)",
   },
   {
     table: "billing_subscriptions",
     marker: "auto_renew",
     migration: /auto_renew\s+boolean[\s\S]*check\s*\(auto_renew\s*=\s*false\)/i,
     valid: "CHECK ((auto_renew = false))",
-    invalid: "CHECK ((auto_renew = true))",
+    mutationLeaf: "(auto_renew = false)",
   },
   {
     table: "billing_subscriptions",
-    marker: "ends_at",
+    marker: "ends_at > starts_at",
     migration: /check\s*\(ends_at\s*>\s*starts_at\)/i,
     valid: "CHECK ((ends_at > starts_at))",
-    invalid: "CHECK ((ends_at < starts_at))",
+    mutationLeaf: "(ends_at > starts_at)",
   },
   {
     table: "billing_user_entitlements",
-    marker: "valid_until",
+    marker: "valid_until IS NULL",
     migration: /valid_until\s+is\s+null\s+or\s+valid_until\s*>\s*valid_from/i,
     valid: "CHECK (((valid_until IS NULL) OR (valid_until > valid_from)))",
-    invalid: "CHECK ((((valid_until IS NULL) OR (valid_until > valid_from)) OR true))",
+    mutationLeaf: "(valid_until > valid_from)",
   },
   {
     table: "billing_usage_quotas",
-    marker: "period_end",
+    marker: "period_end > period_start",
     migration: /check\s*\(period_end\s*>\s*period_start\)/i,
     valid: "CHECK ((period_end > period_start))",
-    invalid: "CHECK ((period_end < period_start))",
+    mutationLeaf: "(period_end > period_start)",
   },
   {
     table: "billing_usage_quotas",
-    marker: "reserved_units.*[+]",
+    marker: "reserved_units \\+ used_units",
     migration: /reserved_units\s*\+\s*used_units\s*<=\s*quota_limit/i,
     valid: "CHECK (((reserved_units + used_units) <= quota_limit))",
-    invalid: "CHECK (((reserved_units + used_units) < quota_limit))",
+    mutationLeaf: "((reserved_units + used_units) <= quota_limit)",
   },
   {
     table: "billing_usage_records",
-    marker: "quota_units.*> 0.*credit_amount",
+    marker: "quota_units > 0",
     migration: /quota_units\s*>\s*0\s+or\s+credit_amount\s*>\s*0/i,
     valid: "CHECK (((quota_units > 0) OR (credit_amount > 0)))",
-    invalid: "CHECK (((quota_units >= 0) OR (credit_amount >= 0)))",
+    mutationLeaf: "(quota_units > 0)",
   },
   {
     table: "billing_usage_continuations",
     marker: "0-9a-f",
     migration: /request_hash\s+is\s+null\s+or\s+request_hash\s*~\s*'\^\[0-9a-f\]\{64\}\$'/i,
     valid: "CHECK (((request_hash IS NULL) OR (request_hash ~ '^[0-9a-f]{64}$'::text)))",
-    invalid: "CHECK ((((request_hash IS NULL) OR (request_hash ~ '^[0-9a-f]{64}$'::text)) OR true))",
+    mutationLeaf: "(request_hash ~ '^[0-9a-f]{64}$'::text)",
   },
   {
     table: "billing_usage_continuations",
-    marker: "completed_at.*NOT NULL",
+    marker: "completed_at IS NOT NULL",
     migration: /status\s*=\s*'AVAILABLE'[\s\S]*claim_token\s+is\s+null[\s\S]*status\s*=\s*'CLAIMED'[\s\S]*request_hash\s+is\s+not\s+null[\s\S]*status\s*=\s*'COMPLETED'[\s\S]*completed_at\s+is\s+not\s+null/i,
-    valid: "CHECK ((((status = 'AVAILABLE'::text) AND (claim_token IS NULL) AND (lease_expires_at IS NULL)) OR ((status = 'CLAIMED'::text) AND (request_hash IS NOT NULL)) OR ((status = 'COMPLETED'::text) AND (completed_at IS NOT NULL))))",
-    invalid: "CHECK (((((status = 'AVAILABLE'::text) AND (claim_token IS NULL) AND (lease_expires_at IS NULL)) OR ((status = 'CLAIMED'::text) AND (request_hash IS NOT NULL)) OR ((status = 'COMPLETED'::text) AND (completed_at IS NOT NULL))) OR true))",
+    valid: "CHECK ((((status = 'AVAILABLE'::text) AND (claim_token IS NULL) AND (lease_expires_at IS NULL)) OR ((status = 'CLAIMED'::text) AND (claim_token IS NOT NULL) AND (lease_expires_at IS NOT NULL) AND (request_hash IS NOT NULL)) OR ((status = 'COMPLETED'::text) AND (claim_token IS NULL) AND (lease_expires_at IS NULL) AND (request_hash IS NOT NULL) AND (completed_at IS NOT NULL))))",
+    mutationLeaf: "(lease_expires_at IS NOT NULL)",
   },
   {
     table: "billing_webhook_events",
-    marker: "error_code.*NOT NULL",
+    marker: "error_code",
     migration: /status\s*<>\s*'FAILED'[\s\S]*or\s+nullif\s*\(btrim\s*\(error_code\)/i,
     valid: "CHECK (((status <> 'FAILED'::text) OR (NULLIF(btrim(error_code), ''::text) IS NOT NULL)))",
-    invalid: "CHECK ((((status <> 'FAILED'::text) OR (NULLIF(btrim(error_code), ''::text) IS NOT NULL)) OR true))",
+    mutationLeaf: "(NULLIF(btrim(error_code), ''::text) IS NOT NULL)",
   },
   {
     table: "billing_webhook_events",
-    marker: "signature_valid.*IS TRUE",
+    marker: "signature_valid IS TRUE",
     migration: /status\s+in\s*\('RECEIVED',\s*'PROCESSING',\s*'PROCESSED'\)[\s\S]*signature_valid\s+is\s+true[\s\S]*status\s*=\s*'FAILED'[\s\S]*order_number\s+is\s+null/i,
     valid: "CHECK ((((status = ANY (ARRAY['RECEIVED'::text, 'PROCESSING'::text, 'PROCESSED'::text])) AND (signature_valid IS TRUE) AND (order_number IS NOT NULL) AND (provider_transaction_id IS NOT NULL) AND (request_idempotency_key IS NOT NULL) AND (amount_minor IS NOT NULL) AND (currency IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((status = 'FAILED'::text) AND (((signature_valid IS TRUE) AND (order_number IS NOT NULL) AND (provider_transaction_id IS NOT NULL) AND (request_idempotency_key IS NOT NULL) AND (amount_minor IS NOT NULL) AND (currency IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((order_number IS NULL) AND (provider_transaction_id IS NULL) AND (request_idempotency_key IS NULL) AND (amount_minor IS NULL) AND (currency IS NULL) AND (paid_at IS NULL))))))",
-    invalid: "CHECK (((((status = ANY (ARRAY['RECEIVED'::text, 'PROCESSING'::text, 'PROCESSED'::text])) AND (signature_valid IS TRUE) AND (order_number IS NOT NULL) AND (provider_transaction_id IS NOT NULL) AND (request_idempotency_key IS NOT NULL) AND (amount_minor IS NOT NULL) AND (currency IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((status = 'FAILED'::text) AND ((order_number IS NULL) AND (provider_transaction_id IS NULL) AND (request_idempotency_key IS NULL) AND (amount_minor IS NULL) AND (currency IS NULL) AND (paid_at IS NULL)))) OR true))",
+    mutationLeaf: "(request_idempotency_key IS NULL)",
   },
   {
     table: "billing_feature_usage_costs",
-    marker: "quota_units.*> 0.*credit_amount",
+    marker: "quota_units > 0",
     migration: /quota_units\s*>\s*0\s+or\s+credit_amount\s*>\s*0/i,
     valid: "CHECK (((quota_units > 0) OR (credit_amount > 0)))",
-    invalid: "CHECK (((quota_units >= 0) OR (credit_amount >= 0)))",
+    mutationLeaf: "(quota_units > 0)",
   },
   {
     table: "billing_feature_usage_costs",
     marker: "allow_credit_fallback",
     migration: /not\s+allow_credit_fallback\s+or\s+credit_amount\s*>\s*0/i,
     valid: "CHECK (((NOT allow_credit_fallback) OR (credit_amount > 0)))",
-    invalid: "CHECK (((NOT allow_credit_fallback) OR (credit_amount >= 0)))",
+    mutationLeaf: "(NOT allow_credit_fallback)",
   },
 ] as const;
 
@@ -563,7 +593,16 @@ function assertConstraintSemantics(migrations: string, verify: string): void {
     matchedWideDefinitions.add(`${matches[0].table}.${definition}`);
     const pattern = new RegExp(definition, "i");
     assert.match(expected.valid, pattern, `valid deparsed CHECK rejected: ${expected.table}.${expected.marker}`);
-    assert.doesNotMatch(expected.invalid, pattern, `weakened CHECK accepted: ${expected.table}.${expected.marker}`);
+    assert.doesNotMatch(
+      deleteBooleanLeaf(expected.valid, expected.mutationLeaf),
+      pattern,
+      `deleted CHECK leaf accepted: ${expected.table}.${expected.marker}`,
+    );
+    assert.doesNotMatch(
+      expandBooleanLeaf(expected.valid, expected.mutationLeaf),
+      pattern,
+      `expanded CHECK leaf accepted: ${expected.table}.${expected.marker}`,
+    );
   }
   assert.equal(wideConstraintSemantics.length, 18);
   assert.equal(matchedWideDefinitions.size, 18, "wide CHECK mutation table must cover 18 distinct definitions");
@@ -602,6 +641,13 @@ function assertConstraintSemantics(migrations: string, verify: string): void {
     assert.match(expected.valid, pattern);
     assert.doesNotMatch(expected.invalid, pattern);
   }
+}
+
+function wideConstraintPattern(verify: string, table: string, marker: string): RegExp {
+  const matches = verifyConstraintManifest(verify).filter((entry) =>
+    entry.table === table && entry.type === "c" && entry.definition.includes(marker));
+  assert.equal(matches.length, 1, `expected one wide CHECK: ${table}.${marker}`);
+  return new RegExp(matches[0].definition, "i");
 }
 
 function databaseUrl(parts: { username?: string; host: string; protocol?: string } ): string {
@@ -876,6 +922,21 @@ test("verification index manifest preserves every migration index definition", a
   assert.match(verify, /pg_am[\s\S]*indisunique[\s\S]*pg_get_expr\s*\(\s*index_meta\.indpred/i);
 });
 
+for (const [name, comparison] of indexAttributeCountGates) {
+  test(`verification index ${name} participates in comparison mutations`, async () => {
+    const verify = await readDrillSql("verify.sql");
+    assert.ok(verify.includes(comparison), `missing index ${name} mutation target`);
+    assert.throws(
+      () => assertIndexVerificationGates(verify.replace(comparison, `${comparison} and false`)),
+      new RegExp(`index ${name} comparison is disabled`, "i"),
+    );
+    assert.throws(
+      () => assertIndexVerificationGates(verify.replace(comparison, "true")),
+      new RegExp(`missing index ${name} comparison`, "i"),
+    );
+  });
+}
+
 test("verification constraint manifest covers every migration constraint", async () => {
   const [migrations, verify] = await Promise.all([
     readBillingMigrations(),
@@ -937,11 +998,33 @@ test("constraint semantic mutation table covers every broad CHECK and every cons
   ]);
   assertConstraintSemantics(migrations, verify);
 
-  const original = "^CHECK .*expires_at.*>.*created_at\\)+$";
-  assert.ok(verify.includes(original), "missing semantic regex mutation target");
+  const expiresAt = verifyConstraintManifest(verify).find(({ table, definition }) =>
+    table === "billing_orders" && definition.includes("expires_at > created_at"));
+  assert.ok(expiresAt, "missing semantic regex mutation target");
+  const original = `'${expiresAt.definition.replaceAll("'", "''")}'`;
   assert.throws(
-    () => assertConstraintSemantics(migrations, verify.replace(original, "^CHECK .*$")),
+    () => assertConstraintSemantics(migrations, replaceUnique(verify, original, "'^CHECK .*$'")),
     "weakened constraint regex escaped semantic checks",
+  );
+});
+
+test("product CHECK rejects OR true inside the subscription branch", async () => {
+  const verify = await readDrillSql("verify.sql");
+  const expected = wideConstraintSemantics.find(({ table }) => table === "billing_products");
+  assert.ok(expected);
+  assert.doesNotMatch(
+    expandBooleanLeaf(expected.valid, expected.mutationLeaf),
+    wideConstraintPattern(verify, expected.table, expected.marker),
+  );
+});
+
+test("payment-intent CHECK rejects deletion of claim expiry", async () => {
+  const verify = await readDrillSql("verify.sql");
+  const expected = wideConstraintSemantics.find(({ table }) => table === "billing_payment_intents");
+  assert.ok(expected);
+  assert.doesNotMatch(
+    deleteBooleanLeaf(expected.valid, expected.mutationLeaf),
+    wideConstraintPattern(verify, expected.table, expected.marker),
   );
 });
 

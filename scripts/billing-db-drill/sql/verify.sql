@@ -106,7 +106,7 @@ begin
       ('public', 'billing_products', null::text, 'c', '^CHECK \(\(currency = ''CNY''::text\)\)$'),
       ('public', 'billing_products', null::text, 'c', '^CHECK \(\(duration_days > 0\)\)$'),
       ('public', 'billing_products', null::text, 'c', '^CHECK \(\(credit_grant >= 0\)\)$'),
-      ('public', 'billing_products', null::text, 'c', '^CHECK .*product_type.*=.*SUBSCRIPTION.*plan_id.*NOT NULL.*duration_days.*NOT NULL.*product_type.*=.*CREDIT_PACK.*plan_id.*NULL.*credit_grant.*> 0\)+$'),
+      ('public', 'billing_products', null::text, 'c', '^CHECK \(\(\(\(product_type = ''SUBSCRIPTION''::text\) AND \(plan_id IS NOT NULL\) AND \(duration_days IS NOT NULL\)\) OR \(\(product_type = ''CREDIT_PACK''::text\) AND \(plan_id IS NULL\) AND \(credit_grant > 0\)\)\)\)$'),
 
       ('public', 'billing_plan_entitlements', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_plan_entitlements', null::text, 'f', '^FOREIGN KEY \(plan_id\) REFERENCES billing_plans\(id\) ON DELETE CASCADE$'),
@@ -126,11 +126,11 @@ begin
       ('public', 'billing_orders', null::text, 'c', '^CHECK \(\(snapshot_product_type = ANY \(ARRAY\[''SUBSCRIPTION''::text, ''CREDIT_PACK''::text\]\)\)\)$'),
       ('public', 'billing_orders', null::text, 'c', '^CHECK \(\(snapshot_duration_days > 0\)\)$'),
       ('public', 'billing_orders', null::text, 'c', '^CHECK \(\(snapshot_credit_grant >= 0\)\)$'),
-      ('public', 'billing_orders', null::text, 'c', '^CHECK .*jsonb_typeof.*snapshot_entitlements.*array.*::text\)+$'),
+      ('public', 'billing_orders', null::text, 'c', '^CHECK \(\(jsonb_typeof\(snapshot_entitlements\) = ''array''::text\)\)$'),
       ('public', 'billing_orders', null::text, 'c', '^CHECK \(\(refund_status = ANY \(ARRAY\[''NONE''::text, ''REQUESTED''::text, ''PARTIAL''::text, ''FULL''::text\]\)\)\)$'),
-      ('public', 'billing_orders', null::text, 'c', '^CHECK .*expires_at.*>.*created_at\)+$'),
-      ('public', 'billing_orders', null::text, 'c', '^CHECK .*status.*PAID.*REFUNDING.*REFUNDED.*paid_at.*NOT NULL\)+$'),
-      ('public', 'billing_orders', null::text, 'c', '^CHECK .*snapshot_product_type.*=.*SUBSCRIPTION.*snapshot_plan_id.*NOT NULL.*snapshot_duration_days.*NOT NULL.*snapshot_product_type.*=.*CREDIT_PACK.*snapshot_plan_id.*NULL.*snapshot_credit_grant.*> 0\)+$'),
+      ('public', 'billing_orders', null::text, 'c', '^CHECK \(\(expires_at > created_at\)\)$'),
+      ('public', 'billing_orders', null::text, 'c', '^CHECK \(\(\(status <> ALL \(ARRAY\[''PAID''::text, ''REFUNDING''::text, ''REFUNDED''::text\]\)\) OR \(paid_at IS NOT NULL\)\)\)$'),
+      ('public', 'billing_orders', null::text, 'c', '^CHECK \(\(\(\(snapshot_product_type = ''SUBSCRIPTION''::text\) AND \(snapshot_plan_id IS NOT NULL\) AND \(snapshot_duration_days IS NOT NULL\)\) OR \(\(snapshot_product_type = ''CREDIT_PACK''::text\) AND \(snapshot_plan_id IS NULL\) AND \(snapshot_credit_grant > 0\)\)\)\)$'),
 
       ('public', 'billing_payment_intents', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_payment_intents', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -144,7 +144,7 @@ begin
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(amount_minor >= 0\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(currency = ''CNY''::text\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(attempt_count > 0\)\)$'),
-      ('public', 'billing_payment_intents', null::text, 'c', '^CHECK .*status.*=.*CREATING.*claim_token.*NOT NULL.*status.*=.*CREATED.*provider_transaction_id.*NOT NULL.*payment_token.*NOT NULL.*payment_status.*NOT NULL.*status.*=.*FAILED.*last_error_code.*NOT NULL\)+$'),
+      ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\) OR \(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(payment_token IS NOT NULL\) AND \(payment_status IS NOT NULL\) AND \(last_error_code IS NULL\)\) OR \(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)$'),
 
       ('public', 'billing_payments', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_payments', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -162,8 +162,8 @@ begin
       ('public', 'billing_subscriptions', null::text, 'f', '^FOREIGN KEY \(source_order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
       ('public', 'billing_subscriptions', null::text, 'u', '^UNIQUE \(source_order_id\)$'),
       ('public', 'billing_subscriptions', null::text, 'c', '^CHECK \(\(status = ANY \(ARRAY\[''ACTIVE''::text, ''EXPIRED''::text, ''CANCELLED''::text\]\)\)\)$'),
-      ('public', 'billing_subscriptions', null::text, 'c', '^CHECK .*auto_renew.*=.*false\)+$'),
-      ('public', 'billing_subscriptions', null::text, 'c', '^CHECK .*ends_at.*>.*starts_at\)+$'),
+      ('public', 'billing_subscriptions', null::text, 'c', '^CHECK \(\(auto_renew = false\)\)$'),
+      ('public', 'billing_subscriptions', null::text, 'c', '^CHECK \(\(ends_at > starts_at\)\)$'),
 
       ('public', 'billing_user_entitlements', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_user_entitlements', null::text, 'f', '^FOREIGN KEY \(user_id\) REFERENCES auth.users\(id\) ON DELETE RESTRICT$'),
@@ -171,7 +171,7 @@ begin
       ('public', 'billing_user_entitlements', null::text, 'f', '^FOREIGN KEY \(source_order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
       ('public', 'billing_user_entitlements', null::text, 'u', '^UNIQUE \(user_id, feature_key, source_order_id\)$'),
       ('public', 'billing_user_entitlements', null::text, 'c', '^CHECK \(\(source_type = ANY \(ARRAY\[''PLAN''::text, ''ADMIN''::text\]\)\)\)$'),
-      ('public', 'billing_user_entitlements', null::text, 'c', '^CHECK .*valid_until.*NULL.*valid_until.*>.*valid_from\)+$'),
+      ('public', 'billing_user_entitlements', null::text, 'c', '^CHECK \(\(\(valid_until IS NULL\) OR \(valid_until > valid_from\)\)\)$'),
 
       ('public', 'billing_usage_quotas', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_usage_quotas', null::text, 'f', '^FOREIGN KEY \(user_id\) REFERENCES auth.users\(id\) ON DELETE RESTRICT$'),
@@ -181,8 +181,8 @@ begin
       ('public', 'billing_usage_quotas', null::text, 'c', '^CHECK \(\(quota_limit >= 0\)\)$'),
       ('public', 'billing_usage_quotas', null::text, 'c', '^CHECK \(\(reserved_units >= 0\)\)$'),
       ('public', 'billing_usage_quotas', null::text, 'c', '^CHECK \(\(used_units >= 0\)\)$'),
-      ('public', 'billing_usage_quotas', null::text, 'c', '^CHECK .*period_end.*>.*period_start\)+$'),
-      ('public', 'billing_usage_quotas', null::text, 'c', '^CHECK .*reserved_units.*[+].*used_units.*<=.*quota_limit\)+$'),
+      ('public', 'billing_usage_quotas', null::text, 'c', '^CHECK \(\(period_end > period_start\)\)$'),
+      ('public', 'billing_usage_quotas', null::text, 'c', '^CHECK \(\(\(reserved_units \+ used_units\) <= quota_limit\)\)$'),
 
       ('public', 'billing_credit_accounts', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_credit_accounts', null::text, 'f', '^FOREIGN KEY \(user_id\) REFERENCES auth.users\(id\) ON DELETE RESTRICT$'),
@@ -201,15 +201,15 @@ begin
       ('public', 'billing_usage_records', null::text, 'c', '^CHECK \(\(quota_units >= 0\)\)$'),
       ('public', 'billing_usage_records', null::text, 'c', '^CHECK \(\(credit_amount >= 0\)\)$'),
       ('public', 'billing_usage_records', null::text, 'c', '^CHECK \(\(currency = ''CREDITS''::text\)\)$'),
-      ('public', 'billing_usage_records', null::text, 'c', '^CHECK .*quota_units.*> 0.*credit_amount.*> 0\)+$'),
+      ('public', 'billing_usage_records', null::text, 'c', '^CHECK \(\(\(quota_units > 0\) OR \(credit_amount > 0\)\)\)$'),
 
       ('public', 'billing_usage_continuations', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_usage_continuations', null::text, 'f', '^FOREIGN KEY \(root_usage_record_id\) REFERENCES billing_usage_records\(id\) ON DELETE RESTRICT$'),
       ('public', 'billing_usage_continuations', null::text, 'f', '^FOREIGN KEY \(user_id\) REFERENCES auth.users\(id\) ON DELETE RESTRICT$'),
       ('public', 'billing_usage_continuations', null::text, 'u', '^UNIQUE \(user_id, root_task_idempotency_key, feature_key, operation_key, stage_key\)$'),
-      ('public', 'billing_usage_continuations', null::text, 'c', '^CHECK .*request_hash.*NULL.*0-9a-f.*64.*::text\)+$'),
+      ('public', 'billing_usage_continuations', null::text, 'c', '^CHECK \(\(\(request_hash IS NULL\) OR \(request_hash ~ ''\^\[0-9a-f\]\{64\}\$''::text\)\)\)$'),
       ('public', 'billing_usage_continuations', null::text, 'c', '^CHECK \(\(status = ANY \(ARRAY\[''AVAILABLE''::text, ''CLAIMED''::text, ''COMPLETED''::text\]\)\)\)$'),
-      ('public', 'billing_usage_continuations', null::text, 'c', '^CHECK .*status.*=.*AVAILABLE.*claim_token.*NULL.*lease_expires_at.*NULL.*status.*=.*CLAIMED.*request_hash.*NOT NULL.*status.*=.*COMPLETED.*completed_at.*NOT NULL\)+$'),
+      ('public', 'billing_usage_continuations', null::text, 'c', '^CHECK \(\(\(\(status = ''AVAILABLE''::text\) AND \(claim_token IS NULL\) AND \(lease_expires_at IS NULL\)\) OR \(\(status = ''CLAIMED''::text\) AND \(claim_token IS NOT NULL\) AND \(lease_expires_at IS NOT NULL\) AND \(request_hash IS NOT NULL\)\) OR \(\(status = ''COMPLETED''::text\) AND \(claim_token IS NULL\) AND \(lease_expires_at IS NULL\) AND \(request_hash IS NOT NULL\) AND \(completed_at IS NOT NULL\)\)\)\)$'),
 
       ('public', 'billing_credit_ledger', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_credit_ledger', null::text, 'f', '^FOREIGN KEY \(account_id\) REFERENCES billing_credit_accounts\(id\) ON DELETE RESTRICT$'),
@@ -228,8 +228,8 @@ begin
       ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(\(amount_minor IS NULL\) OR \(amount_minor >= 0\)\)\)$'),
       ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(\(currency IS NULL\) OR \(currency = ''CNY''::text\)\)\)$'),
       ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(status = ANY \(ARRAY\[''RECEIVED''::text, ''PROCESSING''::text, ''PROCESSED''::text, ''FAILED''::text\]\)\)\)$'),
-      ('public', 'billing_webhook_events', null::text, 'c', '^CHECK .*status.*<>.*FAILED.*error_code.*NOT NULL\)+$'),
-      ('public', 'billing_webhook_events', null::text, 'c', '^CHECK .*status.*=.*ANY.*RECEIVED.*PROCESSING.*PROCESSED.*signature_valid.*IS TRUE.*order_number.*NOT NULL.*provider_transaction_id.*NOT NULL.*request_idempotency_key.*NOT NULL.*amount_minor.*NOT NULL.*currency.*NOT NULL.*paid_at.*NOT NULL.*status.*=.*FAILED.*order_number.*IS NULL.*provider_transaction_id.*IS NULL.*request_idempotency_key.*IS NULL.*amount_minor.*IS NULL.*currency.*IS NULL.*paid_at.*IS NULL\)+$'),
+      ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(\(status <> ''FAILED''::text\) OR \(NULLIF\(btrim\(error_code\), ''''::text\) IS NOT NULL\)\)\)$'),
+      ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(\(\(status = ANY \(ARRAY\[''RECEIVED''::text, ''PROCESSING''::text, ''PROCESSED''::text]\)\) AND \(signature_valid IS TRUE\) AND \(order_number IS NOT NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(request_idempotency_key IS NOT NULL\) AND \(amount_minor IS NOT NULL\) AND \(currency IS NOT NULL\) AND \(paid_at IS NOT NULL\)\) OR \(\(status = ''FAILED''::text\) AND \(\(\(signature_valid IS TRUE\) AND \(order_number IS NOT NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(request_idempotency_key IS NOT NULL\) AND \(amount_minor IS NOT NULL\) AND \(currency IS NOT NULL\) AND \(paid_at IS NOT NULL\)\) OR \(\(order_number IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(request_idempotency_key IS NULL\) AND \(amount_minor IS NULL\) AND \(currency IS NULL\) AND \(paid_at IS NULL\)\)\)\)\)\)$'),
 
       ('public', 'billing_refund_requests', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_refund_requests', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -278,8 +278,8 @@ begin
       ('public', 'billing_feature_usage_costs', null::text, 'p', '^PRIMARY KEY \(feature_key\)$'),
       ('public', 'billing_feature_usage_costs', null::text, 'c', '^CHECK \(\(quota_units >= 0\)\)$'),
       ('public', 'billing_feature_usage_costs', null::text, 'c', '^CHECK \(\(credit_amount >= 0\)\)$'),
-      ('public', 'billing_feature_usage_costs', null::text, 'c', '^CHECK .*quota_units.*> 0.*credit_amount.*> 0\)+$'),
-      ('public', 'billing_feature_usage_costs', null::text, 'c', '^CHECK .*NOT.*allow_credit_fallback.*credit_amount.*> 0\)+$')
+      ('public', 'billing_feature_usage_costs', null::text, 'c', '^CHECK \(\(\(quota_units > 0\) OR \(credit_amount > 0\)\)\)$'),
+      ('public', 'billing_feature_usage_costs', null::text, 'c', '^CHECK \(\(\(NOT allow_credit_fallback\) OR \(credit_amount > 0\)\)\)$')
   ),
   actual_constraints as (
     select
