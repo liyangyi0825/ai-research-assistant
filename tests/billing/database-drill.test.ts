@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +15,7 @@ import {
   buildPreflightPlan,
   buildRestorePlan,
   buildUpgradePlan,
+  buildSafeChildEnvironment,
   parseDrillArgs,
   runDrill,
 } from "../../scripts/billing-db-drill/cli";
@@ -1259,6 +1260,7 @@ test("upgrade plan isolates migrations 001-009 before fixtures and pushes 010 la
   ]);
   assert.deepEqual(plan[0].args, ["copy-migrations", "001-009", "upgrade-workspace"]);
   assert.equal(plan[0].cwd, fakeRunDirectory);
+  assert.equal(plan[6].cwd, fakeRunDirectory);
   assert.deepEqual(plan[1].args, ["link", "--project-ref", restoreRef]);
   assert.deepEqual(plan[3].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[4].args.slice(0, 4), ["-X", "-v", "ON_ERROR_STOP=1", "-v"]);
@@ -1319,6 +1321,120 @@ test("plans keep URLs and passwords out of arguments and expose secrets only in 
   }
   assert.equal(buildUpgradePlan(planInput()).find(({ operation }) => operation === "load-fixtures-009")?.env.PGPASSWORD, "restore-secret");
   assert.equal(buildBackupPlan(planInput()).find(({ operation }) => operation === "link-backup-workspace")?.env.SUPABASE_DB_PASSWORD, "source-secret");
+});
+
+test("child processes receive only system lookup variables and explicit database credentials", () => {
+  const childEnv = buildSafeChildEnvironment(
+    {
+      Path: "C:\\Windows\\System32",
+      PATHEXT: ".COM;.EXE;.CMD",
+      SystemRoot: "C:\\Windows",
+      ComSpec: "C:\\Windows\\System32\\cmd.exe",
+      TEMP: "C:\\Temp",
+      TMP: "C:\\Temp",
+      HOME: "/home/drill",
+      DATABASE_URL: sourceDatabaseUrl,
+      SUPABASE_ACCESS_TOKEN: "access-token-secret",
+      SOME_SECRET: "arbitrary-secret",
+    },
+    {
+      PGHOST: "db.example.invalid",
+      PGPASSWORD: "command-db-password",
+      SUPABASE_DB_PASSWORD: "command-supabase-password",
+    },
+  );
+
+  assert.equal(childEnv.Path, "C:\\Windows\\System32");
+  assert.equal(childEnv.PATHEXT, ".COM;.EXE;.CMD");
+  assert.equal(childEnv.SystemRoot, "C:\\Windows");
+  assert.equal(childEnv.ComSpec, "C:\\Windows\\System32\\cmd.exe");
+  assert.equal(childEnv.TEMP, "C:\\Temp");
+  assert.equal(childEnv.TMP, "C:\\Temp");
+  assert.equal(childEnv.HOME, undefined);
+  assert.equal(childEnv.PGHOST, "db.example.invalid");
+  assert.equal(childEnv.PGPASSWORD, "command-db-password");
+  assert.equal(childEnv.SUPABASE_DB_PASSWORD, "command-supabase-password");
+  assert.equal(childEnv.DATABASE_URL, undefined);
+  assert.equal(childEnv.SUPABASE_ACCESS_TOKEN, undefined);
+  assert.equal(childEnv.SOME_SECRET, undefined);
+  assert.throws(
+    () => buildSafeChildEnvironment({ PATH: "safe" }, { SOME_SECRET: "must-not-pass" }),
+    /CHILD_ENVIRONMENT_KEY_INVALID/,
+  );
+});
+
+test("runDrill fails closed when either requested ref is configured as production", async () => {
+  for (const protectedRef of [BILLING_SOURCE_PROJECT_REF, restoreRef]) {
+    const executorCalls: unknown[] = [];
+    const output: string[] = [];
+    await assert.rejects(
+      runDrill(
+        [
+          "preflight",
+          "--source-ref", BILLING_SOURCE_PROJECT_REF,
+          "--restore-ref", restoreRef,
+          "--approved-restore-ref", restoreRef,
+          "--dry-run",
+        ],
+        {
+          env: { BILLING_PRODUCTION_PROJECT_REFS: protectedRef },
+          execute: async (...args) => {
+            executorCalls.push(args);
+            return { stdout: "", stderr: "" };
+          },
+          writeOutput: (line) => output.push(line),
+        },
+      ),
+      /(?:SOURCE|RESTORE)_PROJECT_IS_PRODUCTION/,
+    );
+    assert.equal(executorCalls.length, 0);
+    assert.deepEqual(output, []);
+  }
+});
+
+test("all dry-run preserves phase order with zero execution and zero artifact writes", async () => {
+  const executorCalls: unknown[] = [];
+  const output: string[] = [];
+  const uniqueTime = new Date("2099-08-12T01:02:03.000Z");
+  const uniqueSuffix = randomUUID().replaceAll("-", "").slice(0, 8);
+  const expectedRunDirectory = join(
+    process.cwd(),
+    ".artifacts",
+    "billing-db-drill",
+    `20990812T010203Z-${uniqueSuffix}`,
+  );
+
+  await assert.rejects(readdir(expectedRunDirectory));
+  const exitCode = await runDrill(
+    [
+      "all",
+      "--source-ref", BILLING_SOURCE_PROJECT_REF,
+      "--restore-ref", restoreRef,
+      "--approved-restore-ref", restoreRef,
+      "--confirm-restore", restoreRef,
+      "--dry-run",
+    ],
+    {
+      env: {},
+      now: () => uniqueTime,
+      randomHex: () => uniqueSuffix,
+      execute: async (...args) => {
+        executorCalls.push(args);
+        return { stdout: "", stderr: "" };
+      },
+      writeOutput: (line) => output.push(line),
+    },
+  );
+
+  assert.equal(exitCode, 0);
+  assert.equal(executorCalls.length, 0);
+  const plan = JSON.parse(output.join("\n")) as { operations: Array<{ operation: string }> };
+  const operations = plan.operations.map(({ operation }) => operation);
+  assert.ok(operations.indexOf("verify-restore-empty") < operations.indexOf("prepare-upgrade-009-workspace"));
+  assert.ok(operations.indexOf("verify-upgraded-restore") < operations.indexOf("prepare-backup-workspace"));
+  assert.ok(operations.indexOf("hash-data") < operations.indexOf("restore-roles"));
+  assert.ok(operations.indexOf("restore-data") < operations.indexOf("verify-restore"));
+  await assert.rejects(readdir(expectedRunDirectory));
 });
 
 test("dry-run emits a sanitized run path and records zero executor calls", async () => {

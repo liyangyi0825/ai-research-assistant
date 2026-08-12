@@ -56,6 +56,27 @@ const EXPECTED_ENVIRONMENT_KEYS = [
   "BILLING_PRODUCTION_PROJECT_REFS",
 ] as const;
 const INTERNAL_EXECUTABLE = "billing-db-drill";
+const SYSTEM_CHILD_ENVIRONMENT_KEYS = new Set([
+  "COMSPEC",
+  "LANG",
+  "LC_ALL",
+  "PATH",
+  "PATHEXT",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "WINDIR",
+]);
+const COMMAND_CHILD_ENVIRONMENT_KEYS = new Set([
+  "PGDATABASE",
+  "PGHOST",
+  "PGPASSWORD",
+  "PGPORT",
+  "PGSSLMODE",
+  "PGUSER",
+  "SUPABASE_DB_PASSWORD",
+]);
 
 function fail(code: string): never {
   throw new Error(code);
@@ -179,7 +200,7 @@ export function buildUpgradePlan(input: PlanInput): readonly PlannedCommand[] {
     planned("capture-pre-upgrade-manifest", "psql", ["-X", "-v", "ON_ERROR_STOP=1", "-f", resolve("scripts/billing-db-drill/sql/manifest.sql"), "-o", artifactPath(input, "upgrade-before.json")], {
       env: restoreEnv, targetRef: input.restoreRef, readOnly: true, artifactBasenames: "upgrade-before.json",
     }),
-    planned("copy-migration-010", INTERNAL_EXECUTABLE, ["copy-migrations", "010", "upgrade-workspace"]),
+    planned("copy-migration-010", INTERNAL_EXECUTABLE, ["copy-migrations", "010", "upgrade-workspace"], { cwd: input.runDirectory }),
     linkedRefCheck("verify-upgrade-workspace-ref-before-010", workspace, input.restoreRef, true),
     planned("push-migration-010", "supabase", ["db", "push", "--linked"], {
       cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
@@ -360,12 +381,29 @@ async function executeInternal(command: PlannedCommand): Promise<RunResult> {
   return { stdout: "", stderr: "" };
 }
 
+export function buildSafeChildEnvironment(
+  systemEnvironment: Readonly<Record<string, string | undefined>>,
+  commandEnvironment: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const [key, value] of Object.entries(systemEnvironment)) {
+    if (value !== undefined && SYSTEM_CHILD_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
+      environment[key] = value;
+    }
+  }
+  for (const [key, value] of Object.entries(commandEnvironment)) {
+    if (!COMMAND_CHILD_ENVIRONMENT_KEYS.has(key)) fail("CHILD_ENVIRONMENT_KEY_INVALID");
+    environment[key] = value;
+  }
+  return environment;
+}
+
 async function defaultExecute(command: PlannedCommand): Promise<RunResult> {
   if (command.executable === INTERNAL_EXECUTABLE) return executeInternal(command);
   const secretValues = Object.values(command.env);
   return runRedacted(command.executable, [...command.args], {
     cwd: command.cwd,
-    env: { ...process.env, ...command.env },
+    env: buildSafeChildEnvironment(process.env, command.env) as NodeJS.ProcessEnv,
     secretValues,
   });
 }
