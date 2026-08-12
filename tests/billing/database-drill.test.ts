@@ -10,6 +10,14 @@ import {
   assertDatabaseUrlMatchesRef,
   BILLING_SOURCE_PROJECT_REF,
 } from "../../scripts/billing-db-drill/identity";
+import {
+  buildBackupPlan,
+  buildPreflightPlan,
+  buildRestorePlan,
+  buildUpgradePlan,
+  parseDrillArgs,
+  runDrill,
+} from "../../scripts/billing-db-drill/cli";
 import { redactText, runRedacted, sha256File } from "../../scripts/billing-db-drill/process";
 
 const restoreRef = "abcdefghijklmnopqrst";
@@ -1137,4 +1145,214 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.ok(auditCountCheck);
   assert.doesNotMatch(auditCountCheck[1], /\bid\s*=\s*\(result\s*->>\s*'audit_id'\)/i);
   assert.match(adminStateChecks, /exists\s*\([\s\S]*from\s+public\.billing_admin_audit_logs[\s\S]*id\s*=\s*\(result\s*->>\s*'audit_id'\)::uuid/i);
+});
+
+const fakeRunDirectory = ".artifacts/billing-db-drill/20260812T010203Z-a1b2c3d4";
+const sourceDatabaseUrl = `postgresql://postgres.${BILLING_SOURCE_PROJECT_REF}:source-secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres`;
+const restoreDatabaseUrl = `postgresql://postgres.${restoreRef}:restore-secret@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres`;
+
+function planInput() {
+  return {
+    sourceRef: BILLING_SOURCE_PROJECT_REF,
+    restoreRef,
+    runDirectory: fakeRunDirectory,
+    sourceDatabaseUrl,
+    restoreDatabaseUrl,
+  };
+}
+
+test("drill parser accepts exactly the six commands and required target refs", () => {
+  for (const command of ["preflight", "backup", "verify"] as const) {
+    assert.deepEqual(
+      parseDrillArgs([
+        command,
+        "--source-ref", BILLING_SOURCE_PROJECT_REF,
+        "--restore-ref", restoreRef,
+        "--approved-restore-ref", restoreRef,
+        "--dry-run",
+      ]),
+      {
+        command,
+        sourceRef: BILLING_SOURCE_PROJECT_REF,
+        restoreRef,
+        approvedRestoreRef: restoreRef,
+        dryRun: true,
+      },
+    );
+  }
+  for (const command of ["upgrade", "restore", "all"] as const) {
+    assert.equal(
+      parseDrillArgs([
+        command,
+        "--source-ref", BILLING_SOURCE_PROJECT_REF,
+        "--restore-ref", restoreRef,
+        "--approved-restore-ref", restoreRef,
+        "--confirm-restore", restoreRef,
+      ]).command,
+      command,
+    );
+  }
+});
+
+test("drill parser fails closed on missing, duplicate, unknown, or malformed arguments", () => {
+  const base = [
+    "preflight",
+    "--source-ref", BILLING_SOURCE_PROJECT_REF,
+    "--restore-ref", restoreRef,
+    "--approved-restore-ref", restoreRef,
+  ];
+  for (const argv of [
+    [],
+    ["destroy", ...base.slice(1)],
+    base.slice(0, -2),
+    [...base, "--source-ref", BILLING_SOURCE_PROJECT_REF],
+    [...base, "--surprise"],
+    ["preflight", "--source-ref", "not-a-ref", "--restore-ref", restoreRef, "--approved-restore-ref", restoreRef],
+  ]) {
+    assert.throws(() => parseDrillArgs(argv));
+  }
+});
+
+test("mutating drill commands require an exact second restore confirmation", () => {
+  for (const command of ["upgrade", "restore", "all"] as const) {
+    const base = [
+      command,
+      "--source-ref", BILLING_SOURCE_PROJECT_REF,
+      "--restore-ref", restoreRef,
+      "--approved-restore-ref", restoreRef,
+    ];
+    assert.throws(() => parseDrillArgs(base), /RESTORE_CONFIRMATION_REQUIRED/);
+    assert.throws(
+      () => parseDrillArgs([...base, "--confirm-restore", productionRef]),
+      /RESTORE_CONFIRMATION_MISMATCH/,
+    );
+  }
+});
+
+test("preflight plan fails closed when restore billing relations or migration history exist", () => {
+  const plan = buildPreflightPlan(planInput());
+  const emptyCheck = plan.find(({ operation }) => operation === "verify-restore-empty");
+  assert.ok(emptyCheck);
+  const sql = emptyCheck.args.at(-1) ?? "";
+  assert.match(sql, /raise\s+exception/i);
+  assert.match(sql, /billing\\_%/i);
+  for (const version of ["202607210001", "202607210002", "202607210003", "202607230004", "202607290005", "202607290006", "202607290007", "202607290008", "202607290009", "202608050010"]) {
+    assert.match(sql, new RegExp(version));
+  }
+  assert.equal(emptyCheck.readOnly, true);
+  assert.equal(emptyCheck.targetRef, restoreRef);
+});
+
+test("upgrade plan isolates migrations 001-009 before fixtures and pushes 010 last", () => {
+  const plan = buildUpgradePlan(planInput());
+  assert.deepEqual(plan.map(({ operation }) => operation), [
+    "prepare-upgrade-009-workspace",
+    "link-upgrade-workspace",
+    "verify-upgrade-workspace-ref-before-009",
+    "push-migrations-001-009",
+    "load-fixtures-009",
+    "capture-pre-upgrade-manifest",
+    "copy-migration-010",
+    "verify-upgrade-workspace-ref-before-010",
+    "push-migration-010",
+    "verify-upgraded-restore",
+  ]);
+  assert.deepEqual(plan[0].args, ["copy-migrations", "001-009", "upgrade-workspace"]);
+  assert.equal(plan[0].cwd, fakeRunDirectory);
+  assert.deepEqual(plan[1].args, ["link", "--project-ref", restoreRef]);
+  assert.deepEqual(plan[3].args, ["db", "push", "--linked"]);
+  assert.deepEqual(plan[4].args.slice(0, 4), ["-X", "-v", "ON_ERROR_STOP=1", "-v"]);
+  assert.ok(plan[4].args.includes("drill_commit=true"));
+  assert.deepEqual(plan[8].args, ["db", "push", "--linked"]);
+  assert.ok(plan.every(({ targetRef }) => targetRef !== BILLING_SOURCE_PROJECT_REF));
+});
+
+test("backup and restore plans preserve logical artifact order and stop-safe SQL flags", () => {
+  const backup = buildBackupPlan(planInput());
+  assert.deepEqual(backup.map(({ operation }) => operation), [
+    "prepare-backup-workspace",
+    "link-backup-workspace",
+    "verify-backup-workspace-ref-before-roles",
+    "dump-roles",
+    "verify-backup-workspace-ref-before-schema",
+    "dump-schema",
+    "verify-backup-workspace-ref-before-data",
+    "dump-data",
+    "hash-roles",
+    "hash-schema",
+    "hash-data",
+  ]);
+  assert.equal(backup[0].cwd, fakeRunDirectory);
+  assert.deepEqual(
+    backup.filter(({ operation }) => operation.startsWith("dump-")).map(({ executable }) => executable),
+    ["supabase", "supabase", "supabase"],
+  );
+  assert.deepEqual(
+    backup.filter(({ operation }) => operation.startsWith("dump-")).map(({ artifactBasenames }) => artifactBasenames),
+    ["roles.sql", "schema.sql", "data.sql"],
+  );
+  assert.ok(backup.filter(({ targetRef }) => targetRef === BILLING_SOURCE_PROJECT_REF).every(({ readOnly }) => readOnly));
+
+  const restore = buildRestorePlan(planInput());
+  assert.deepEqual(restore.map(({ operation }) => operation), ["restore-roles", "restore-schema", "restore-data"]);
+  assert.deepEqual(restore.map(({ artifactBasenames }) => artifactBasenames), ["roles.sql", "schema.sql", "data.sql"]);
+  for (const command of restore) {
+    assert.deepEqual(command.args.slice(0, 3), ["-X", "-v", "ON_ERROR_STOP=1"]);
+    assert.equal(command.targetRef, restoreRef);
+    const artifactPath = command.args.at(-1)?.replaceAll("\\", "/") ?? "";
+    assert.ok(artifactPath.startsWith(`${fakeRunDirectory}/`));
+    assert.doesNotMatch(artifactPath, /(?:^|\/)\.\.(?:\/|$)/);
+  }
+});
+
+test("plans keep URLs and passwords out of arguments and expose secrets only in child env", () => {
+  const plans = [buildUpgradePlan(planInput()), buildBackupPlan(planInput()), buildRestorePlan(planInput())];
+  for (const command of plans.flat()) {
+    const args = command.args.join(" ");
+    assert.doesNotMatch(args, /postgres(?:ql)?:\/\//i);
+    assert.doesNotMatch(args, /source-secret|restore-secret/);
+    for (const key of Object.keys(command.env)) {
+      assert.ok([
+        "PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGSSLMODE", "SUPABASE_DB_PASSWORD",
+      ].includes(key));
+    }
+  }
+  assert.equal(buildUpgradePlan(planInput()).find(({ operation }) => operation === "load-fixtures-009")?.env.PGPASSWORD, "restore-secret");
+  assert.equal(buildBackupPlan(planInput()).find(({ operation }) => operation === "link-backup-workspace")?.env.SUPABASE_DB_PASSWORD, "source-secret");
+});
+
+test("dry-run emits a sanitized run path and records zero executor calls", async () => {
+  const spawnCalls: unknown[] = [];
+  const output: string[] = [];
+  const exitCode = await runDrill(
+    [
+      "preflight",
+      "--source-ref", BILLING_SOURCE_PROJECT_REF,
+      "--restore-ref", restoreRef,
+      "--approved-restore-ref", restoreRef,
+      "--dry-run",
+    ],
+    {
+      env: {
+        BILLING_SOURCE_DB_URL: sourceDatabaseUrl,
+        BILLING_RESTORE_DB_URL: restoreDatabaseUrl,
+        BILLING_PRODUCTION_PROJECT_REFS: productionRef,
+      },
+      now: () => new Date("2026-08-12T01:02:03.000Z"),
+      randomHex: () => "a1b2c3d4",
+      execute: async (...args) => {
+        spawnCalls.push(args);
+        return { stdout: "", stderr: "" };
+      },
+      writeOutput: (line) => output.push(line),
+    },
+  );
+  assert.equal(exitCode, 0);
+  assert.equal(spawnCalls.length, 0);
+  const text = output.join("\n");
+  assert.match(text, /\.artifacts\/billing-db-drill\/20260812T010203Z-a1b2c3d4/);
+  assert.match(text, new RegExp(BILLING_SOURCE_PROJECT_REF));
+  assert.match(text, new RegExp(restoreRef));
+  assert.doesNotMatch(text, /postgres(?:ql)?:\/\//i);
+  assert.doesNotMatch(text, /source-secret|restore-secret/);
 });

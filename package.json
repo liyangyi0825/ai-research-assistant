@@ -9,6 +9,7 @@
     "lint": "eslint",
     "test": "tsx --test tests/**/*.test.{ts,mjs}",
     "test:billing": "tsx --test tests/billing/**/*.test.ts",
+    "billing:db-drill": "tsx scripts/billing-db-drill/cli.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
