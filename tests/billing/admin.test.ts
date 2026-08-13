@@ -490,6 +490,69 @@ test("admin catalog accepts a semester billing period and exposes it in the writ
   assert.match(source, /options: \["FREE", "MONTHLY", "YEARLY", "SEMESTER"\]/);
 });
 
+test("plan activation requires enabled billing and the approved semester identity", async () => {
+  const approved = {
+    code: "PRO_SEMESTER",
+    name: "Pro Semester",
+    billingPeriod: "SEMESTER",
+    isActive: true,
+    reason: "activate approved semester",
+    idempotencyKey: "activate-plan-semester",
+  };
+  await assert.rejects(
+    () => upsertBillingPlan(admin, approved, repository(), disabledBillingConfig),
+    (error: BillingError) => error.code === "BILLING_FEATURE_DISABLED",
+  );
+  for (const drift of [
+    { code: "FREE" },
+    { code: "PRO", billingPeriod: "MONTHLY" },
+    { code: "PRO_YEARLY", billingPeriod: "YEARLY" },
+    { code: "PRO_SEMESTER", name: "Wrong name" },
+  ]) {
+    await assert.rejects(
+      () => upsertBillingPlan(admin, { ...approved, ...drift }, repository(), enabledBillingConfig),
+      (error: BillingError) => error.code === "PLAN_ACTIVATION_NOT_APPROVED",
+    );
+  }
+});
+
+test("inactive plan maintenance remains allowed while billing is disabled", async () => {
+  let received: Record<string, unknown> | undefined;
+  await upsertBillingPlan(admin, {
+    code: "PRO",
+    name: "Pro",
+    billingPeriod: "MONTHLY",
+    isActive: false,
+    reason: "keep monthly inactive",
+    idempotencyKey: "inactive-plan-maintenance",
+  }, repository({ upsertPlan: async (input) => {
+    received = input;
+    return { status: "APPLIED", auditId: "audit-plan", resourceId: "plan-pro" };
+  }}), disabledBillingConfig);
+  assert.equal(received?.p_is_active, false);
+});
+
+test("catalog UUID inputs reject malformed non-empty identifiers", async () => {
+  await assert.rejects(
+    () => upsertBillingPlan(admin, {
+      planId: "not-a-uuid", code: "PRO", name: "Pro", billingPeriod: "MONTHLY",
+      isActive: false, reason: "invalid", idempotencyKey: "invalid-plan-id",
+    }, repository(), disabledBillingConfig),
+    (error: BillingError) => error.code === "INVALID_ADMIN_INPUT" && error.status === 400,
+  );
+  for (const ids of [{ productId: "bad" }, { planId: "bad" }]) {
+    await assert.rejects(
+      () => upsertBillingProduct(admin, {
+        ...ids, sku: "PRO_MONTHLY", name: "Pro Monthly", productType: "SUBSCRIPTION",
+        priceMinor: 1990, durationDays: 30, creditGrant: 0,
+        entitlementVersion: "pro-v1", isActive: false, reason: "invalid",
+        idempotencyKey: `invalid-${Object.keys(ids)[0]}`,
+      }, repository(), disabledBillingConfig),
+      (error: BillingError) => error.code === "INVALID_ADMIN_INPUT" && error.status === 400,
+    );
+  }
+});
+
 test("admin cannot activate any product while the billing feature is disabled", async () => {
   let written = false;
 
@@ -574,9 +637,9 @@ test("approved fast-launch products may be activated only through the admin serv
       admin,
       {
         sku,
-        name: sku,
+        name: sku === "PRO_SEMESTER" ? "Pro Semester" : "Credit Pack 100",
         productType: sku === "PRO_SEMESTER" ? "SUBSCRIPTION" : "CREDIT_PACK",
-        planId: sku === "PRO_SEMESTER" ? "plan-semester" : null,
+        planId: sku === "PRO_SEMESTER" ? "00000000-0000-4000-8000-000000000001" : null,
         priceMinor: sku === "PRO_SEMESTER" ? 7_900 : 990,
         durationDays: sku === "PRO_SEMESTER" ? 150 : null,
         creditGrant: sku === "PRO_SEMESTER" ? 0 : 100,

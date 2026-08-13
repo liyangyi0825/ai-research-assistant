@@ -953,6 +953,29 @@ test("database types model the forward-added semester billing period", () => {
   );
 });
 
+test("011 enforces the fast-launch catalog inside compatible transactional admin RPCs", () => {
+  const upgrade = compactSql(
+    "supabase/migrations/202608120011_billing_fast_launch_catalog_guard.sql",
+  );
+
+  assert.match(upgrade, /create or replace function public\.billing_admin_upsert_plan\([\s\S]*p_is_active boolean/);
+  assert.match(upgrade, /create or replace function public\.billing_admin_upsert_product\([\s\S]*p_is_active boolean/);
+  assert.match(upgrade, /pg_advisory_xact_lock/);
+  assert.match(upgrade, /from public\.billing_plans[\s\S]*for update/);
+  assert.match(upgrade, /from public\.billing_plan_entitlements[\s\S]*for update/);
+  assert.match(upgrade, /pro_semester/);
+  assert.match(upgrade, /pro semester/);
+  assert.match(upgrade, /semester/);
+  assert.match(upgrade, /pro-semester-v1/);
+  assert.match(upgrade, /free-v1/);
+  assert.match(upgrade, /count\(\*\)[\s\S]*13/);
+  assert.match(upgrade, /periodic_limit[\s\S]*\* 5/);
+  assert.match(upgrade, /full join public\.billing_plan_entitlements/);
+  assert.match(upgrade, /left join public\.billing_plan_entitlements/);
+  assert.match(upgrade, /revoke all on function public\.billing_admin_upsert_plan[\s\S]*anon, authenticated/);
+  assert.match(upgrade, /grant execute on function public\.billing_admin_upsert_product[\s\S]*to service_role/);
+});
+
 test("after-sales uniqueness is a forward-only upgrade and does not rewrite the original schema migration", () => {
   const refundRequests = sqlTable("billing_refund_requests");
   const invoiceRequests = sqlTable("billing_invoice_requests");

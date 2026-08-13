@@ -99,6 +99,14 @@ function optionalString(value: unknown): string | null {
   return normalized || null;
 }
 
+function optionalUuid(value: unknown): string | null {
+  const normalized = optionalString(value);
+  if (normalized && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)) {
+    throw new BillingError("INVALID_ADMIN_INPUT", "Identifier must be a UUID.", 400);
+  }
+  return normalized;
+}
+
 function rows(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value) || value.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
     throw storageError();
@@ -312,15 +320,23 @@ export async function reviewInvoiceRequest(admin: BillingAdmin, input: {
 }
 
 export async function upsertBillingPlan(admin: BillingAdmin, input: Record<string, unknown>,
-  repository = getBillingAdminRepository()): Promise<AdminMutationResult> {
+  repository = getBillingAdminRepository(), config?: BillingConfig): Promise<AdminMutationResult> {
   assertWriter(admin);
   if (!["FREE", "MONTHLY", "YEARLY", "SEMESTER"].includes(String(input.billingPeriod)) ||
       typeof input.isActive !== "boolean") {
     throw new BillingError("INVALID_ADMIN_INPUT", "Invalid plan configuration.", 400);
   }
+  if (input.isActive) {
+    if (!(config ?? getBillingConfig()).featureEnabled) {
+      throw new BillingError("BILLING_FEATURE_DISABLED", "Billing must be enabled before a plan can be activated.", 409);
+    }
+    if (input.code !== "PRO_SEMESTER" || input.name !== "Pro Semester" || input.billingPeriod !== "SEMESTER") {
+      throw new BillingError("PLAN_ACTIVATION_NOT_APPROVED", "This plan is not approved for the fast-launch catalog.", 409);
+    }
+  }
   return repository.upsertPlan({
     p_admin_user_id: admin.id,
-    p_plan_id: optionalString(input.planId),
+    p_plan_id: optionalUuid(input.planId),
     p_code: required(String(input.code ?? "")),
     p_name: required(String(input.name ?? "")),
     p_description: input.description == null ? null : String(input.description),
@@ -333,6 +349,7 @@ export async function upsertBillingPlan(admin: BillingAdmin, input: Record<strin
 
 const FAST_LAUNCH_PRODUCTS = {
   PRO_SEMESTER: {
+    name: "Pro Semester",
     productType: "SUBSCRIPTION",
     priceMinor: 7_900,
     durationDays: 150,
@@ -340,6 +357,7 @@ const FAST_LAUNCH_PRODUCTS = {
     entitlementVersion: "pro-semester-v1",
   },
   CREDIT_PACK_100: {
+    name: "Credit Pack 100",
     productType: "CREDIT_PACK",
     priceMinor: 990,
     durationDays: null,
@@ -372,6 +390,7 @@ function assertFastLaunchActivation(
 
   if (
     input.productType !== approved.productType ||
+    input.name !== approved.name ||
     input.priceMinor !== approved.priceMinor ||
     (input.durationDays ?? null) !== approved.durationDays ||
     input.creditGrant !== approved.creditGrant ||
@@ -408,8 +427,8 @@ export async function upsertBillingProduct(admin: BillingAdmin, input: Record<st
   }
   return repository.upsertProduct({
     p_admin_user_id: admin.id,
-    p_product_id: optionalString(input.productId),
-    p_plan_id: optionalString(input.planId),
+    p_product_id: optionalUuid(input.productId),
+    p_plan_id: optionalUuid(input.planId),
     p_sku: required(String(input.sku ?? "")),
     p_name: required(String(input.name ?? "")),
     p_description: input.description == null ? null : String(input.description),
