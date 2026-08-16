@@ -4,6 +4,11 @@
 CREATE OR REPLACE FUNCTION public.billing_assert_semester_plan(p_plan_id UUID)
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE v_plan public.billing_plans%ROWTYPE; v_free UUID; v_free_count INTEGER; v_pro_count INTEGER;
+  v_approved_features TEXT[] := ARRAY[
+    'summarize','chat','translate','ppt_generate','concept_explore','keyword_gen',
+    'bibtex_export','extract_refs','profile_summarize','literature_review',
+    'latex_export','data_clean','polish'
+  ];
 BEGIN
   LOCK TABLE public.billing_plans, public.billing_products, public.billing_plan_entitlements IN SHARE ROW EXCLUSIVE MODE;
   SELECT * INTO v_plan FROM public.billing_plans WHERE id=p_plan_id FOR UPDATE;
@@ -27,6 +32,9 @@ BEGIN
   ) OR EXISTS (
     SELECT 1 FROM public.billing_plan_entitlements e
     WHERE e.plan_id IN (v_free,p_plan_id) AND e.periodic_limit IS NULL
+  ) OR EXISTS (
+    SELECT 1 FROM public.billing_plan_entitlements e
+    WHERE e.plan_id IN (v_free,p_plan_id) AND e.feature_key <> ALL(v_approved_features)
   ) OR EXISTS (
     SELECT 1 FROM public.billing_plan_entitlements f
     FULL JOIN public.billing_plan_entitlements s

@@ -954,9 +954,13 @@ test("database types model the forward-added semester billing period", () => {
 });
 
 test("011 enforces the fast-launch catalog inside compatible transactional admin RPCs", () => {
+  const guardPath = "supabase/migrations/202608120011_billing_fast_launch_catalog_guard.sql";
   const upgrade = compactSql(
-    "supabase/migrations/202608120011_billing_fast_launch_catalog_guard.sql",
+    guardPath,
   );
+  const helper = sqlFunction("billing_assert_semester_plan", guardPath);
+  const plan = sqlFunction("billing_admin_upsert_plan", guardPath);
+  const product = sqlFunction("billing_admin_upsert_product", guardPath);
 
   assert.match(upgrade, /create or replace function public\.billing_admin_upsert_plan\([\s\S]*p_is_active boolean/);
   assert.match(upgrade, /create or replace function public\.billing_admin_upsert_product\([\s\S]*p_is_active boolean/);
@@ -980,6 +984,27 @@ test("011 enforces the fast-launch catalog inside compatible transactional admin
   assert.match(upgrade, /left join public\.billing_plan_entitlements/);
   assert.match(upgrade, /revoke all on function public\.billing_admin_upsert_plan[\s\S]*anon, authenticated/);
   assert.match(upgrade, /grant execute on function public\.billing_admin_upsert_product[\s\S]*to service_role/);
+
+  const approvedFeatures = [
+    "summarize", "chat", "translate", "ppt_generate", "concept_explore",
+    "keyword_gen", "bibtex_export", "extract_refs", "profile_summarize",
+    "literature_review", "latex_export", "data_clean", "polish",
+  ];
+  for (const feature of approvedFeatures) assert.match(helper, new RegExp(`'${feature}'`));
+  assert.match(helper, /feature_key[\s\S]*(?:any|all)[\s\S]*v_approved_features/);
+
+  for (const body of [helper, plan, product]) {
+    const lock = body.indexOf("lock table public.billing_plans");
+    assert.ok(lock >= 0);
+    for (const operation of [" from public.billing_plans", " update public.billing_plans", " insert into public.billing_plans"]) {
+      const index = body.indexOf(operation);
+      if (index >= 0) assert.ok(lock < index, `${operation} must follow the catalog table lock`);
+    }
+  }
+  assert.ok(plan.indexOf("plan_identity_mutation") > plan.indexOf("for update"));
+  assert.match(plan, /billing_products[\s\S]*is_active[\s\S]*plan_in_use/);
+  assert.ok(product.indexOf("product_identity_mutation") > product.indexOf("for update"));
+  assert.match(product, /v_plan[\s\S]*is_active[\s\S]*fast_launch_plan_inactive/);
 });
 
 test("after-sales uniqueness is a forward-only upgrade and does not rewrite the original schema migration", () => {
