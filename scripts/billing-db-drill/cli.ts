@@ -77,6 +77,24 @@ const COMMAND_CHILD_ENVIRONMENT_KEYS = new Set([
   "PGUSER",
   "SUPABASE_DB_PASSWORD",
 ]);
+const BILLING_MIGRATION_FILES_BY_RANGE = {
+  "001-009": [
+    "202607210001_billing_schema.sql",
+    "202607210002_billing_rls.sql",
+    "202607210003_billing_functions.sql",
+    "202607230004_billing_after_sales.sql",
+    "202607290005_billing_admin_functions.sql",
+    "202607290006_billing_admin_hardening.sql",
+    "202607290007_billing_admin_rpc_hardening.sql",
+    "202607290008_revoke_legacy_billing_credit_rpc.sql",
+    "202607290009_billing_feature_usage_costs.sql",
+  ],
+  "010": ["202608050010_billing_catalog_seed.sql"],
+  "011": ["202608120011_billing_fast_launch_catalog_guard.sql"],
+} as const;
+const BILLING_MIGRATION_VERSIONS = Object.values(BILLING_MIGRATION_FILES_BY_RANGE)
+  .flat()
+  .map((name) => name.slice(0, 12));
 
 function fail(code: string): never {
   throw new Error(code);
@@ -205,6 +223,11 @@ export function buildUpgradePlan(input: PlanInput): readonly PlannedCommand[] {
     planned("push-migration-010", "supabase", ["db", "push", "--linked"], {
       cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
     }),
+    planned("copy-migration-011", INTERNAL_EXECUTABLE, ["copy-migrations", "011", "upgrade-workspace"], { cwd: input.runDirectory }),
+    linkedRefCheck("verify-upgrade-workspace-ref-before-011", workspace, input.restoreRef, true),
+    planned("push-migration-011", "supabase", ["db", "push", "--linked"], {
+      cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
+    }),
     planned("verify-upgraded-restore", "psql", ["-X", "-v", "ON_ERROR_STOP=1", "-f", resolve("scripts/billing-db-drill/sql/verify.sql")], {
       env: restoreEnv, targetRef: input.restoreRef,
     }),
@@ -253,10 +276,6 @@ export function buildPreflightPlan(input: PlanInput): readonly PlannedCommand[] 
   const sourceEnv = databaseEnvironment(input.sourceDatabaseUrl, input.sourceRef);
   const restoreEnv = databaseEnvironment(input.restoreDatabaseUrl, input.restoreRef);
   const identitySql = "select current_database(), current_user";
-  const billingVersions = [
-    "202607210001", "202607210002", "202607210003", "202607230004", "202607290005",
-    "202607290006", "202607290007", "202607290008", "202607290009", "202608050010",
-  ];
   const emptySql = `do $preflight$ begin
     if exists (
       select 1 from pg_catalog.pg_class c
@@ -264,7 +283,7 @@ export function buildPreflightPlan(input: PlanInput): readonly PlannedCommand[] 
       where n.nspname = 'public' and c.relname like 'billing\\_%' escape '\\'
     ) or exists (
       select 1 from supabase_migrations.schema_migrations
-      where version = any (array[${billingVersions.map((version) => `'${version}'`).join(", ")}])
+      where version = any (array[${BILLING_MIGRATION_VERSIONS.map((version) => `'${version}'`).join(", ")}])
     ) then raise exception 'RESTORE_NOT_EMPTY'; end if;
   end $preflight$;`;
   return [
@@ -340,12 +359,34 @@ function sanitizedPlanLine(args: DrillArgs, runDirectory: string, commands: read
   });
 }
 
+export function selectMigrationFiles(
+  range: string,
+  availableNames: readonly string[],
+): readonly string[] {
+  let expectedNames: readonly string[];
+  switch (range) {
+    case "001-009":
+      expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["001-009"];
+      break;
+    case "010":
+      expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["010"];
+      break;
+    case "011":
+      expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["011"];
+      break;
+    default:
+      fail("MIGRATION_SET_INVALID");
+  }
+  const available = new Set(availableNames);
+  if (expectedNames.some((name) => !available.has(name))) fail("MIGRATION_SET_INVALID");
+  return expectedNames;
+}
+
 async function copyMigrations(range: string, workspace: string): Promise<void> {
   const destination = join(workspace, "supabase", "migrations");
   await mkdir(destination, { recursive: true });
   const migrationNames = (await readdir(resolve("supabase/migrations"))).sort();
-  const selected = migrationNames.filter((name) => range === "001-009" ? /00[1-9]_/.test(name) : /0010_/.test(name));
-  if (selected.length !== (range === "001-009" ? 9 : 1)) fail("MIGRATION_SET_INVALID");
+  const selected = selectMigrationFiles(range, migrationNames);
   await Promise.all(selected.map((name) => copyFile(resolve("supabase/migrations", name), join(destination, name))));
   await copyFile(resolve("supabase/config.toml"), join(workspace, "supabase", "config.toml"));
 }

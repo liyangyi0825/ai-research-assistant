@@ -18,6 +18,7 @@ import {
   buildSafeChildEnvironment,
   parseDrillArgs,
   runDrill,
+  selectMigrationFiles,
 } from "../../scripts/billing-db-drill/cli";
 import { redactText, runRedacted, sha256File } from "../../scripts/billing-db-drill/process";
 
@@ -25,6 +26,22 @@ const restoreRef = "abcdefghijklmnopqrst";
 const productionRef = "uvwxyzabcdefghijklmn";
 const drillSqlDirectory = join(process.cwd(), "scripts", "billing-db-drill", "sql");
 const migrationsDirectory = join(process.cwd(), "supabase", "migrations");
+const expectedBillingMigrationFiles = [
+  "202607210001_billing_schema.sql",
+  "202607210002_billing_rls.sql",
+  "202607210003_billing_functions.sql",
+  "202607230004_billing_after_sales.sql",
+  "202607290005_billing_admin_functions.sql",
+  "202607290006_billing_admin_hardening.sql",
+  "202607290007_billing_admin_rpc_hardening.sql",
+  "202607290008_revoke_legacy_billing_credit_rpc.sql",
+  "202607290009_billing_feature_usage_costs.sql",
+  "202608050010_billing_catalog_seed.sql",
+  "202608120011_billing_fast_launch_catalog_guard.sql",
+] as const;
+const expectedBillingMigrationVersions = expectedBillingMigrationFiles.map(
+  (name) => name.slice(0, 12),
+);
 
 async function readDrillSql(name: string): Promise<string> {
   return readFile(join(drillSqlDirectory, name), "utf8");
@@ -34,7 +51,7 @@ async function readBillingMigrations(): Promise<string> {
   const migrationNames = (await readdir(migrationsDirectory))
     .filter((name) => /^2026\d+_.*\.sql$/.test(name))
     .sort();
-  assert.equal(migrationNames.length, 10);
+  assert.deepEqual(migrationNames, expectedBillingMigrationFiles);
   return (await Promise.all(
     migrationNames.map((name) => readFile(join(migrationsDirectory, name), "utf8")),
   )).join("\n");
@@ -893,6 +910,42 @@ test("manifest emits only the six safe top-level sections", async () => {
   ]);
 });
 
+test("manifest reports and verification requires the exact 001-011 migration history", async () => {
+  const [manifest, verify] = await Promise.all([
+    readDrillSql("manifest.sql"),
+    readDrillSql("verify.sql"),
+  ]);
+
+  assert.match(
+    manifest,
+    /jsonb_agg\(version\s+order\s+by\s+version\)[\s\S]*from\s+supabase_migrations\.schema_migrations/i,
+  );
+  const declaration = verify.match(
+    /expected_migration_versions\s+constant\s+text\[\]\s*:=\s*array\[([\s\S]*?)\]\s*;/i,
+  );
+  assert.ok(declaration, "expected an exact migration-version declaration");
+  assert.deepEqual(
+    [...declaration[1].matchAll(/'(\d{12})'/g)].map((match) => match[1]),
+    expectedBillingMigrationVersions,
+  );
+  assert.match(
+    verify,
+    /from\s+supabase_migrations\.schema_migrations[\s\S]*actual_migration_versions\s+is\s+distinct\s+from\s+expected_migration_versions/i,
+  );
+  assert.match(
+    verify,
+    /expected_functions[\s\S]*public\.billing_assert_semester_plan\(uuid\)/i,
+  );
+  assert.match(
+    verify,
+    /expected_internal_functions[\s\S]*public\.billing_assert_semester_plan\(uuid\)[\s\S]*aclexplode[\s\S]*service_role/i,
+  );
+  assert.match(
+    verify,
+    /update\s+public\.billing_plan_entitlements[\s\S]*billing_assert_semester_plan\s*\([^)]+\)[\s\S]*sqlstate\s+'23514'/i,
+  );
+});
+
 test("verification SQL contains nine balanced dollar-quoted DO statements", async () => {
   const verify = await readDrillSql("verify.sql");
   assertDollarQuotedDoBlocks(verify, 9);
@@ -1237,14 +1290,14 @@ test("preflight plan fails closed when restore billing relations or migration hi
   const sql = emptyCheck.args.at(-1) ?? "";
   assert.match(sql, /raise\s+exception/i);
   assert.match(sql, /billing\\_%/i);
-  for (const version of ["202607210001", "202607210002", "202607210003", "202607230004", "202607290005", "202607290006", "202607290007", "202607290008", "202607290009", "202608050010"]) {
+  for (const version of expectedBillingMigrationVersions) {
     assert.match(sql, new RegExp(version));
   }
   assert.equal(emptyCheck.readOnly, true);
   assert.equal(emptyCheck.targetRef, restoreRef);
 });
 
-test("upgrade plan isolates migrations 001-009 before fixtures and pushes 010 last", () => {
+test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 and 011 separately", () => {
   const plan = buildUpgradePlan(planInput());
   assert.deepEqual(plan.map(({ operation }) => operation), [
     "prepare-upgrade-009-workspace",
@@ -1256,17 +1309,47 @@ test("upgrade plan isolates migrations 001-009 before fixtures and pushes 010 la
     "copy-migration-010",
     "verify-upgrade-workspace-ref-before-010",
     "push-migration-010",
+    "copy-migration-011",
+    "verify-upgrade-workspace-ref-before-011",
+    "push-migration-011",
     "verify-upgraded-restore",
   ]);
   assert.deepEqual(plan[0].args, ["copy-migrations", "001-009", "upgrade-workspace"]);
   assert.equal(plan[0].cwd, fakeRunDirectory);
   assert.equal(plan[6].cwd, fakeRunDirectory);
+  assert.deepEqual(plan[6].args, ["copy-migrations", "010", "upgrade-workspace"]);
+  assert.equal(plan[9].cwd, fakeRunDirectory);
+  assert.deepEqual(plan[9].args, ["copy-migrations", "011", "upgrade-workspace"]);
   assert.deepEqual(plan[1].args, ["link", "--project-ref", restoreRef]);
   assert.deepEqual(plan[3].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[4].args.slice(0, 4), ["-X", "-v", "ON_ERROR_STOP=1", "-v"]);
   assert.ok(plan[4].args.includes("drill_commit=true"));
   assert.deepEqual(plan[8].args, ["db", "push", "--linked"]);
+  assert.deepEqual(plan[11].args, ["db", "push", "--linked"]);
   assert.ok(plan.every(({ targetRef }) => targetRef !== BILLING_SOURCE_PROJECT_REF));
+});
+
+test("migration copy ranges distinguish 010 from 011 and reject unknown or incomplete sets", () => {
+  assert.deepEqual(
+    selectMigrationFiles("001-009", expectedBillingMigrationFiles),
+    expectedBillingMigrationFiles.slice(0, 9),
+  );
+  assert.deepEqual(
+    selectMigrationFiles("010", expectedBillingMigrationFiles),
+    [expectedBillingMigrationFiles[9]],
+  );
+  assert.deepEqual(
+    selectMigrationFiles("011", expectedBillingMigrationFiles),
+    [expectedBillingMigrationFiles[10]],
+  );
+  assert.throws(
+    () => selectMigrationFiles("012", expectedBillingMigrationFiles),
+    /MIGRATION_SET_INVALID/,
+  );
+  assert.throws(
+    () => selectMigrationFiles("011", expectedBillingMigrationFiles.slice(0, 10)),
+    /MIGRATION_SET_INVALID/,
+  );
 });
 
 test("backup and restore plans preserve logical artifact order and stop-safe SQL flags", () => {

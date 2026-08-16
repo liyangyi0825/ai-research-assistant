@@ -6,6 +6,19 @@ set local search_path = pg_catalog, public;
 
 do $verify$
 declare
+  expected_migration_versions constant text[] := array[
+    '202607210001',
+    '202607210002',
+    '202607210003',
+    '202607230004',
+    '202607290005',
+    '202607290006',
+    '202607290007',
+    '202607290008',
+    '202607290009',
+    '202608050010',
+    '202608120011'
+  ];
   expected_tables constant text[] := array[
     'billing_plans',
     'billing_products',
@@ -29,8 +42,16 @@ declare
     'billing_rate_limits',
     'billing_feature_usage_costs'
   ];
+  actual_migration_versions text[];
   missing_items text[];
 begin
+  select coalesce(array_agg(version::text order by version), array[]::text[])
+  into actual_migration_versions
+  from supabase_migrations.schema_migrations;
+  if actual_migration_versions is distinct from expected_migration_versions then
+    raise exception 'billing migration history mismatch';
+  end if;
+
   select array_agg(item order by item)
   into missing_items
   from unnest(expected_tables) as item
@@ -568,6 +589,7 @@ declare
     'public.billing_request_refund(uuid,uuid,text)',
     'public.billing_request_invoice(uuid,uuid,text,text,text)',
     'public.billing_require_write_admin(uuid)',
+    'public.billing_assert_semester_plan(uuid)',
     'public.billing_admin_grant_subscription(uuid,uuid,uuid,integer,text,text)',
     'public.billing_admin_review_refund(uuid,uuid,text,text,text)',
     'public.billing_admin_review_invoice(uuid,uuid,text,text,text)',
@@ -595,6 +617,30 @@ begin
      or replace(proc.proconfig[1], ' ', '') is distinct from 'search_path=pg_catalog,public';
   if unsafe_functions is not null then
     raise exception 'unsafe billing function attributes or search paths: %', unsafe_functions;
+  end if;
+
+  if position(
+    'performpublic.billing_assert_semester_plan(p_plan_id)'
+    in regexp_replace(
+      lower(pg_catalog.pg_get_functiondef(to_regprocedure(
+        'public.billing_admin_upsert_plan(uuid,uuid,text,text,text,text,boolean,text,text)'
+      ))),
+      '\s+',
+      '',
+      'g'
+    )
+  ) = 0 or position(
+    'performpublic.billing_assert_semester_plan(p_plan_id)'
+    in regexp_replace(
+      lower(pg_catalog.pg_get_functiondef(to_regprocedure(
+        'public.billing_admin_upsert_product(uuid,uuid,uuid,text,text,text,text,bigint,text,integer,bigint,text,boolean,text,text)'
+      ))),
+      '\s+',
+      '',
+      'g'
+    )
+  ) = 0 then
+    raise exception 'fast-launch catalog guard is not bound to both administrator writers';
   end if;
 end;
 $verify$;
@@ -625,6 +671,9 @@ declare
     'public.billing_admin_upsert_plan(uuid,uuid,text,text,text,text,boolean,text,text)',
     'public.billing_admin_upsert_product(uuid,uuid,uuid,text,text,text,text,bigint,text,integer,bigint,text,boolean,text,text)'
   ];
+  expected_internal_functions constant text[] := array[
+    'public.billing_assert_semester_plan(uuid)'
+  ];
   unsafe_functions text[];
 begin
   select array_agg(distinct signature order by signature)
@@ -639,6 +688,23 @@ begin
     and (function_acl.grantee = 0 or role.rolname in ('anon', 'authenticated'));
   if unsafe_functions is not null then
     raise exception 'billing writer RPC has a client execute grant: %', unsafe_functions;
+  end if;
+
+  select array_agg(distinct signature order by signature)
+  into unsafe_functions
+  from unnest(expected_internal_functions) as signature
+  join pg_catalog.pg_proc as proc on proc.oid = to_regprocedure(signature)
+  cross join lateral pg_catalog.aclexplode(
+    coalesce(proc.proacl, pg_catalog.acldefault('f', proc.proowner))
+  ) as function_acl
+  left join pg_catalog.pg_roles as role on role.oid = function_acl.grantee
+  where function_acl.privilege_type = 'EXECUTE'
+    and (
+      function_acl.grantee = 0
+      or role.rolname in ('anon', 'authenticated', 'service_role')
+    );
+  if unsafe_functions is not null then
+    raise exception 'billing internal guard has a direct execute grant: %', unsafe_functions;
   end if;
 
   select array_agg(signature order by signature)
@@ -683,6 +749,8 @@ do $verify$
 declare
   actual_plans jsonb;
   actual_products jsonb;
+  semester_plan_id uuid;
+  guard_rejected boolean := false;
 begin
   select jsonb_agg(
     jsonb_build_array(code, name, billing_period, is_active)
@@ -729,6 +797,32 @@ begin
   if exists (select 1 from public.billing_plans where is_active = true)
     or exists (select 1 from public.billing_products where is_active = true) then
     raise exception 'active billing plan or product found';
+  end if;
+
+  select id
+  into semester_plan_id
+  from public.billing_plans
+  where code = 'PRO_SEMESTER';
+  perform public.billing_assert_semester_plan(semester_plan_id);
+
+  begin
+    update public.billing_plan_entitlements
+    set periodic_limit = periodic_limit + 1
+    where id = (
+      select id
+      from public.billing_plan_entitlements
+      where plan_id = semester_plan_id
+        and entitlement_version = 'pro-semester-v1'
+      order by feature_key
+      limit 1
+    );
+    perform public.billing_assert_semester_plan(semester_plan_id);
+  exception
+    when sqlstate '23514' then
+      guard_rejected := true;
+  end;
+  if guard_rejected is not true then
+    raise exception 'fast-launch entitlement drift was accepted';
   end if;
 end;
 $verify$;

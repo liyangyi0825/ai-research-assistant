@@ -135,7 +135,7 @@ const assertCatalogLockPrecedesAccess = (body: string) => {
 
   const lockEnd = locks[0].index + locks[0][0].length;
   const catalogAccess = new RegExp(
-    `\\b(?:from|insert\\s+into|update|delete\\s+from)\\s+public\\.(${catalogTables.join("|")})\\b`,
+    `\\b(?:from|join|insert\\s+into|update|delete\\s+from)\\s+public\\.(${catalogTables.join("|")})\\b`,
     "g",
   );
   for (const access of body.matchAll(catalogAccess)) {
@@ -1169,6 +1169,25 @@ test("011 enforces the fast-launch catalog inside compatible transactional admin
           mutation,
           body,
           `expected ${name} lock-order mutation to apply`,
+        );
+        assert.throws(
+          () => assertCatalogLockPrecedesAccess(mutation),
+          /must follow the catalog table lock/,
+        );
+      }
+      for (const joinKind of ["", "left ", "full ", "inner ", "cross "]) {
+        const joinClause =
+          joinKind === "cross "
+            ? `cross join public.${table} as catalog_row`
+            : `${joinKind}join public.${table} as catalog_row on true`;
+        const mutation = body.replace(
+          /lock table public\.billing_plans[\s\S]*?share row exclusive mode\s*;/,
+          `select 1 from pg_catalog.pg_class as seed_row ${joinClause}; $&`,
+        );
+        assert.notEqual(
+          mutation,
+          body,
+          `expected ${name} ${joinKind || "plain "}join lock-order mutation to apply`,
         );
         assert.throws(
           () => assertCatalogLockPrecedesAccess(mutation),
