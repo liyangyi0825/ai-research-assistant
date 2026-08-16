@@ -5,12 +5,13 @@ CREATE OR REPLACE FUNCTION public.billing_assert_semester_plan(p_plan_id UUID)
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$
 DECLARE v_plan public.billing_plans%ROWTYPE; v_free UUID; v_free_count INTEGER; v_pro_count INTEGER;
 BEGIN
+  LOCK TABLE public.billing_plans, public.billing_products, public.billing_plan_entitlements IN SHARE ROW EXCLUSIVE MODE;
   SELECT * INTO v_plan FROM public.billing_plans WHERE id=p_plan_id FOR UPDATE;
   IF NOT FOUND OR v_plan.code <> 'PRO_SEMESTER' OR v_plan.name <> 'Pro Semester'
     OR v_plan.billing_period <> 'SEMESTER' THEN
     RAISE EXCEPTION 'FAST_LAUNCH_PLAN_MISMATCH' USING ERRCODE='check_violation';
   END IF;
-  SELECT id INTO v_free FROM public.billing_plans WHERE code='FREE' AND name='Free' AND billing_period='FREE' FOR UPDATE;
+  SELECT id INTO v_free FROM public.billing_plans WHERE code='FREE' AND name='Free' AND billing_period='FREE' AND is_active=FALSE FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'FAST_LAUNCH_FREE_PLAN_MISSING' USING ERRCODE='check_violation'; END IF;
 
   PERFORM 1 FROM public.billing_plan_entitlements
@@ -21,8 +22,11 @@ BEGIN
     WHERE plan_id=p_plan_id AND entitlement_version='pro-semester-v1';
   IF v_free_count <> 13 OR v_pro_count <> 13 OR EXISTS (
     SELECT 1 FROM public.billing_plan_entitlements e
-    WHERE e.plan_id IN (v_free,p_plan_id)
-      AND e.entitlement_version NOT IN ('free-v1','pro-semester-v1')
+    WHERE (e.plan_id=v_free AND e.entitlement_version<>'free-v1')
+       OR (e.plan_id=p_plan_id AND e.entitlement_version<>'pro-semester-v1')
+  ) OR EXISTS (
+    SELECT 1 FROM public.billing_plan_entitlements e
+    WHERE e.plan_id IN (v_free,p_plan_id) AND e.periodic_limit IS NULL
   ) OR EXISTS (
     SELECT 1 FROM public.billing_plan_entitlements f
     FULL JOIN public.billing_plan_entitlements s
@@ -49,6 +53,7 @@ CREATE OR REPLACE FUNCTION public.billing_admin_upsert_plan(
 DECLARE v_id UUID; v_audit UUID; v_before JSONB; v_existing public.billing_admin_audit_logs%ROWTYPE; v_request_hash TEXT;
 BEGIN
   PERFORM public.billing_require_write_admin(p_admin_user_id);
+  LOCK TABLE public.billing_plans, public.billing_products, public.billing_plan_entitlements IN SHARE ROW EXCLUSIVE MODE;
   IF NULLIF(btrim(p_reason),'') IS NULL OR NULLIF(btrim(p_idempotency_key),'') IS NULL THEN RAISE EXCEPTION 'reason required'; END IF;
   IF p_is_active THEN
     IF p_plan_id IS NULL OR btrim(p_code)<>'PRO_SEMESTER' OR btrim(p_name)<>'Pro Semester' OR p_billing_period<>'SEMESTER' THEN
@@ -65,6 +70,13 @@ BEGIN
     RETURN jsonb_build_object('status','ALREADY_APPLIED','audit_id',v_existing.id,'resource_id',v_existing.target_id);
   END IF;
   SELECT to_jsonb(p) INTO v_before FROM public.billing_plans p WHERE id=p_plan_id FOR UPDATE;
+  IF v_before IS NOT NULL AND v_before->>'code' IS DISTINCT FROM btrim(p_code) THEN
+    RAISE EXCEPTION 'PLAN_IDENTITY_MUTATION' USING ERRCODE='check_violation';
+  END IF;
+  IF v_before IS NOT NULL AND EXISTS (SELECT 1 FROM public.billing_products WHERE plan_id=p_plan_id AND is_active)
+    AND (NOT p_is_active OR btrim(p_code)<>'PRO_SEMESTER' OR btrim(p_name)<>'Pro Semester' OR p_billing_period<>'SEMESTER') THEN
+    RAISE EXCEPTION 'PLAN_IN_USE' USING ERRCODE='check_violation';
+  END IF;
   INSERT INTO public.billing_plans(id,code,name,description,billing_period,is_active)
   VALUES(COALESCE(p_plan_id,extensions.gen_random_uuid()),btrim(p_code),btrim(p_name),p_description,p_billing_period,p_is_active)
   ON CONFLICT(id) DO UPDATE SET code=EXCLUDED.code,name=EXCLUDED.name,description=EXCLUDED.description,billing_period=EXCLUDED.billing_period,is_active=EXCLUDED.is_active,updated_at=now() RETURNING id INTO v_id;
@@ -82,6 +94,7 @@ CREATE OR REPLACE FUNCTION public.billing_admin_upsert_product(
 DECLARE v_id UUID; v_audit UUID; v_before JSONB; v_existing public.billing_admin_audit_logs%ROWTYPE; v_request_hash TEXT;
 BEGIN
   PERFORM public.billing_require_write_admin(p_admin_user_id);
+  LOCK TABLE public.billing_plans, public.billing_products, public.billing_plan_entitlements IN SHARE ROW EXCLUSIVE MODE;
   IF p_price_minor < 0 OR p_currency <> 'CNY' OR NULLIF(btrim(p_reason),'') IS NULL OR NULLIF(btrim(p_idempotency_key),'') IS NULL THEN RAISE EXCEPTION 'invalid product'; END IF;
   IF p_is_active THEN
     IF btrim(p_sku)='PRO_SEMESTER' THEN
@@ -90,6 +103,9 @@ BEGIN
       END IF;
       PERFORM pg_advisory_xact_lock(hashtextextended('fast-launch-plan:'||p_plan_id::TEXT,0));
       PERFORM public.billing_assert_semester_plan(p_plan_id);
+      IF NOT EXISTS (SELECT 1 FROM public.billing_plans v_plan WHERE v_plan.id=p_plan_id AND v_plan.is_active) THEN
+        RAISE EXCEPTION 'FAST_LAUNCH_PLAN_INACTIVE' USING ERRCODE='check_violation';
+      END IF;
     ELSIF btrim(p_sku)='CREDIT_PACK_100' THEN
       IF p_plan_id IS NOT NULL OR btrim(p_name)<>'Credit Pack 100' OR p_product_type<>'CREDIT_PACK' OR p_price_minor<>990 OR p_currency<>'CNY' OR p_duration_days IS NOT NULL OR p_credit_grant<>100 OR p_entitlement_version<>'credit-v1' THEN
         RAISE EXCEPTION 'PRODUCT_ACTIVATION_CONFIG_MISMATCH' USING ERRCODE='check_violation';
@@ -104,6 +120,9 @@ BEGIN
     RETURN jsonb_build_object('status','ALREADY_APPLIED','audit_id',v_existing.id,'resource_id',v_existing.target_id);
   END IF;
   SELECT to_jsonb(p) INTO v_before FROM public.billing_products p WHERE id=p_product_id FOR UPDATE;
+  IF v_before IS NOT NULL AND v_before->>'sku' IS DISTINCT FROM btrim(p_sku) THEN
+    RAISE EXCEPTION 'PRODUCT_IDENTITY_MUTATION' USING ERRCODE='check_violation';
+  END IF;
   INSERT INTO public.billing_products(id,plan_id,sku,name,description,product_type,price_minor,currency,duration_days,credit_grant,entitlement_version,is_active)
   VALUES(COALESCE(p_product_id,extensions.gen_random_uuid()),p_plan_id,btrim(p_sku),btrim(p_name),p_description,p_product_type,p_price_minor,p_currency,p_duration_days,p_credit_grant,p_entitlement_version,p_is_active)
   ON CONFLICT(id) DO UPDATE SET plan_id=EXCLUDED.plan_id,sku=EXCLUDED.sku,name=EXCLUDED.name,description=EXCLUDED.description,product_type=EXCLUDED.product_type,price_minor=EXCLUDED.price_minor,currency=EXCLUDED.currency,duration_days=EXCLUDED.duration_days,credit_grant=EXCLUDED.credit_grant,entitlement_version=EXCLUDED.entitlement_version,is_active=EXCLUDED.is_active,updated_at=now() RETURNING id INTO v_id;

@@ -970,6 +970,12 @@ test("011 enforces the fast-launch catalog inside compatible transactional admin
   assert.match(upgrade, /free-v1/);
   assert.match(upgrade, /count\(\*\)[\s\S]*13/);
   assert.match(upgrade, /periodic_limit[\s\S]*\* 5/);
+  assert.match(upgrade, /periodic_limit is null/);
+  assert.match(upgrade, /lock table public\.billing_plans[\s\S]*public\.billing_products[\s\S]*public\.billing_plan_entitlements[\s\S]*share row exclusive mode/);
+  assert.match(upgrade, /v_before[\s\S]*code[\s\S]*identity_mutation/);
+  assert.match(upgrade, /v_before[\s\S]*sku[\s\S]*identity_mutation/);
+  assert.match(upgrade, /v_plan\.is_active/);
+  assert.match(upgrade, /billing_products[\s\S]*is_active[\s\S]*plan_in_use/);
   assert.match(upgrade, /full join public\.billing_plan_entitlements/);
   assert.match(upgrade, /left join public\.billing_plan_entitlements/);
   assert.match(upgrade, /revoke all on function public\.billing_admin_upsert_plan[\s\S]*anon, authenticated/);
