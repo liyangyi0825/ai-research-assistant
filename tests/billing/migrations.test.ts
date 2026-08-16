@@ -26,6 +26,150 @@ const sqlFunction = (name: string, path = functionsPath) => {
   return block[0];
 };
 
+const sqlFunctionBody = (name: string, path = functionsPath) => {
+  const fn = sqlFunction(name, path);
+  const body = fn.match(/\bas\s+\$\$([\s\S]*?)\$\$;/);
+  assert.ok(body, `expected SQL function body: ${name}`);
+  return body[1];
+};
+
+const approvedFastLaunchFeatures = [
+  "bibtex_export",
+  "chat",
+  "concept_explore",
+  "data_clean",
+  "extract_refs",
+  "keyword_gen",
+  "latex_export",
+  "literature_review",
+  "polish",
+  "ppt_generate",
+  "profile_summarize",
+  "summarize",
+  "translate",
+] as const;
+
+const assertApprovedFastLaunchFeatures = (body: string) => {
+  const declaration = body.match(
+    /\bv_approved_features\s+text\[\]\s*:=\s*array\s*\[([\s\S]*?)\]\s*;/,
+  );
+  assert.ok(declaration, "expected v_approved_features ARRAY literal");
+  const stringLiteral = /'((?:''|[^'])*)'/g;
+  const features = [...declaration[1].matchAll(stringLiteral)].map((match) =>
+    match[1].replace(/''/g, "'"),
+  );
+  const nonLiteralContent = declaration[1]
+    .replace(stringLiteral, "")
+    .replace(/[\s,]/g, "");
+  assert.equal(
+    nonLiteralContent,
+    "",
+    "approved fast-launch features must be a string-literal-only ARRAY",
+  );
+  assert.deepEqual(
+    features.sort(),
+    [...approvedFastLaunchFeatures].sort(),
+    "approved fast-launch feature ARRAY must contain exactly the 13 approved keys",
+  );
+};
+
+const catalogTables = [
+  "billing_plan_entitlements",
+  "billing_plans",
+  "billing_products",
+] as const;
+
+type IdentityTable = "billing_plans" | "billing_products";
+
+const targetRowLockPattern = (table: IdentityTable) => {
+  const idParameter = table === "billing_plans" ? "p_plan_id" : "p_product_id";
+  return new RegExp(
+    `\\bselect\\b[^;]*\\bfrom\\s+public\\.${table}\\b[^;]*\\bwhere\\b[^;]*(?:[a-z_][a-z0-9_]*\\.)?id\\s*=\\s*${idParameter}\\b[^;]*\\bfor\\s+update\\b[^;]*;`,
+  );
+};
+
+const removeTargetRowLock = (body: string, table: IdentityTable) =>
+  body.replace(targetRowLockPattern(table), (statement) =>
+    statement.replace(/\s+for\s+update\b/, ""),
+  );
+
+const moveTargetRowLockAfterGuard = (
+  body: string,
+  table: IdentityTable,
+  guard: "plan_identity_mutation" | "product_identity_mutation",
+) => {
+  const targetLock = body.match(targetRowLockPattern(table));
+  assert.ok(targetLock, `expected target ${table} row-lock mutation fixture`);
+  const targetLockIndex = targetLock.index ?? -1;
+  assert.ok(targetLockIndex >= 0, `expected target ${table} row-lock position`);
+  const withoutTargetLock =
+    body.slice(0, targetLockIndex) +
+    body.slice(targetLockIndex + targetLock[0].length);
+  const guardIndex = withoutTargetLock.indexOf(`'${guard}'`);
+  assert.ok(guardIndex >= 0, `expected ${guard} mutation fixture`);
+  const guardEnd = withoutTargetLock.indexOf(";", guardIndex);
+  assert.ok(guardEnd >= 0, `expected ${guard} statement terminator`);
+  return (
+    withoutTargetLock.slice(0, guardEnd + 1) +
+    targetLock[0] +
+    withoutTargetLock.slice(guardEnd + 1)
+  );
+};
+
+const assertCatalogLockPrecedesAccess = (body: string) => {
+  const locks = [
+    ...body.matchAll(
+      /\block\s+table\s+([\s\S]*?)\s+in\s+share\s+row\s+exclusive\s+mode\s*;/g,
+    ),
+  ];
+  assert.equal(locks.length, 1, "expected one fast-launch catalog table lock");
+  const lockedTables = locks[0][1]
+    .split(",")
+    .map((table) => table.trim().replace(/^public\./, ""))
+    .sort();
+  assert.deepEqual(
+    lockedTables,
+    [...catalogTables].sort(),
+    "catalog lock must cover exactly the three catalog tables",
+  );
+
+  const lockEnd = locks[0].index + locks[0][0].length;
+  const catalogAccess = new RegExp(
+    `\\b(?:from|insert\\s+into|update|delete\\s+from)\\s+public\\.(${catalogTables.join("|")})\\b`,
+    "g",
+  );
+  for (const access of body.matchAll(catalogAccess)) {
+    assert.ok(
+      access.index >= lockEnd,
+      `${access[0]} must follow the catalog table lock`,
+    );
+  }
+};
+
+const assertIdentityRowLockPrecedesGuard = (
+  body: string,
+  table: IdentityTable,
+  guard: "plan_identity_mutation" | "product_identity_mutation",
+) => {
+  const identity = table === "billing_plans" ? "code" : "sku";
+  const targetLock = body.match(targetRowLockPattern(table));
+  assert.ok(targetLock, `expected target ${table} row lock`);
+  const identityGuard = body.match(
+    new RegExp(
+      `\\bif\\s+v_before\\s+is\\s+not\\s+null\\s+and\\s+v_before\\s*->>\\s*'${identity}'\\s+is\\s+distinct\\s+from\\s+btrim\\(p_${identity}\\)\\s+then\\s+raise\\s+exception\\s+'${guard}'`,
+    ),
+  );
+  assert.ok(identityGuard, `expected ${identity} identity guard`);
+  const targetLockIndex = targetLock.index ?? -1;
+  const identityGuardIndex = identityGuard.index ?? -1;
+  assert.ok(targetLockIndex >= 0, `expected target ${table} row-lock position`);
+  assert.ok(identityGuardIndex >= 0, `expected ${identity} identity-guard position`);
+  assert.ok(
+    targetLockIndex + targetLock[0].length <= identityGuardIndex,
+    `target ${table} row lock must precede the ${identity} identity guard`,
+  );
+};
+
 const sqlTable = (name: string) => {
   const sql = compactSql(schemaPath);
   const block = sql.match(
@@ -961,6 +1105,9 @@ test("011 enforces the fast-launch catalog inside compatible transactional admin
   const helper = sqlFunction("billing_assert_semester_plan", guardPath);
   const plan = sqlFunction("billing_admin_upsert_plan", guardPath);
   const product = sqlFunction("billing_admin_upsert_product", guardPath);
+  const helperBody = sqlFunctionBody("billing_assert_semester_plan", guardPath);
+  const planBody = sqlFunctionBody("billing_admin_upsert_plan", guardPath);
+  const productBody = sqlFunctionBody("billing_admin_upsert_product", guardPath);
 
   assert.match(upgrade, /create or replace function public\.billing_admin_upsert_plan\([\s\S]*p_is_active boolean/);
   assert.match(upgrade, /create or replace function public\.billing_admin_upsert_product\([\s\S]*p_is_active boolean/);
@@ -985,25 +1132,133 @@ test("011 enforces the fast-launch catalog inside compatible transactional admin
   assert.match(upgrade, /revoke all on function public\.billing_admin_upsert_plan[\s\S]*anon, authenticated/);
   assert.match(upgrade, /grant execute on function public\.billing_admin_upsert_product[\s\S]*to service_role/);
 
-  const approvedFeatures = [
-    "summarize", "chat", "translate", "ppt_generate", "concept_explore",
-    "keyword_gen", "bibtex_export", "extract_refs", "profile_summarize",
-    "literature_review", "latex_export", "data_clean", "polish",
-  ];
-  for (const feature of approvedFeatures) assert.match(helper, new RegExp(`'${feature}'`));
+  assertApprovedFastLaunchFeatures(helperBody);
+  const extraFeature = helperBody.replace(
+    /(v_approved_features\s+text\[\]\s*:=\s*array\[[\s\S]*?)(\]\s*;)/,
+    "$1,'unapproved_fourteenth_feature'$2",
+  );
+  assert.notEqual(
+    extraFeature,
+    helperBody,
+    "expected approved-feature mutation to apply",
+  );
+  assert.throws(
+    () => assertApprovedFastLaunchFeatures(extraFeature),
+    /approved fast-launch feature/i,
+  );
   assert.match(helper, /feature_key[\s\S]*(?:any|all)[\s\S]*v_approved_features/);
 
-  for (const body of [helper, plan, product]) {
-    const lock = body.indexOf("lock table public.billing_plans");
-    assert.ok(lock >= 0);
-    for (const operation of [" from public.billing_plans", " update public.billing_plans", " insert into public.billing_plans"]) {
-      const index = body.indexOf(operation);
-      if (index >= 0) assert.ok(lock < index, `${operation} must follow the catalog table lock`);
+  for (const [name, body] of [
+    ["billing_assert_semester_plan", helperBody],
+    ["billing_admin_upsert_plan", planBody],
+    ["billing_admin_upsert_product", productBody],
+  ] as const) {
+    assertCatalogLockPrecedesAccess(body);
+    for (const table of catalogTables) {
+      for (const operation of [
+        `select 1 from public.${table}`,
+        `insert into public.${table} default values`,
+        `update public.${table} set updated_at=updated_at`,
+        `delete from public.${table}`,
+      ]) {
+        const mutation = body.replace(
+          /lock table public\.billing_plans[\s\S]*?share row exclusive mode\s*;/,
+          `${operation}; $&`,
+        );
+        assert.notEqual(
+          mutation,
+          body,
+          `expected ${name} lock-order mutation to apply`,
+        );
+        assert.throws(
+          () => assertCatalogLockPrecedesAccess(mutation),
+          /must follow the catalog table lock/,
+        );
+      }
     }
   }
-  assert.ok(plan.indexOf("plan_identity_mutation") > plan.indexOf("for update"));
+  assertIdentityRowLockPrecedesGuard(
+    planBody,
+    "billing_plans",
+    "plan_identity_mutation",
+  );
+  const planWithoutTargetLock = removeTargetRowLock(planBody, "billing_plans");
+  assert.notEqual(
+    planWithoutTargetLock,
+    planBody,
+    "expected plan row-lock mutation to apply",
+  );
+  assert.throws(
+    () =>
+      assertIdentityRowLockPrecedesGuard(
+        planWithoutTargetLock,
+        "billing_plans",
+        "plan_identity_mutation",
+      ),
+    /target billing_plans row lock/i,
+  );
+  assert.match(
+    planWithoutTargetLock,
+    /from public\.billing_admin_audit_logs[^;]*for update/,
+    "audit row lock must remain in the plan mutation fixture",
+  );
+  const planWithLateTargetLock = moveTargetRowLockAfterGuard(
+    planBody,
+    "billing_plans",
+    "plan_identity_mutation",
+  );
+  assert.throws(
+    () =>
+      assertIdentityRowLockPrecedesGuard(
+        planWithLateTargetLock,
+        "billing_plans",
+        "plan_identity_mutation",
+      ),
+    /must precede the code identity guard/i,
+  );
   assert.match(plan, /billing_products[\s\S]*is_active[\s\S]*plan_in_use/);
-  assert.ok(product.indexOf("product_identity_mutation") > product.indexOf("for update"));
+  assertIdentityRowLockPrecedesGuard(
+    productBody,
+    "billing_products",
+    "product_identity_mutation",
+  );
+  const productWithoutTargetLock = removeTargetRowLock(
+    productBody,
+    "billing_products",
+  );
+  assert.notEqual(
+    productWithoutTargetLock,
+    productBody,
+    "expected product row-lock mutation to apply",
+  );
+  assert.throws(
+    () =>
+      assertIdentityRowLockPrecedesGuard(
+        productWithoutTargetLock,
+        "billing_products",
+        "product_identity_mutation",
+      ),
+    /target billing_products row lock/i,
+  );
+  assert.match(
+    productWithoutTargetLock,
+    /from public\.billing_admin_audit_logs[^;]*for update/,
+    "audit row lock must remain in the product mutation fixture",
+  );
+  const productWithLateTargetLock = moveTargetRowLockAfterGuard(
+    productBody,
+    "billing_products",
+    "product_identity_mutation",
+  );
+  assert.throws(
+    () =>
+      assertIdentityRowLockPrecedesGuard(
+        productWithLateTargetLock,
+        "billing_products",
+        "product_identity_mutation",
+      ),
+    /must precede the sku identity guard/i,
+  );
   assert.match(product, /v_plan[\s\S]*is_active[\s\S]*fast_launch_plan_inactive/);
 });
 
