@@ -613,6 +613,8 @@ declare
     'public.billing_complete_payment_intent(uuid,uuid,text,text,text,timestamptz,timestamptz)',
     'public.billing_fail_payment_intent(uuid,uuid,text)',
     'public.billing_claim_mock_payment_confirmation(uuid,uuid,text,timestamptz)',
+    'public.billing_mark_webhook_retryable(text,text,text)',
+    'public.billing_prepare_webhook_settlement(text,text)',
     'public.billing_settle_paid_order(text,text,text,text,text,bigint,text,timestamptz,jsonb)',
     'public.billing_reserve_usage(uuid,text,text,bigint,bigint,text)',
     'public.billing_finalize_usage(uuid,text)',
@@ -695,6 +697,8 @@ declare
     'public.billing_complete_payment_intent(uuid,uuid,text,text,text,timestamptz,timestamptz)',
     'public.billing_fail_payment_intent(uuid,uuid,text)',
     'public.billing_claim_mock_payment_confirmation(uuid,uuid,text,timestamptz)',
+    'public.billing_mark_webhook_retryable(text,text,text)',
+    'public.billing_prepare_webhook_settlement(text,text)',
     'public.billing_settle_paid_order(text,text,text,text,text,bigint,text,timestamptz,jsonb)',
     'public.billing_reserve_usage(uuid,text,text,bigint,bigint,text)',
     'public.billing_finalize_usage(uuid,text)',
@@ -1302,6 +1306,40 @@ begin
   select * into strict account_before
   from public.billing_credit_accounts
   where id = '00000000-0000-4000-8000-00000000b050';
+
+  insert into public.billing_webhook_events (
+    provider, provider_event_id, order_number, provider_transaction_id,
+    request_idempotency_key, amount_minor, currency, paid_at,
+    signature_valid, status, payload_summary
+  ) values (
+    'MOCK', 'DRILL-RETRY-EVENT-013', 'DRILL-RETRY-013', 'DRILL-RETRY-TXN-013',
+    'drill-retry-request-013', 1, 'CNY', clock_timestamp(),
+    true, 'RECEIVED', '{"fixture":"billing-drill-retry"}'::jsonb
+  );
+  result := public.billing_mark_webhook_retryable(
+    'MOCK', 'DRILL-RETRY-EVENT-013', 'BILLING_DATABASE_TIMEOUT'
+  );
+  if result ->> 'status' is distinct from 'RETRYABLE' then
+    raise exception 'webhook retry transition did not reach RETRYABLE';
+  end if;
+  update public.billing_webhook_events
+  set retry_after = clock_timestamp() - interval '1 second'
+  where provider = 'MOCK' and provider_event_id = 'DRILL-RETRY-EVENT-013';
+  result := public.billing_prepare_webhook_settlement('MOCK', 'DRILL-RETRY-EVENT-013');
+  if result ->> 'status' is distinct from 'RECEIVED' then
+    raise exception 'webhook retry transition did not return to RECEIVED';
+  end if;
+  update public.billing_webhook_events set status = 'PROCESSING'
+  where provider = 'MOCK' and provider_event_id = 'DRILL-RETRY-EVENT-013';
+  update public.billing_webhook_events set status = 'PROCESSED', processed_at = clock_timestamp()
+  where provider = 'MOCK' and provider_event_id = 'DRILL-RETRY-EVENT-013';
+  if not exists (
+    select 1 from public.billing_webhook_events
+    where provider = 'MOCK' and provider_event_id = 'DRILL-RETRY-EVENT-013'
+      and status = 'PROCESSED' and retry_count = 1 and retry_after is null
+  ) then
+    raise exception 'webhook retry trigger lifecycle verification failed';
+  end if;
 
   result := public.billing_settle_paid_order(
     'DRILL-CREDIT-009',

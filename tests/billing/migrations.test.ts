@@ -22,9 +22,14 @@ test("013 webhook retries are bounded, server-timed, immutable, and service-role
   assert.match(sql, /retry_after = clock_timestamp\(\) \+ make_interval/);
   assert.match(sql, /least\(60, power\(2, retry_count\)::integer\)/);
   assert.match(sql, /where provider = p_provider and provider_event_id = p_provider_event_id for update/);
-  assert.match(sql, /p_error_code not in \('billing_storage_unavailable', 'billing_serialization_retry', 'billing_database_timeout'\)/);
+  assert.match(sql, /p_error_code not in \('billing_storage_unavailable', 'billing_serialization_retry', 'billing_database_timeout', 'billing_connection_unavailable'\)/);
   assert.match(sql, /grant execute on function public\.billing_mark_webhook_retryable\(text, text, text\) to service_role/);
   assert.match(sql, /revoke all on function public\.billing_prepare_webhook_settlement\(text, text\) from public, anon, authenticated/);
+  assert.match(sql, /create or replace function public\.billing_validate_webhook_event_update\(\)/);
+  assert.match(sql, /old\.status = 'received' and new\.status in \('processing', 'retryable', 'failed'\)/);
+  assert.match(sql, /old\.status = 'retryable' and new\.status in \('received', 'failed'\)/);
+  assert.match(sql, /new\.retry_count[\s\S]*old\.retry_count/);
+  assert.match(sql, /new\.provider_event_id[\s\S]*old\.provider_event_id/);
 });
 
 const sqlFunction = (name: string, path = functionsPath) => {

@@ -1191,6 +1191,7 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /expected_writer_functions[\s\S]*aclexplode/i);
   assert.match(verify, /verify-insufficient-balance-009[\s\S]*100000[\s\S]*sqlstate\s+'53000'[\s\S]*insufficient credit balance was accepted/i);
   assert.match(verify, /billing_settle_paid_order\s*\([\s\S]*ALREADY_PROCESSED[\s\S]*duplicate settlement was not idempotent/i);
+  assert.match(verify, /DRILL-RETRY-EVENT-013[\s\S]*billing_mark_webhook_retryable[\s\S]*status[^;]*RETRYABLE[\s\S]*billing_prepare_webhook_settlement[\s\S]*status[^;]*RECEIVED[\s\S]*status\s*=\s*'PROCESSING'[\s\S]*status\s*=\s*'PROCESSED'/i);
   assert.match(verify, /991[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement amount was accepted/i);
   assert.match(verify, /'USD'[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement currency was accepted/i);
   assert.match(verify, /billing_request_refund\s*\([\s\S]*b022[\s\S]*refund request replay was not idempotent/i);

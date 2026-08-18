@@ -161,6 +161,14 @@ function storageError(): BillingError {
   );
 }
 
+function settlementFailedError(): BillingError {
+  return new BillingError(
+    "WEBHOOK_SETTLEMENT_FAILED",
+    "Payment settlement failed.",
+    500,
+  );
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw storageError();
@@ -278,6 +286,20 @@ function safeDatabaseError(error: DatabaseError): BillingError {
       503,
     );
   }
+  if (
+    error.code === "08000" ||
+    error.code === "08001" ||
+    error.code === "08003" ||
+    error.code === "08004" ||
+    error.code === "08006" ||
+    error.code === "08007"
+  ) {
+    return new BillingError(
+      "BILLING_CONNECTION_UNAVAILABLE",
+      "Billing settlement storage is temporarily unavailable.",
+      503,
+    );
+  }
   const message = error.message.toLowerCase();
   const mapping: Array<[string, string, string, number]> = [
     ["webhook replay payload mismatch", "WEBHOOK_REPLAY_CONFLICT", "Webhook replay data does not match the original event.", 409],
@@ -291,7 +313,7 @@ function safeDatabaseError(error: DatabaseError): BillingError {
   const found = mapping.find(([needle]) => message.includes(needle));
   return found
     ? new BillingError(found[1], found[2], found[3])
-    : storageError();
+    : settlementFailedError();
 }
 
 function mapSettlement(value: unknown): WebhookSettlementResult {
@@ -411,7 +433,7 @@ export function createWebhookRepository(
       try {
         result = await client.rpc("billing_settle_paid_order", args);
       } catch {
-        throw storageError();
+        throw settlementFailedError();
       }
       if (result.error) throw safeDatabaseError(result.error);
       return mapSettlement(result.data);
@@ -684,7 +706,8 @@ export async function processPaymentWebhook(
       error.status === 503 &&
       (error.code === "BILLING_STORAGE_UNAVAILABLE" ||
         error.code === "BILLING_SERIALIZATION_RETRY" ||
-        error.code === "BILLING_DATABASE_TIMEOUT");
+        error.code === "BILLING_DATABASE_TIMEOUT" ||
+        error.code === "BILLING_CONNECTION_UNAVAILABLE");
     const terminal = retryable
       ? await repository.markEventRetryable(
           providerNameValue,

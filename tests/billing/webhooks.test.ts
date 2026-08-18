@@ -15,6 +15,7 @@ import type {
 } from "../../lib/billing/payments/service";
 import {
   confirmMockOrderPayment,
+  createWebhookRepository,
   createMockConfirmPostHandler,
   createPaymentWebhookPostHandler,
   processPaymentWebhook,
@@ -24,6 +25,81 @@ import {
   type WebhookSettlementArgs,
   type WebhookSettlementResult,
 } from "../../lib/billing/payments/webhooks";
+
+const settlementArgs: WebhookSettlementArgs = {
+  p_order_number: "BILL-00000000000000000000000000000001",
+  p_provider: "MOCK",
+  p_provider_transaction_id: "mock-txn-1",
+  p_provider_event_id: "mock-event-1",
+  p_request_idempotency_key: "mock-request-1",
+  p_amount_minor: 1_990,
+  p_currency: "CNY",
+  p_paid_at: "2026-07-22T03:00:00.000Z",
+  p_response_summary: { event_type: "PAYMENT.SUCCESS" },
+};
+
+test("webhook settlement retries only an explicit database SQLSTATE allowlist", async () => {
+  for (const [code, expectedCode] of [
+    ["40001", "BILLING_SERIALIZATION_RETRY"],
+    ["40P01", "BILLING_SERIALIZATION_RETRY"],
+    ["57014", "BILLING_DATABASE_TIMEOUT"],
+    ["55P03", "BILLING_DATABASE_TIMEOUT"],
+    ["08000", "BILLING_CONNECTION_UNAVAILABLE"],
+    ["08001", "BILLING_CONNECTION_UNAVAILABLE"],
+    ["08003", "BILLING_CONNECTION_UNAVAILABLE"],
+    ["08004", "BILLING_CONNECTION_UNAVAILABLE"],
+    ["08006", "BILLING_CONNECTION_UNAVAILABLE"],
+    ["08007", "BILLING_CONNECTION_UNAVAILABLE"],
+  ] as const) {
+    const repository = createWebhookRepository({
+      from: () => { throw new Error("unused"); },
+      rpc: async () => ({ data: null, error: { code, message: "secret database diagnostics" } }),
+    });
+    await assert.rejects(
+      repository.settlePaidOrder(settlementArgs),
+      (error: unknown) => expectBillingError(error, expectedCode, 503),
+      code,
+    );
+  }
+});
+
+test("constraint, foreign-key, unique, protocol, and unknown database failures are permanent", async () => {
+  for (const code of ["23505", "23514", "23503", "08P01", "XX999", undefined]) {
+    const repository = createWebhookRepository({
+      from: () => { throw new Error("unused"); },
+      rpc: async () => ({ data: null, error: { code, message: "secret database diagnostics" } }),
+    });
+    await assert.rejects(
+      repository.settlePaidOrder(settlementArgs),
+      (error: unknown) => expectBillingError(error, "WEBHOOK_SETTLEMENT_FAILED", 500),
+      code ?? "unknown",
+    );
+  }
+});
+
+test("SQLSTATE classification drives retryable versus terminal webhook state", async () => {
+  for (const [code, expectedStatus] of [
+    ["40001", "RETRYABLE"], ["40P01", "RETRYABLE"],
+    ["57014", "RETRYABLE"], ["55P03", "RETRYABLE"],
+    ["08000", "RETRYABLE"], ["08001", "RETRYABLE"],
+    ["08003", "RETRYABLE"], ["08004", "RETRYABLE"],
+    ["08006", "RETRYABLE"], ["08007", "RETRYABLE"],
+    ["23505", "FAILED"], ["23514", "FAILED"], ["23503", "FAILED"],
+    ["08P01", "FAILED"], ["XX999", "FAILED"],
+  ] as const) {
+    const memory = new MemoryWebhookRepository();
+    const database = createWebhookRepository({
+      from: () => { throw new Error("unused"); },
+      rpc: async () => ({ data: null, error: { code, message: "secret database diagnostics" } }),
+    });
+    memory.settlePaidOrder = (args) => database.settlePaidOrder(args);
+    const body = eventBody({ eventId: `event-${code}` });
+    await assert.rejects(
+      processPaymentWebhook("mock", body, signed(body), webhookDependencies(memory)),
+    );
+    assert.equal(memory.events.get(`MOCK:event-${code}`)?.status, expectedStatus, code);
+  }
+});
 
 const now = new Date("2026-07-22T03:00:00.000Z");
 const secret = "webhook-test-secret";

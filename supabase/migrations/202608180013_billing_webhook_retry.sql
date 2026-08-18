@@ -40,6 +40,47 @@ ALTER TABLE public.billing_webhook_events
         AND currency IS NULL
         AND paid_at IS NULL)))
   );
+
+CREATE OR REPLACE FUNCTION public.billing_validate_webhook_event_update()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF ROW(
+    NEW.id, NEW.order_number, NEW.provider, NEW.provider_event_id,
+    NEW.provider_transaction_id, NEW.request_idempotency_key,
+    NEW.amount_minor, NEW.currency, NEW.paid_at, NEW.signature_valid,
+    NEW.payload_summary, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.id, OLD.order_number, OLD.provider, OLD.provider_event_id,
+    OLD.provider_transaction_id, OLD.request_idempotency_key,
+    OLD.amount_minor, OLD.currency, OLD.paid_at, OLD.signature_valid,
+    OLD.payload_summary, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'billing webhook event payload is immutable'
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+
+  IF NEW.status IS DISTINCT FROM OLD.status AND NOT (
+    (OLD.status = 'RECEIVED' AND NEW.status IN ('PROCESSING', 'RETRYABLE', 'FAILED'))
+    OR (OLD.status = 'RETRYABLE' AND NEW.status IN ('RECEIVED', 'FAILED'))
+    OR (OLD.status = 'PROCESSING' AND NEW.status IN ('PROCESSED', 'FAILED'))
+  ) THEN
+    RAISE EXCEPTION 'invalid billing webhook event status transition'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+
+  IF NEW.retry_count < OLD.retry_count
+    OR NEW.retry_count > OLD.retry_count + 1
+    OR (NEW.retry_count = OLD.retry_count + 1 AND NEW.status <> 'RETRYABLE')
+    OR (NEW.retry_count = OLD.retry_count AND OLD.status <> 'RETRYABLE' AND NEW.status = 'RETRYABLE') THEN
+    RAISE EXCEPTION 'invalid billing webhook event retry count'
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
 ALTER TABLE public.billing_webhook_events
   ADD CONSTRAINT billing_webhook_events_retry_state_check CHECK (
     retry_count BETWEEN 0 AND 8
@@ -62,7 +103,7 @@ DECLARE
 BEGIN
   IF p_provider NOT IN ('MOCK', 'WECHAT', 'ALIPAY')
     OR NULLIF(btrim(p_provider_event_id), '') IS NULL
-    OR p_error_code NOT IN ('BILLING_STORAGE_UNAVAILABLE', 'BILLING_SERIALIZATION_RETRY', 'BILLING_DATABASE_TIMEOUT') THEN
+    OR p_error_code NOT IN ('BILLING_STORAGE_UNAVAILABLE', 'BILLING_SERIALIZATION_RETRY', 'BILLING_DATABASE_TIMEOUT', 'BILLING_CONNECTION_UNAVAILABLE') THEN
     RAISE EXCEPTION 'invalid webhook retry request' USING ERRCODE = '22023';
   END IF;
 
