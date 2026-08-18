@@ -17,7 +17,8 @@ declare
     '202607290008',
     '202607290009',
     '202608050010',
-    '202608120011'
+    '202608120011',
+    '202608160012'
   ];
   expected_tables constant text[] := array[
     'billing_plans',
@@ -72,7 +73,8 @@ begin
       ('public', 'billing_usage_records', 'billing_usage_records_user_created_idx', array['user_id', 'created_at'], array[0, 3], 'btree', false, null::text),
       ('public', 'billing_credit_ledger', 'billing_credit_ledger_account_created_idx', array['account_id', 'created_at'], array[0, 3], 'btree', false, null::text),
       ('public', 'billing_webhook_events', 'billing_webhook_events_order_idx', array['order_id'], array[0], 'btree', false, null::text),
-      ('public', 'billing_refund_requests', 'billing_refund_requests_user_created_idx', array['user_id', 'created_at'], array[0, 3], 'btree', false, null::text)
+      ('public', 'billing_refund_requests', 'billing_refund_requests_user_created_idx', array['user_id', 'created_at'], array[0, 3], 'btree', false, null::text),
+      ('public', 'billing_refunds', 'billing_refunds_claim_expiry_idx', array['claim_expires_at'], array[0], 'btree', false, '((status = ''PENDING''::text) AND (claim_token IS NOT NULL))')
   )
   select array_agg(format('%I.%I.%I', expected.schema_name, expected.table_name, expected.index_name) order by expected.index_name)
   into missing_items
@@ -273,6 +275,7 @@ begin
       ('public', 'billing_refunds', null::text, 'c', '^CHECK \(\(status = ANY \(ARRAY\[''PENDING''::text, ''SUCCEEDED''::text, ''FAILED''::text\]\)\)\)$'),
       ('public', 'billing_refunds', null::text, 'c', '^CHECK \(\(refunded_amount_minor > 0\)\)$'),
       ('public', 'billing_refunds', null::text, 'c', '^CHECK \(\(currency = ''CNY''::text\)\)$'),
+      ('public', 'billing_refunds', 'billing_refunds_claim_state_check', 'c', '^CHECK \(\(\(\(status = ''PENDING''::text\) AND \(completed_at IS NULL\) AND \(\(\(claim_token IS NULL\) AND \(claim_expires_at IS NULL\)\) OR \(\(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\)\)\)\) OR \(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(completed_at IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\) OR \(\(status = ''SUCCEEDED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\) AND \(NULLIF\(btrim\(provider_refund_id\), ''''::text\) IS NOT NULL\) AND \(completed_at IS NOT NULL\)\)\)\)$'),
 
       ('public', 'billing_invoice_requests', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_invoice_requests', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -407,7 +410,7 @@ begin
       ('billing_credit_ledger', 1, 3, 1, 3),
       ('billing_webhook_events', 1, 2, 1, 6),
       ('billing_refund_requests', 1, 3, 1, 3),
-      ('billing_refunds', 1, 4, 3, 4),
+      ('billing_refunds', 1, 4, 3, 5),
       ('billing_invoice_requests', 1, 2, 1, 3),
       ('billing_admins', 1, 1, 1, 1),
       ('billing_admin_audit_logs', 1, 2, 0, 0),
@@ -556,6 +559,17 @@ begin
     raise exception 'billing administrator audit immutability trigger missing';
   end if;
 
+  if not exists (
+    select 1
+    from pg_catalog.pg_trigger
+    where tgrelid = 'public.billing_usage_quotas'::regclass
+      and tgname = 'billing_block_refunding_quota_usage'
+      and tgfoid = 'public.billing_guard_refunding_quota_usage()'::regprocedure
+      and not tgisinternal
+  ) then
+    raise exception 'billing refund quota lock trigger missing';
+  end if;
+
   select count(*)
   into updated_trigger_count
   from pg_catalog.pg_trigger
@@ -593,6 +607,11 @@ declare
     'public.billing_admin_grant_subscription(uuid,uuid,uuid,integer,text,text)',
     'public.billing_admin_review_refund(uuid,uuid,text,text,text)',
     'public.billing_admin_review_invoice(uuid,uuid,text,text,text)',
+    'public.billing_assert_refund_reversible(uuid)',
+    'public.billing_guard_refunding_quota_usage()',
+    'public.billing_claim_approved_refund(uuid,uuid,timestamptz)',
+    'public.billing_complete_refund(uuid,uuid,text,text,bigint,text,jsonb)',
+    'public.billing_fail_refund_claim(uuid,uuid,text)',
     'public.billing_admin_upsert_plan(uuid,uuid,text,text,text,text,boolean,text,text)',
     'public.billing_admin_upsert_product(uuid,uuid,uuid,text,text,text,text,bigint,text,integer,bigint,text,boolean,text,text)',
     'public.billing_reject_audit_log_mutation()'
@@ -668,11 +687,16 @@ declare
     'public.billing_admin_grant_subscription(uuid,uuid,uuid,integer,text,text)',
     'public.billing_admin_review_refund(uuid,uuid,text,text,text)',
     'public.billing_admin_review_invoice(uuid,uuid,text,text,text)',
+    'public.billing_claim_approved_refund(uuid,uuid,timestamptz)',
+    'public.billing_complete_refund(uuid,uuid,text,text,bigint,text,jsonb)',
+    'public.billing_fail_refund_claim(uuid,uuid,text)',
     'public.billing_admin_upsert_plan(uuid,uuid,text,text,text,text,boolean,text,text)',
     'public.billing_admin_upsert_product(uuid,uuid,uuid,text,text,text,text,bigint,text,integer,bigint,text,boolean,text,text)'
   ];
   expected_internal_functions constant text[] := array[
-    'public.billing_assert_semester_plan(uuid)'
+    'public.billing_assert_semester_plan(uuid)',
+    'public.billing_assert_refund_reversible(uuid)',
+    'public.billing_guard_refunding_quota_usage()'
   ];
   unsafe_functions text[];
 begin

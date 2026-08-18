@@ -295,6 +295,9 @@ export type BillingRefundRow = {
   idempotency_key: string;
   response_summary: Json;
   completed_at: Timestamp | null;
+  claim_token: UUID | null;
+  claim_expires_at: Timestamp | null;
+  last_error_code: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 };
@@ -907,6 +910,34 @@ export type Database = {
           p_decision: "ISSUED" | "REJECTED";
           p_reason: string;
           p_idempotency_key: string;
+        };
+        Returns: Json;
+      };
+      billing_claim_approved_refund: {
+        Args: {
+          p_request_id: UUID;
+          p_claim_token: UUID;
+          p_claimed_at: Timestamp;
+        };
+        Returns: Json;
+      };
+      billing_complete_refund: {
+        Args: {
+          p_refund_id: UUID;
+          p_claim_token: UUID;
+          p_provider_refund_id: string;
+          p_provider_transaction_id: string;
+          p_refunded_amount_minor: number;
+          p_currency: string;
+          p_response_summary: Json;
+        };
+        Returns: Json;
+      };
+      billing_fail_refund_claim: {
+        Args: {
+          p_refund_id: UUID;
+          p_claim_token: UUID;
+          p_error_code: string;
         };
         Returns: Json;
       };

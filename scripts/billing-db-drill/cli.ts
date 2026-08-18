@@ -91,6 +91,7 @@ const BILLING_MIGRATION_FILES_BY_RANGE = {
   ],
   "010": ["202608050010_billing_catalog_seed.sql"],
   "011": ["202608120011_billing_fast_launch_catalog_guard.sql"],
+  "012": ["202608160012_billing_refund_execution.sql"],
 } as const;
 const BILLING_MIGRATION_VERSIONS = Object.values(BILLING_MIGRATION_FILES_BY_RANGE)
   .flat()
@@ -226,6 +227,11 @@ export function buildUpgradePlan(input: PlanInput): readonly PlannedCommand[] {
     planned("copy-migration-011", INTERNAL_EXECUTABLE, ["copy-migrations", "011", "upgrade-workspace"], { cwd: input.runDirectory }),
     linkedRefCheck("verify-upgrade-workspace-ref-before-011", workspace, input.restoreRef, true),
     planned("push-migration-011", "supabase", ["db", "push", "--linked"], {
+      cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
+    }),
+    planned("copy-migration-012", INTERNAL_EXECUTABLE, ["copy-migrations", "012", "upgrade-workspace"], { cwd: input.runDirectory }),
+    linkedRefCheck("verify-upgrade-workspace-ref-before-012", workspace, input.restoreRef, true),
+    planned("push-migration-012", "supabase", ["db", "push", "--linked"], {
       cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
     }),
     planned("verify-upgraded-restore", "psql", ["-X", "-v", "ON_ERROR_STOP=1", "-f", resolve("scripts/billing-db-drill/sql/verify.sql")], {
@@ -373,6 +379,9 @@ export function selectMigrationFiles(
       break;
     case "011":
       expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["011"];
+      break;
+    case "012":
+      expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["012"];
       break;
     default:
       fail("MIGRATION_SET_INVALID");

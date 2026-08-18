@@ -5,7 +5,9 @@ export type BillingSecurityEventCode =
   | "WEBHOOK_PARSE_REJECTED"
   | "WEBHOOK_SETTLEMENT_FAILED"
   | "PAYMENT_CREATE_FAILED"
-  | "PAYMENT_INTENT_PERSIST_FAILED";
+  | "PAYMENT_INTENT_PERSIST_FAILED"
+  | "REFUND_PROVIDER_FAILED"
+  | "REFUND_PERSIST_FAILED";
 
 export type BillingSecurityLogEvent = {
   eventCode: BillingSecurityEventCode;
@@ -28,6 +30,8 @@ const EVENT_CODES = new Set<BillingSecurityEventCode>([
   "WEBHOOK_SETTLEMENT_FAILED",
   "PAYMENT_CREATE_FAILED",
   "PAYMENT_INTENT_PERSIST_FAILED",
+  "REFUND_PROVIDER_FAILED",
+  "REFUND_PERSIST_FAILED",
 ]);
 
 const MAX_VALUE_LENGTH = 160;
