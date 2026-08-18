@@ -15,6 +15,18 @@ const compactSql = (path: string) =>
     .trim()
     .toLowerCase();
 
+test("013 webhook retries are bounded, server-timed, immutable, and service-role only", () => {
+  const sql = compactSql("supabase/migrations/202608180013_billing_webhook_retry.sql");
+  assert.match(sql, /status in \('received', 'processing', 'processed', 'retryable', 'failed'\)/);
+  assert.match(sql, /retry_count between 0 and 8/);
+  assert.match(sql, /retry_after = clock_timestamp\(\) \+ make_interval/);
+  assert.match(sql, /least\(60, power\(2, retry_count\)::integer\)/);
+  assert.match(sql, /where provider = p_provider and provider_event_id = p_provider_event_id for update/);
+  assert.match(sql, /p_error_code not in \('billing_storage_unavailable', 'billing_serialization_retry', 'billing_database_timeout'\)/);
+  assert.match(sql, /grant execute on function public\.billing_mark_webhook_retryable\(text, text, text\) to service_role/);
+  assert.match(sql, /revoke all on function public\.billing_prepare_webhook_settlement\(text, text\) from public, anon, authenticated/);
+});
+
 const sqlFunction = (name: string, path = functionsPath) => {
   const sql = compactSql(path);
   const block = sql.match(

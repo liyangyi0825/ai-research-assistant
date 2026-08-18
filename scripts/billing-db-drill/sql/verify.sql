@@ -18,7 +18,8 @@ declare
     '202607290009',
     '202608050010',
     '202608120011',
-    '202608160012'
+    '202608160012',
+    '202608180013'
   ];
   expected_tables constant text[] := array[
     'billing_plans',
@@ -250,9 +251,10 @@ begin
       ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(provider = ANY \(ARRAY\[''MOCK''::text, ''WECHAT''::text, ''ALIPAY''::text\]\)\)\)$'),
       ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(\(amount_minor IS NULL\) OR \(amount_minor >= 0\)\)\)$'),
       ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(\(currency IS NULL\) OR \(currency = ''CNY''::text\)\)\)$'),
-      ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(status = ANY \(ARRAY\[''RECEIVED''::text, ''PROCESSING''::text, ''PROCESSED''::text, ''FAILED''::text\]\)\)\)$'),
-      ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(\(status <> ''FAILED''::text\) OR \(NULLIF\(btrim\(error_code\), ''''::text\) IS NOT NULL\)\)\)$'),
-      ('public', 'billing_webhook_events', null::text, 'c', '^CHECK \(\(\(\(status = ANY \(ARRAY\[''RECEIVED''::text, ''PROCESSING''::text, ''PROCESSED''::text]\)\) AND \(signature_valid IS TRUE\) AND \(order_number IS NOT NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(request_idempotency_key IS NOT NULL\) AND \(amount_minor IS NOT NULL\) AND \(currency IS NOT NULL\) AND \(paid_at IS NOT NULL\)\) OR \(\(status = ''FAILED''::text\) AND \(\(\(signature_valid IS TRUE\) AND \(order_number IS NOT NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(request_idempotency_key IS NOT NULL\) AND \(amount_minor IS NOT NULL\) AND \(currency IS NOT NULL\) AND \(paid_at IS NOT NULL\)\) OR \(\(order_number IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(request_idempotency_key IS NULL\) AND \(amount_minor IS NULL\) AND \(currency IS NULL\) AND \(paid_at IS NULL\)\)\)\)\)\)$'),
+      ('public', 'billing_webhook_events', 'billing_webhook_events_status_check', 'c', '^CHECK \(\(status = ANY \(ARRAY\[''RECEIVED''::text, ''PROCESSING''::text, ''PROCESSED''::text, ''RETRYABLE''::text, ''FAILED''::text\]\)\)\)$'),
+      ('public', 'billing_webhook_events', 'billing_webhook_events_error_code_check', 'c', '^CHECK \(\(\(status <> ALL \(ARRAY\[''FAILED''::text, ''RETRYABLE''::text\]\)\) OR \(NULLIF\(btrim\(error_code\), ''''::text\) IS NOT NULL\)\)\)$'),
+      ('public', 'billing_webhook_events', 'billing_webhook_events_payload_state_check', 'c', '^CHECK \(\(\(\(status = ANY \(ARRAY\[''RECEIVED''::text, ''PROCESSING''::text, ''PROCESSED''::text, ''RETRYABLE''::text\]\)\) AND \(signature_valid IS TRUE\) AND \(order_number IS NOT NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(request_idempotency_key IS NOT NULL\) AND \(amount_minor IS NOT NULL\) AND \(currency IS NOT NULL\) AND \(paid_at IS NOT NULL\)\) OR \(\(status = ''FAILED''::text\) AND \(\(\(signature_valid IS TRUE\) AND \(order_number IS NOT NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(request_idempotency_key IS NOT NULL\) AND \(amount_minor IS NOT NULL\) AND \(currency IS NOT NULL\) AND \(paid_at IS NOT NULL\)\) OR \(\(order_number IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(request_idempotency_key IS NULL\) AND \(amount_minor IS NULL\) AND \(currency IS NULL\) AND \(paid_at IS NULL\)\)\)\)\)\)$'),
+      ('public', 'billing_webhook_events', 'billing_webhook_events_retry_state_check', 'c', '^CHECK \(\(\(retry_count >= 0\) AND \(retry_count <= 8\) AND \(\(\(status = ''RETRYABLE''::text\) AND \(retry_after IS NOT NULL\)\) OR \(\(status <> ''RETRYABLE''::text\) AND \(retry_after IS NULL\)\)\)\)\)$'),
 
       ('public', 'billing_refund_requests', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_refund_requests', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),

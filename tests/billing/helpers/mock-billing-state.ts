@@ -260,6 +260,24 @@ export class MockBillingState {
       if (event.status !== "PROCESSED") { event.status = "FAILED"; event.errorCode = errorCode; }
       return structuredClone(event);
     },
+    markEventRetryable: async (provider, providerEventId, errorCode) => {
+      const event = this.webhookEvents.get(`${provider}:${providerEventId}`);
+      if (!event) throw new Error("missing webhook event");
+      if (event.status === "RECEIVED" || event.status === "RETRYABLE") {
+        event.status = "RETRYABLE";
+        event.errorCode = errorCode;
+      }
+      return structuredClone(event);
+    },
+    prepareEventForSettlement: async (provider, providerEventId) => {
+      const event = this.webhookEvents.get(`${provider}:${providerEventId}`);
+      if (!event) throw new Error("missing webhook event");
+      if (event.status === "RETRYABLE") {
+        event.status = "RECEIVED";
+        event.errorCode = null;
+      }
+      return structuredClone(event);
+    },
     settlePaidOrder: async (args) => this.settlePaidOrder(args),
   };
 

@@ -14,7 +14,10 @@ import {
 import { BillingError } from "../../lib/billing/errors";
 import { createOrder, createOrderPostHandler } from "../../lib/billing/orders";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
-import { createOrderPayment } from "../../lib/billing/payments/service";
+import {
+  createOrderPayment,
+  type PaymentServiceRepository,
+} from "../../lib/billing/payments/service";
 import { confirmMockOrderPayment } from "../../lib/billing/payments/webhooks";
 import { createListPublicProductsHandler } from "../../lib/billing/products";
 import { generateInternalReconciliationReport } from "../../lib/billing/reconciliation";
@@ -286,11 +289,54 @@ test("a transient provider confirmation failure never settles and is safely retr
       error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
       error.status === 503,
   );
+  assert.equal(state.paymentIntents.get(order.id)?.status, "PENDING");
   assert.equal(state.orders[0]?.status, "PENDING");
   assert.equal(state.webhookEvents.size, 0);
   assert.equal(state.subscriptions.length, 0);
   assert.equal((await confirm()).status, "PROCESSED");
   assert.equal(state.subscriptions.length, 1);
+});
+
+test("a database claim failure leaves provider-paid state recoverable without granting before retry", async () => {
+  const state = new MockBillingState();
+  const provider = countingProvider();
+  const order = await createOrder(
+    { userId: TEST_USER_ID, productId: SEMESTER_PRODUCT.id, provider: "mock", acceptedAgreementVersion: BILLING_AGREEMENT_VERSION },
+    { repository: state.billingRepository, now: () => TEST_NOW, createOrderNumber: () => "BILL-E2E-CLAIM-RETRY", paymentMode: "mock" },
+  );
+  const payment = await createOrderPayment(TEST_USER_ID, order.id, {
+    repository: state.paymentRepository,
+    now: () => TEST_NOW,
+    getConfig: () => TEST_CONFIG,
+    getProvider: () => provider,
+  });
+  let failClaim = true;
+  const paymentRepository: PaymentServiceRepository = {
+    ...state.paymentRepository,
+    async claimMockPaymentConfirmation(input) {
+      if (failClaim) {
+        failClaim = false;
+        throw new BillingError("BILLING_STORAGE_UNAVAILABLE", "Billing data is temporarily unavailable.", 503);
+      }
+      return state.paymentRepository.claimMockPaymentConfirmation(input);
+    },
+  };
+  const confirm = () => confirmMockOrderPayment(
+    { id: TEST_USER_ID, email: null, isAdmin: false }, order.id, payment.providerTransactionId,
+    { paymentRepository, webhookRepository: state.webhookRepository, getConfig: () => TEST_CONFIG, getProvider: () => provider, now: () => TEST_NOW },
+  );
+
+  await assert.rejects(confirm, (error: unknown) => error instanceof BillingError && error.code === "BILLING_STORAGE_UNAVAILABLE");
+  assert.equal((await provider.queryPayment({ providerTransactionId: payment.providerTransactionId })).status, "PAID");
+  assert.equal(state.paymentIntents.get(order.id)?.status, "PENDING");
+  assert.equal(state.orders[0]?.status, "PENDING");
+  assert.equal(state.webhookEvents.size, 0);
+  assert.equal(state.subscriptions.length, 0);
+
+  assert.equal((await confirm()).status, "PROCESSED");
+  assert.equal(state.payments.length, 1);
+  assert.equal(state.subscriptions.length, 1);
+  assert.equal(state.entitlements.length, 13);
 });
 
 test("feature gates hide the catalog, reject forged prices and production public mock, but allow explicit testers and admins", async () => {

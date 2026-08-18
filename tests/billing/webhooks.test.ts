@@ -116,6 +116,43 @@ class MemoryWebhookRepository implements WebhookRepository {
     return cloneEvent(event);
   }
 
+  async markEventRetryable(
+    provider: WebhookEventRecord["provider"],
+    providerEventId: string,
+    errorCode: string,
+  ): Promise<WebhookEventRecord> {
+    this.operations.push(`retryable:${errorCode}`);
+    const event = this.events.get(`${provider}:${providerEventId}`);
+    if (!event) throw new Error("missing webhook event");
+    if (this.simulateProcessedRace) {
+      event.status = "PROCESSED";
+      event.orderId = this.order.id;
+      return cloneEvent(event);
+    }
+    if (this.simulateProcessingRace) {
+      event.status = "PROCESSING";
+      return cloneEvent(event);
+    }
+    if (event.status === "RECEIVED" || event.status === "RETRYABLE") {
+      event.status = "RETRYABLE";
+      event.errorCode = errorCode;
+    }
+    return cloneEvent(event);
+  }
+
+  async prepareEventForSettlement(
+    provider: WebhookEventRecord["provider"],
+    providerEventId: string,
+  ): Promise<WebhookEventRecord> {
+    const event = this.events.get(`${provider}:${providerEventId}`);
+    if (!event) throw new Error("missing webhook event");
+    if (event.status === "RETRYABLE") {
+      event.status = "RECEIVED";
+      event.errorCode = null;
+    }
+    return cloneEvent(event);
+  }
+
   async settlePaidOrder(
     args: WebhookSettlementArgs,
   ): Promise<WebhookSettlementResult> {
@@ -432,12 +469,75 @@ test("a verified settlement failure writes one safe security event", async () =>
       orderNumber: settlementOrder().orderNumber,
       providerEventId: "mock-event-1",
       errorCode: "WEBHOOK_SETTLEMENT_FAILED",
-      status: "FAILED",
+      status: "RETRYABLE",
     },
   );
   assert.equal(logs[0].includes(rawBody), false);
   assert.equal(logs[0].includes("student@example.com"), false);
   assert.equal(logs[0].includes("database password=do-not-log"), false);
+});
+
+test("a transient settlement failure becomes retryable and the identical callback grants once after recovery", async () => {
+  const repository = new MemoryWebhookRepository();
+  const rawBody = eventBody();
+  const originalSettle = repository.settlePaidOrder.bind(repository);
+  let settlementAttempts = 0;
+  let retryableMarks = 0;
+  const retryableRepository = repository as unknown as MemoryWebhookRepository & {
+    markEventRetryable: WebhookRepository["markEventFailed"];
+    prepareEventForSettlement: WebhookRepository["markEventFailed"];
+  };
+  retryableRepository.markEventRetryable = async (provider, providerEventId, errorCode) => {
+    retryableMarks += 1;
+    const event = repository.events.get(`${provider}:${providerEventId}`);
+    assert.ok(event);
+    (event as unknown as { status: string }).status = "RETRYABLE";
+    event.errorCode = errorCode;
+    return structuredClone(event);
+  };
+  retryableRepository.prepareEventForSettlement = async (provider, providerEventId) => {
+    const event = repository.events.get(`${provider}:${providerEventId}`);
+    assert.ok(event);
+    (event as unknown as { status: string }).status = "RECEIVED";
+    event.errorCode = null;
+    return structuredClone(event);
+  };
+  repository.settlePaidOrder = async (args) => {
+    settlementAttempts += 1;
+    if (settlementAttempts === 1) {
+      throw new BillingError(
+        "BILLING_STORAGE_UNAVAILABLE",
+        "Billing data is temporarily unavailable.",
+        503,
+      );
+    }
+    return originalSettle(args);
+  };
+
+  await assert.rejects(
+    processPaymentWebhook("mock", rawBody, signed(rawBody), webhookDependencies(retryableRepository)),
+    (error: unknown) => expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503),
+  );
+  assert.equal(retryableMarks, 1);
+  assert.equal((repository.events.get("MOCK:mock-event-1") as unknown as { status: string }).status, "RETRYABLE");
+  assert.equal(repository.grants, 0);
+
+  const recovered = await processPaymentWebhook(
+    "mock",
+    rawBody,
+    signed(rawBody),
+    webhookDependencies(retryableRepository),
+  );
+  assert.equal(recovered.status, "PROCESSED");
+  assert.equal(settlementAttempts, 2);
+  assert.equal(repository.grants, 1);
+
+  const changed = eventBody({ amountMinor: 2_000 });
+  await assert.rejects(
+    processPaymentWebhook("mock", changed, signed(changed), webhookDependencies(retryableRepository)),
+    (error: unknown) => expectBillingError(error, "WEBHOOK_REPLAY_CONFLICT", 409),
+  );
+  assert.equal(repository.grants, 1);
 });
 
 test("a settlement failure logs FAILED when failure marking observes a PROCESSING race", async () => {

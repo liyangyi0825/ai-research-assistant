@@ -62,7 +62,7 @@ export type InternalReconciliationPayment = {
 
 export type InternalReconciliationWebhookEvent = {
   id: string;
-  status: "RECEIVED" | "PROCESSING" | "PROCESSED" | "FAILED";
+  status: "RECEIVED" | "PROCESSING" | "PROCESSED" | "RETRYABLE" | "FAILED";
   updatedAt: string;
 };
 
@@ -256,7 +256,7 @@ function mapSnapshot(rows: {
       nullableId(row.order_id);
       id(row.provider_event_id);
       timestamptz(row.created_at);
-      return { id: id(row.id), status: oneOf(row.status, ["RECEIVED", "PROCESSING", "PROCESSED", "FAILED"]), updatedAt: timestamptz(row.updated_at) };
+      return { id: id(row.id), status: oneOf(row.status, ["RECEIVED", "PROCESSING", "PROCESSED", "RETRYABLE", "FAILED"]), updatedAt: timestamptz(row.updated_at) };
     }),
     subscriptions: rows.subscriptions.map((row) => ({ id: id(row.id), sourceOrderId: nullableId(row.source_order_id) })),
     creditLedgerEntries: rows.creditLedgerEntries.map((row) => {
@@ -335,7 +335,7 @@ function validateSnapshot(value: unknown): InternalReconciliationSnapshot {
       amountMinor: amount(row.amountMinor), currency: oneOf(row.currency, ["CNY"]),
     })),
     webhookEvents: rows.webhookEvents.map((row) => ({
-      id: id(row.id), status: oneOf(row.status, ["RECEIVED", "PROCESSING", "PROCESSED", "FAILED"]), updatedAt: date(row.updatedAt),
+      id: id(row.id), status: oneOf(row.status, ["RECEIVED", "PROCESSING", "PROCESSED", "RETRYABLE", "FAILED"]), updatedAt: date(row.updatedAt),
     })),
     subscriptions: rows.subscriptions.map((row) => ({ id: id(row.id), sourceOrderId: nullableId(row.sourceOrderId) })),
     creditLedgerEntries: rows.creditLedgerEntries.map((row) => ({

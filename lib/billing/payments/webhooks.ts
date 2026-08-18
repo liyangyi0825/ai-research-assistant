@@ -30,6 +30,7 @@ export type WebhookEventStatus =
   | "RECEIVED"
   | "PROCESSING"
   | "PROCESSED"
+  | "RETRYABLE"
   | "FAILED";
 
 export type WebhookPayloadSummary = {
@@ -76,6 +77,7 @@ export type WebhookSettlementResult = {
     | "PROCESSED"
     | "ALREADY_PROCESSED"
     | "ALREADY_FAILED"
+    | "RETRY_LATER"
     | "IN_PROGRESS";
   eventStatus: WebhookEventStatus;
   orderId: string | null;
@@ -92,6 +94,15 @@ export type WebhookRepository = {
     provider: BillingProvider,
     providerEventId: string,
     errorCode: string,
+  ): Promise<WebhookEventRecord>;
+  markEventRetryable(
+    provider: BillingProvider,
+    providerEventId: string,
+    errorCode: string,
+  ): Promise<WebhookEventRecord>;
+  prepareEventForSettlement(
+    provider: BillingProvider,
+    providerEventId: string,
   ): Promise<WebhookEventRecord>;
   settlePaidOrder(
     args: WebhookSettlementArgs,
@@ -208,6 +219,7 @@ function mapWebhookEvent(value: unknown): WebhookEventRecord {
     row.status !== "RECEIVED" &&
     row.status !== "PROCESSING" &&
     row.status !== "PROCESSED" &&
+    row.status !== "RETRYABLE" &&
     row.status !== "FAILED"
   ) {
     throw storageError();
@@ -252,6 +264,20 @@ function insertValues(input: WebhookEventInsert): Record<string, unknown> {
 }
 
 function safeDatabaseError(error: DatabaseError): BillingError {
+  if (error.code === "40001" || error.code === "40P01") {
+    return new BillingError(
+      "BILLING_SERIALIZATION_RETRY",
+      "Billing settlement should be retried.",
+      503,
+    );
+  }
+  if (error.code === "57014" || error.code === "55P03") {
+    return new BillingError(
+      "BILLING_DATABASE_TIMEOUT",
+      "Billing settlement timed out.",
+      503,
+    );
+  }
   const message = error.message.toLowerCase();
   const mapping: Array<[string, string, string, number]> = [
     ["webhook replay payload mismatch", "WEBHOOK_REPLAY_CONFLICT", "Webhook replay data does not match the original event.", 409],
@@ -274,6 +300,7 @@ function mapSettlement(value: unknown): WebhookSettlementResult {
     result.status !== "PROCESSED" &&
     result.status !== "ALREADY_PROCESSED" &&
     result.status !== "ALREADY_FAILED" &&
+    result.status !== "RETRY_LATER" &&
     result.status !== "IN_PROGRESS"
   ) {
     throw storageError();
@@ -281,14 +308,16 @@ function mapSettlement(value: unknown): WebhookSettlementResult {
   const eventStatus =
     result.status === "ALREADY_FAILED"
       ? "FAILED"
-      : result.status === "IN_PROGRESS"
-        ? "PROCESSING"
-        : "PROCESSED";
+      : result.status === "RETRY_LATER"
+        ? "RETRYABLE"
+        : result.status === "IN_PROGRESS"
+          ? "PROCESSING"
+          : "PROCESSED";
   return {
     status: result.status,
     eventStatus,
     orderId: nullableString(result.order_id),
-    ...(result.status === "ALREADY_FAILED"
+    ...(result.status === "ALREADY_FAILED" || result.status === "RETRY_LATER"
       ? { errorCode: nullableString(result.error_code) }
       : {}),
   };
@@ -342,6 +371,35 @@ export function createWebhookRepository(
         const existing = await findEvent(provider, providerEventId);
         if (!existing) throw storageError();
         return existing;
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
+    },
+
+    async markEventRetryable(provider, providerEventId, errorCode) {
+      try {
+        const result = await client.rpc("billing_mark_webhook_retryable", {
+          p_provider: provider,
+          p_provider_event_id: providerEventId,
+          p_error_code: errorCode,
+        });
+        if (result.error) throw storageError();
+        return mapWebhookEvent(result.data);
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
+    },
+
+    async prepareEventForSettlement(provider, providerEventId) {
+      try {
+        const result = await client.rpc("billing_prepare_webhook_settlement", {
+          p_provider: provider,
+          p_provider_event_id: providerEventId,
+        });
+        if (result.error) throw storageError();
+        return mapWebhookEvent(result.data);
       } catch (error) {
         if (error instanceof BillingError) throw error;
         throw storageError();
@@ -561,7 +619,7 @@ export async function processPaymentWebhook(
     },
     errorCode: null,
   };
-  const stored = await repository.persistEvent(input);
+  let stored = await repository.persistEvent(input);
   if (!sameImmutableEvent(stored, input)) throw replayConflict();
 
   if (stored.status === "FAILED") {
@@ -572,6 +630,39 @@ export async function processPaymentWebhook(
       orderId: stored.orderId,
       errorCode: stored.errorCode,
     };
+  }
+  if (stored.status === "RETRYABLE") {
+    stored = await repository.prepareEventForSettlement(
+      providerNameValue,
+      parsed.eventId,
+    );
+    if (!sameImmutableEvent(stored, input)) throw replayConflict();
+    if (stored.status === "PROCESSED") {
+      return {
+        status: "ALREADY_PROCESSED",
+        eventStatus: "PROCESSED",
+        eventId: parsed.eventId,
+        orderId: stored.orderId,
+      };
+    }
+    if (stored.status === "FAILED") {
+      return {
+        status: "ALREADY_FAILED",
+        eventStatus: "FAILED",
+        eventId: parsed.eventId,
+        orderId: stored.orderId,
+        errorCode: stored.errorCode,
+      };
+    }
+    if (stored.status === "RETRYABLE") {
+      return {
+        status: "RETRY_LATER",
+        eventStatus: "RETRYABLE",
+        eventId: parsed.eventId,
+        orderId: stored.orderId,
+        errorCode: stored.errorCode,
+      };
+    }
   }
 
   try {
@@ -589,11 +680,22 @@ export async function processPaymentWebhook(
     return { ...result, eventId: parsed.eventId };
   } catch (cause) {
     const error = normalizeError(cause);
-    const terminal = await repository.markEventFailed(
-      providerNameValue,
-      parsed.eventId,
-      error.code,
-    );
+    const retryable =
+      error.status === 503 &&
+      (error.code === "BILLING_STORAGE_UNAVAILABLE" ||
+        error.code === "BILLING_SERIALIZATION_RETRY" ||
+        error.code === "BILLING_DATABASE_TIMEOUT");
+    const terminal = retryable
+      ? await repository.markEventRetryable(
+          providerNameValue,
+          parsed.eventId,
+          error.code,
+        )
+      : await repository.markEventFailed(
+          providerNameValue,
+          parsed.eventId,
+          error.code,
+        );
     if (terminal.status === "PROCESSED") {
       return {
         status: "ALREADY_PROCESSED",
@@ -608,7 +710,7 @@ export async function processPaymentWebhook(
       orderNumber: parsed.orderNumber,
       providerEventId: parsed.eventId,
       errorCode: "WEBHOOK_SETTLEMENT_FAILED",
-      status: "FAILED",
+      status: retryable && terminal.status === "RETRYABLE" ? "RETRYABLE" : "FAILED",
     });
     throw error;
   }
@@ -728,6 +830,7 @@ export type ConfirmMockOrderPaymentDependencies = {
   getConfig?: () => BillingConfig;
   getProvider?: (mode: "mock", config: BillingConfig) => PaymentProvider;
   now?: () => Date;
+  logger?: BillingSecurityLogger;
 };
 
 function assertMockConfirmationAllowed(
@@ -809,23 +912,27 @@ export async function confirmMockOrderPayment(
       503,
     );
   }
-  let storedPayment;
-  try {
-    storedPayment = await paymentRepository.claimMockPaymentConfirmation({
-      userId: user.id,
-      orderId: order.id,
-      providerTransactionId,
-      paidAt: (dependencies.now ?? (() => new Date()))().toISOString(),
-    });
-  } catch (error) {
-    throw normalizeError(error);
-  }
   let providerPayment;
   try {
     providerPayment = await provider.confirmPayment({
       providerTransactionId,
     });
-  } catch {
+  } catch (cause) {
+    if (
+      cause instanceof BillingError &&
+      ((cause.code === "PAYMENT_NOT_FOUND" && cause.status === 404) ||
+        (cause.code === "INVALID_PAYMENT_STATE" && cause.status === 409) ||
+        (cause.code === "PAYMENT_EXPIRED" && cause.status === 409))
+    ) {
+      throw cause;
+    }
+    warnBillingSecurity(dependencies.logger ?? billingSecurityLogger, {
+      eventCode: "MOCK_CONFIRM_FAILED",
+      provider: "MOCK",
+      orderNumber: order.orderNumber,
+      errorCode: "PAYMENT_PROVIDER_UNAVAILABLE",
+      status: "FAILED",
+    });
     throw new BillingError(
       "PAYMENT_PROVIDER_UNAVAILABLE",
       "The mock payment provider could not confirm the payment.",
@@ -834,17 +941,43 @@ export async function confirmMockOrderPayment(
   }
   if (
     providerPayment.orderNumber !== order.orderNumber ||
-    providerPayment.providerTransactionId !== storedPayment.providerTransactionId ||
+    providerPayment.providerTransactionId !== providerTransactionId ||
     providerPayment.status !== "PAID" ||
-    providerPayment.amountMinor !== storedPayment.amountMinor ||
-    providerPayment.currency !== storedPayment.currency ||
-    providerPayment.paymentToken !== storedPayment.paymentToken ||
-    providerPayment.expiresAt !== storedPayment.expiresAt ||
+    providerPayment.amountMinor !== order.amountMinor ||
+    providerPayment.currency !== order.currency ||
+    providerPayment.expiresAt !== order.expiresAt ||
+    !providerPayment.paymentToken.trim() ||
     providerPayment.paidAt === null
   ) {
     throw new BillingError(
       "PAYMENT_PROVIDER_INVALID_RESPONSE",
       "The mock payment provider returned an invalid confirmation.",
+      503,
+    );
+  }
+  let storedPayment;
+  try {
+    storedPayment = await paymentRepository.claimMockPaymentConfirmation({
+      userId: user.id,
+      orderId: order.id,
+      providerTransactionId,
+      paidAt: providerPayment.paidAt,
+    });
+  } catch (error) {
+    throw normalizeError(error);
+  }
+  if (
+    storedPayment.providerTransactionId !== providerPayment.providerTransactionId ||
+    storedPayment.status !== providerPayment.status ||
+    storedPayment.amountMinor !== providerPayment.amountMinor ||
+    storedPayment.currency !== providerPayment.currency ||
+    storedPayment.paymentToken !== providerPayment.paymentToken ||
+    storedPayment.expiresAt !== providerPayment.expiresAt ||
+    storedPayment.paidAt !== providerPayment.paidAt
+  ) {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "The stored mock payment confirmation does not match the provider.",
       503,
     );
   }

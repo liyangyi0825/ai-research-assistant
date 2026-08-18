@@ -258,9 +258,11 @@ export type BillingWebhookEventRow = {
   currency: "CNY" | null;
   paid_at: Timestamp | null;
   signature_valid: boolean;
-  status: "RECEIVED" | "PROCESSING" | "PROCESSED" | "FAILED";
+  status: "RECEIVED" | "PROCESSING" | "PROCESSED" | "RETRYABLE" | "FAILED";
   payload_summary: Json;
   error_code: string | null;
+  retry_after: Timestamp | null;
+  retry_count: number;
   processed_at: Timestamp | null;
   created_at: Timestamp;
   updated_at: Timestamp;
@@ -789,6 +791,18 @@ export type Database = {
           p_provider_transaction_id: string;
           p_paid_at: Timestamp;
         };
+        Returns: Json;
+      };
+      billing_mark_webhook_retryable: {
+        Args: {
+          p_provider: string;
+          p_provider_event_id: string;
+          p_error_code: string;
+        };
+        Returns: Json;
+      };
+      billing_prepare_webhook_settlement: {
+        Args: { p_provider: string; p_provider_event_id: string };
         Returns: Json;
       };
       billing_settle_paid_order: {
