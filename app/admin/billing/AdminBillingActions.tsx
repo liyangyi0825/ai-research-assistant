@@ -43,6 +43,36 @@ const actions: Action[] = [
   ] },
 ];
 
+type AdminActionResult = {
+  auditId?: string;
+  approvalPersisted?: boolean;
+  refundCompleted?: boolean;
+  requiresManualAction?: boolean;
+  refundExecution?: { status?: string };
+  error?: { message?: string };
+};
+
+export function formatAdminActionResult(
+  endpoint: string,
+  responseOk: boolean,
+  result: AdminActionResult,
+): string {
+  if (endpoint === "/api/admin/billing/refunds") {
+    if (result.refundCompleted && result.refundExecution?.status === "SUCCEEDED") {
+      return `已退款，审计 ID：${result.auditId ?? "-"}`;
+    }
+    if (result.requiresManualAction || result.refundExecution?.status === "MANUAL_REVIEW_REQUIRED") {
+      return `已批准待人工退款，审计 ID：${result.auditId ?? "-"}`;
+    }
+    if (result.approvalPersisted || result.refundExecution?.status === "RETRY_REQUIRED") {
+      return `审批已保存但退款执行失败需重试，审计 ID：${result.auditId ?? "-"}`;
+    }
+  }
+  return responseOk
+    ? `操作成功，审计 ID：${result.auditId ?? "-"}`
+    : `操作失败：${result.error?.message ?? "未知错误"}`;
+}
+
 export function AdminBillingActions({ canWrite }: { canWrite: boolean }) {
   const [message, setMessage] = useState("");
   async function submit(action: Action, event: FormEvent<HTMLFormElement>) {
@@ -62,7 +92,7 @@ export function AdminBillingActions({ canWrite }: { canWrite: boolean }) {
       body: JSON.stringify(body),
     });
     const result = await response.json();
-    setMessage(response.ok ? `操作成功，审计 ID：${result.auditId}` : `操作失败：${result.error?.message ?? "未知错误"}`);
+    setMessage(formatAdminActionResult(action.endpoint, response.ok, result));
   }
   return (
     <section className="grid gap-4 lg:grid-cols-2">

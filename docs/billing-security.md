@@ -50,7 +50,7 @@
 
 ## Billing security event logging
 
-- The server emits only five allowlisted security event codes: `WEBHOOK_SIGNATURE_REJECTED`, `WEBHOOK_PARSE_REJECTED`, `WEBHOOK_SETTLEMENT_FAILED`, `PAYMENT_CREATE_FAILED`, and `PAYMENT_INTENT_PERSIST_FAILED`.
+- The server emits only allowlisted security event codes. Refund execution adds `REFUND_PROVIDER_FAILED`, `REFUND_PERSIST_FAILED`, and `REFUND_EXECUTION_FAILED` to the existing webhook and payment codes; arbitrary event names are discarded.
 - The default sink writes one `billing_security_event` JSON record per event to server stderr. Records are built only from the allowlisted event code, provider, verified or server-owned identifiers, fixed error code, and fixed status; raw webhook bodies, signatures, headers, keys, tokens, email addresses, tax identifiers, raw errors, and stacks are excluded.
 - External alert delivery is not configured. Production monitoring remains incomplete until an approved monitoring, alert-routing, retention, and response process is configured and tested.
 

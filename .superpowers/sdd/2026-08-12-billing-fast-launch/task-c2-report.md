@@ -13,6 +13,9 @@ Scope: C2a only (approved full-refund execution). The broader Mock end-to-end ha
 - Deterministic configuration failures before the Provider call release the claim. Once a Provider call may have occurred, the lease is retained and retry reuses the same Provider idempotency key.
 - Successful completion atomically records the refund, marks payment/order refunded, and revokes only the subscription, PLAN entitlement, and quotas created by the exact source order.
 - The admin refund-review route now executes approved refunds, never executes rejected reviews, and returns safe `MANUAL_REVIEW_REQUIRED` or `RETRY_REQUIRED` state while retaining the persisted review for recovery.
+- Refund HTTP semantics distinguish completed refunds (`200`), rejected reviews without execution (`200`), approved requests requiring manual action (`202`), and persisted approvals whose execution must be retried (`503`). Retry responses are top-level failures and never imply that an approved refund completed.
+- The billing admin client reads `refundExecution` and shows distinct Chinese feedback for refunded, approved-pending-manual-refund, and approval-saved-execution-failed states. Other admin actions retain their generic response behavior.
+- Unexpected execution failures emit only the fixed allowlisted `REFUND_EXECUTION_FAILED` event. Exception messages, secrets, and transaction identifiers are not copied; the expected manual-review branch is not logged as an error.
 - Internal refund guards have no direct execute grant; the three service RPCs remain service-role-only.
 - Recovery verification checks the exact trigger type, update columns, enablement, function identity, uniqueness, and actual rollback-only RPC behavior for claim/fail/reclaim/complete/replay, amount/currency/state refusal, source-order revocation, and credit manual-review refusal.
 - Recovery tooling models an exact 001-012 upgrade, including 012 constraint/index/function/trigger/ACL inventory.
@@ -24,7 +27,7 @@ Scope: C2a only (approved full-refund execution). The broader Mock end-to-end ha
 
 ## Final verification
 
-- `npm.cmd run test:billing`: 360/360 passed.
+- `npm.cmd run test:billing`: 363/363 passed.
 - `npm.cmd run typecheck`: passed.
 - Targeted ESLint for all changed TypeScript files: passed.
 - `git diff --check`: passed (line-ending warnings only, no whitespace errors).

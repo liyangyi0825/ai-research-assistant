@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { createRefundReviewHandler } from "../../app/api/admin/billing/refunds/route";
 import { BillingError } from "../../lib/billing/errors";
+import type { BillingSecurityLogEvent } from "../../lib/billing/security-logger";
 
 const admin = {
   id: "admin-1",
@@ -41,7 +42,7 @@ test("approved refund review executes and returns the persisted review plus sett
   let executions = 0;
   const handler = createRefundReviewHandler({
     requireAdmin: async () => admin,
-    reviewRefund: async () => ({ status: "APPLIED", auditId: "audit-1", resourceId: "refund-request-1" }),
+    reviewRefund: async () => ({ status: "APPLIED" as const, auditId: "audit-1", resourceId: "refund-request-1" }),
     executeRefund: async () => {
       executions += 1;
       return success();
@@ -52,6 +53,9 @@ test("approved refund review executes and returns the persisted review plus sett
   assert.equal(response.status, 200);
   assert.equal(executions, 1);
   assert.deepEqual(await response.json(), {
+    success: true,
+    refundCompleted: true,
+    requiresManualAction: false,
     status: "APPLIED",
     auditId: "audit-1",
     resourceId: "refund-request-1",
@@ -62,17 +66,26 @@ test("approved refund review executes and returns the persisted review plus sett
 test("rejected review never executes a provider refund", async () => {
   const handler = createRefundReviewHandler({
     requireAdmin: async () => admin,
-    reviewRefund: async () => ({ status: "APPLIED", auditId: "audit-1", resourceId: "refund-request-1" }),
+    reviewRefund: async () => ({ status: "APPLIED" as const, auditId: "audit-1", resourceId: "refund-request-1" }),
     executeRefund: async () => assert.fail("rejection must not execute refund"),
   });
   const response = await handler(request("REJECTED"));
-  assert.deepEqual((await response.json()).refundExecution, { status: "NOT_REQUESTED" });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    success: true,
+    refundCompleted: false,
+    requiresManualAction: false,
+    status: "APPLIED",
+    auditId: "audit-1",
+    resourceId: "refund-request-1",
+    refundExecution: { status: "NOT_REQUESTED" },
+  });
 });
 
-test("a persisted approval reports manual or retry state without leaking execution errors", async () => {
-  for (const [error, expected] of [
-    [new BillingError("REFUND_REQUIRES_MANUAL_REVIEW", "manual", 409), "MANUAL_REVIEW_REQUIRED"],
-    [new Error("provider-secret-must-not-leak"), "RETRY_REQUIRED"],
+test("a persisted approval distinguishes manual action from a failed execution", async () => {
+  for (const [error, expected, status, success, manual] of [
+    [new BillingError("REFUND_REQUIRES_MANUAL_REVIEW", "manual", 409), "MANUAL_REVIEW_REQUIRED", 202, true, true],
+    [new Error("provider-secret-must-not-leak"), "RETRY_REQUIRED", 503, false, false],
   ] as const) {
     const handler = createRefundReviewHandler({
       requireAdmin: async () => admin,
@@ -81,10 +94,43 @@ test("a persisted approval reports manual or retry state without leaking executi
     });
     const response = await handler(request());
     const text = await response.text();
-    assert.equal(response.status, 200);
+    assert.equal(response.status, status);
     assert.equal(text.includes("provider-secret-must-not-leak"), false);
-    assert.equal(JSON.parse(text).refundExecution.status, expected);
+    const result = JSON.parse(text);
+    assert.equal(result.success, success);
+    assert.equal(result.refundCompleted, false);
+    assert.equal(result.requiresManualAction, manual);
+    assert.equal(result.refundExecution.status, expected);
+    if (!success) {
+      assert.equal(result.approvalPersisted, true);
+      assert.equal(result.error.code, "REFUND_EXECUTION_RETRY_REQUIRED");
+    }
   }
+});
+
+test("unexpected execution failures emit one fixed safe event while manual review emits none", async () => {
+  const events: BillingSecurityLogEvent[] = [];
+  const base = {
+    requireAdmin: async () => admin,
+    reviewRefund: async () => ({ status: "APPLIED" as const, auditId: "audit-1", resourceId: "refund-request-1" }),
+    logger: { warn: (event: BillingSecurityLogEvent) => events.push(event) },
+  };
+  const failed = createRefundReviewHandler({
+    ...base,
+    executeRefund: async () => { throw new Error("secret transaction txn-123"); },
+  });
+  await failed(request());
+  assert.deepEqual(events, [{
+    eventCode: "REFUND_EXECUTION_FAILED",
+    errorCode: "REFUND_EXECUTION_RETRY_REQUIRED",
+    status: "FAILED",
+  }]);
+  const manual = createRefundReviewHandler({
+    ...base,
+    executeRefund: async () => { throw new BillingError("REFUND_REQUIRES_MANUAL_REVIEW", "manual", 409); },
+  });
+  await manual(request());
+  assert.equal(events.length, 1);
 });
 
 test("retrying the same idempotent approval can recover execution", async () => {
@@ -104,6 +150,7 @@ test("retrying the same idempotent approval can recover execution", async () => 
   });
 
   const first = await handler(request());
+  assert.equal(first.status, 503);
   assert.equal((await first.json()).refundExecution.status, "RETRY_REQUIRED");
   const second = await handler(request());
   assert.equal((await second.json()).refundExecution.status, "SUCCEEDED");

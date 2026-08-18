@@ -7,7 +7,8 @@ export type BillingSecurityEventCode =
   | "PAYMENT_CREATE_FAILED"
   | "PAYMENT_INTENT_PERSIST_FAILED"
   | "REFUND_PROVIDER_FAILED"
-  | "REFUND_PERSIST_FAILED";
+  | "REFUND_PERSIST_FAILED"
+  | "REFUND_EXECUTION_FAILED";
 
 export type BillingSecurityLogEvent = {
   eventCode: BillingSecurityEventCode;
@@ -32,6 +33,7 @@ const EVENT_CODES = new Set<BillingSecurityEventCode>([
   "PAYMENT_INTENT_PERSIST_FAILED",
   "REFUND_PROVIDER_FAILED",
   "REFUND_PERSIST_FAILED",
+  "REFUND_EXECUTION_FAILED",
 ]);
 
 const MAX_VALUE_LENGTH = 160;
