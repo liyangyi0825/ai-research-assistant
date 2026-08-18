@@ -78,6 +78,17 @@ BEGIN
     RAISE EXCEPTION 'invalid billing webhook event retry count'
       USING ERRCODE = 'integrity_constraint_violation';
   END IF;
+  IF NEW.retry_after IS DISTINCT FROM OLD.retry_after AND NOT (
+    (OLD.status = 'RECEIVED' AND NEW.status = 'RETRYABLE'
+      AND NEW.retry_after IS NOT NULL
+      AND NEW.retry_count = OLD.retry_count + 1)
+    OR (OLD.status = 'RETRYABLE' AND NEW.status IN ('RECEIVED', 'FAILED')
+      AND NEW.retry_after IS NULL
+      AND NEW.retry_count = OLD.retry_count)
+  ) THEN
+    RAISE EXCEPTION 'invalid billing webhook event retry lease mutation'
+      USING ERRCODE = 'integrity_constraint_violation';
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -115,7 +126,7 @@ BEGIN
     RAISE EXCEPTION 'webhook event not found' USING ERRCODE = 'P0002';
   END IF;
 
-  IF v_event.status IN ('RECEIVED', 'RETRYABLE') THEN
+  IF v_event.status = 'RECEIVED' THEN
     IF v_event.retry_count >= 8 THEN
       UPDATE public.billing_webhook_events
       SET status = 'FAILED', error_code = 'WEBHOOK_RETRY_EXHAUSTED', retry_after = NULL, updated_at = clock_timestamp()

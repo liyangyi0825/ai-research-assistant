@@ -923,6 +923,7 @@ declare
   refund_count_before bigint;
   audit_count_before bigint;
   refund_rollback_observed boolean := false;
+  retry_lease_mutation_rejected boolean := false;
   refund_execution_id uuid;
 begin
   begin
@@ -1322,9 +1323,28 @@ begin
   if result ->> 'status' is distinct from 'RETRYABLE' then
     raise exception 'webhook retry transition did not reach RETRYABLE';
   end if;
-  update public.billing_webhook_events
-  set retry_after = clock_timestamp() - interval '1 second'
-  where provider = 'MOCK' and provider_event_id = 'DRILL-RETRY-EVENT-013';
+  begin
+    update public.billing_webhook_events
+    set retry_after = clock_timestamp() - interval '1 second'
+    where provider = 'MOCK' and provider_event_id = 'DRILL-RETRY-EVENT-013';
+  exception when sqlstate '23000' then
+    retry_lease_mutation_rejected := true;
+  end;
+  if retry_lease_mutation_rejected is not true then
+    raise exception 'direct past webhook retry lease mutation was accepted';
+  end if;
+  retry_lease_mutation_rejected := false;
+  begin
+    update public.billing_webhook_events
+    set retry_after = clock_timestamp() + interval '1 hour'
+    where provider = 'MOCK' and provider_event_id = 'DRILL-RETRY-EVENT-013';
+  exception when sqlstate '23000' then
+    retry_lease_mutation_rejected := true;
+  end;
+  if retry_lease_mutation_rejected is not true then
+    raise exception 'direct future webhook retry lease mutation was accepted';
+  end if;
+  perform pg_catalog.pg_sleep(1.1);
   result := public.billing_prepare_webhook_settlement('MOCK', 'DRILL-RETRY-EVENT-013');
   if result ->> 'status' is distinct from 'RECEIVED' then
     raise exception 'webhook retry transition did not return to RECEIVED';

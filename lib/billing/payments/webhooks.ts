@@ -316,7 +316,7 @@ function safeDatabaseError(error: DatabaseError): BillingError {
     : settlementFailedError();
 }
 
-function mapSettlement(value: unknown): WebhookSettlementResult {
+function mapSettlementUnsafe(value: unknown): WebhookSettlementResult {
   const result = record(value);
   if (
     result.status !== "PROCESSED" &&
@@ -343,6 +343,14 @@ function mapSettlement(value: unknown): WebhookSettlementResult {
       ? { errorCode: nullableString(result.error_code) }
       : {}),
   };
+}
+
+function mapSettlement(value: unknown): WebhookSettlementResult {
+  try {
+    return mapSettlementUnsafe(value);
+  } catch {
+    throw settlementFailedError();
+  }
 }
 
 export function createWebhookRepository(

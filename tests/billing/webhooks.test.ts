@@ -101,6 +101,28 @@ test("SQLSTATE classification drives retryable versus terminal webhook state", a
   }
 });
 
+test("malformed successful settlement RPC responses fail permanently", async () => {
+  for (const [name, data] of [
+    ["null", null],
+    ["unknown-status", { status: "SOMETHING_ELSE" }],
+    ["missing-status", { order_id: "order-id-1" }],
+  ] as const) {
+    const memory = new MemoryWebhookRepository();
+    const database = createWebhookRepository({
+      from: () => { throw new Error("unused"); },
+      rpc: async () => ({ data, error: null }),
+    });
+    memory.settlePaidOrder = (args) => database.settlePaidOrder(args);
+    const body = eventBody({ eventId: `malformed-${name}` });
+    await assert.rejects(
+      processPaymentWebhook("mock", body, signed(body), webhookDependencies(memory)),
+      (error: unknown) => expectBillingError(error, "WEBHOOK_SETTLEMENT_FAILED", 500),
+    );
+    assert.equal(memory.events.get(`MOCK:malformed-${name}`)?.status, "FAILED");
+    assert.equal(memory.operations.some((operation) => operation.startsWith("retryable:")), false);
+  }
+});
+
 const now = new Date("2026-07-22T03:00:00.000Z");
 const secret = "webhook-test-secret";
 const config: BillingConfig = {

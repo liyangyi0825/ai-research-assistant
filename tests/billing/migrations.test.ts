@@ -29,6 +29,9 @@ test("013 webhook retries are bounded, server-timed, immutable, and service-role
   assert.match(sql, /old\.status = 'received' and new\.status in \('processing', 'retryable', 'failed'\)/);
   assert.match(sql, /old\.status = 'retryable' and new\.status in \('received', 'failed'\)/);
   assert.match(sql, /new\.retry_count[\s\S]*old\.retry_count/);
+  assert.match(sql, /new\.retry_after is distinct from old\.retry_after/);
+  assert.match(sql, /old\.status = 'received'[\s\S]*new\.status = 'retryable'[\s\S]*new\.retry_after is not null[\s\S]*new\.retry_count = old\.retry_count \+ 1/);
+  assert.match(sql, /old\.status = 'retryable'[\s\S]*new\.status in \('received', 'failed'\)[\s\S]*new\.retry_after is null/);
   assert.match(sql, /new\.provider_event_id[\s\S]*old\.provider_event_id/);
 });
 
