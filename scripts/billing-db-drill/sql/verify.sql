@@ -502,6 +502,7 @@ declare
   ];
   missing_or_unsafe text[];
   updated_trigger_count integer;
+  refund_quota_trigger_count integer;
 begin
   select array_agg(signature order by signature)
   into missing_or_unsafe
@@ -559,12 +560,33 @@ begin
     raise exception 'billing administrator audit immutability trigger missing';
   end if;
 
+  select count(*)
+  into refund_quota_trigger_count
+  from pg_catalog.pg_trigger
+  where tgrelid = 'public.billing_usage_quotas'::regclass
+    and tgname = 'billing_block_refunding_quota_usage'
+    and not tgisinternal;
+  if refund_quota_trigger_count is distinct from 1 then
+    raise exception 'billing refund quota lock trigger inventory mismatch';
+  end if;
+
   if not exists (
     select 1
     from pg_catalog.pg_trigger
     where tgrelid = 'public.billing_usage_quotas'::regclass
       and tgname = 'billing_block_refunding_quota_usage'
       and tgfoid = 'public.billing_guard_refunding_quota_usage()'::regprocedure
+      and tgtype = 19
+      and tgenabled = 'O'
+      and tgattr::TEXT = (
+        select string_agg(attribute.attnum::TEXT, ' ' order by expected.ordinality)
+        from unnest(array['reserved_units', 'used_units']) with ordinality
+          as expected(column_name, ordinality)
+        join pg_catalog.pg_attribute as attribute
+          on attribute.attrelid = 'public.billing_usage_quotas'::regclass
+         and attribute.attname = expected.column_name
+         and not attribute.attisdropped
+      )
       and not tgisinternal
   ) then
     raise exception 'billing refund quota lock trigger missing';
@@ -894,7 +916,191 @@ declare
   subscription_count_before bigint;
   refund_count_before bigint;
   audit_count_before bigint;
+  refund_rollback_observed boolean := false;
+  refund_execution_id uuid;
 begin
+  begin
+    result := public.billing_admin_review_refund(
+      '00000000-0000-4000-8000-00000000b002',
+      '00000000-0000-4000-8000-00000000b060',
+      'APPROVED',
+      'Synthetic automatic refund verification',
+      'verify-refund-review-012'
+    );
+    if result ->> 'status' is distinct from 'APPLIED' then
+      raise exception 'refund approval was not persisted';
+    end if;
+
+    result := public.billing_claim_approved_refund(
+      '00000000-0000-4000-8000-00000000b060',
+      '00000000-0000-4000-8000-00000000b080',
+      clock_timestamp()
+    );
+    if result ->> 'status' is distinct from 'CLAIMED' then
+      raise exception 'approved subscription refund was not claimed';
+    end if;
+
+    replay := public.billing_fail_refund_claim(
+      (result ->> 'refund_id')::uuid,
+      '00000000-0000-4000-8000-00000000b080',
+      'VERIFY_DETERMINISTIC_FAILURE'
+    );
+    if replay ->> 'status' is distinct from 'RELEASED' then
+      raise exception 'deterministic refund claim was not released';
+    end if;
+
+    expected_failure := false;
+    begin
+      perform public.billing_complete_refund(
+        (result ->> 'refund_id')::uuid,
+        '00000000-0000-4000-8000-00000000b080',
+        'VERIFY-REFUND-FAILED-CLAIM',
+        'DRILL-MOCK-SUBSCRIPTION-009',
+        1990,
+        'CNY',
+        '{}'::jsonb
+      );
+    exception
+      when sqlstate '55000' then
+        expected_failure := true;
+    end;
+    if expected_failure is not true then
+      raise exception 'released refund claim remained completable';
+    end if;
+
+    result := public.billing_claim_approved_refund(
+      '00000000-0000-4000-8000-00000000b060',
+      '00000000-0000-4000-8000-00000000b081',
+      clock_timestamp()
+    );
+    if result ->> 'status' is distinct from 'CLAIMED' then
+      raise exception 'released refund claim was not reclaimable';
+    end if;
+    refund_execution_id := (result ->> 'refund_id')::uuid;
+
+    expected_failure := false;
+    begin
+      perform public.billing_complete_refund(
+        refund_execution_id,
+        '00000000-0000-4000-8000-00000000b081',
+        'VERIFY-REFUND-012',
+        'DRILL-MOCK-SUBSCRIPTION-009',
+        1991,
+        'CNY',
+        '{}'::jsonb
+      );
+    exception
+      when sqlstate '22000' then
+        expected_failure := true;
+    end;
+    if expected_failure is not true then
+      raise exception 'mismatched refund amount was accepted';
+    end if;
+
+    expected_failure := false;
+    begin
+      perform public.billing_complete_refund(
+        refund_execution_id,
+        '00000000-0000-4000-8000-00000000b081',
+        'VERIFY-REFUND-012',
+        'DRILL-MOCK-SUBSCRIPTION-009',
+        1990,
+        'USD',
+        '{}'::jsonb
+      );
+    exception
+      when sqlstate '22023' then
+        expected_failure := true;
+    end;
+    if expected_failure is not true then
+      raise exception 'mismatched refund currency was accepted';
+    end if;
+
+    result := public.billing_complete_refund(
+      refund_execution_id,
+      '00000000-0000-4000-8000-00000000b081',
+      'VERIFY-REFUND-012',
+      'DRILL-MOCK-SUBSCRIPTION-009',
+      1990,
+      'CNY',
+      '{"fixture":"billing-drill"}'::jsonb
+    );
+    replay := public.billing_complete_refund(
+      refund_execution_id,
+      '00000000-0000-4000-8000-00000000b081',
+      'VERIFY-REFUND-012',
+      'DRILL-MOCK-SUBSCRIPTION-009',
+      1990,
+      'CNY',
+      '{"fixture":"billing-drill"}'::jsonb
+    );
+    if result ->> 'status' is distinct from 'SUCCEEDED'
+       or replay ->> 'status' is distinct from 'SUCCEEDED'
+       or not exists (
+         select 1 from public.billing_subscriptions
+         where id = '00000000-0000-4000-8000-00000000b040'
+           and source_order_id = '00000000-0000-4000-8000-00000000b021'
+           and status = 'CANCELLED'
+       )
+       or not exists (
+         select 1 from public.billing_usage_quotas
+         where id = '00000000-0000-4000-8000-00000000b042'
+           and subscription_id = '00000000-0000-4000-8000-00000000b040'
+           and quota_limit = 0
+       ) then
+      raise exception 'refund completion or replay state mismatch';
+    end if;
+
+    insert into public.billing_refund_requests (
+      id, order_id, user_id, requested_amount_minor, currency, reason, status,
+      reviewed_by, review_note, reviewed_at
+    ) values (
+      '00000000-0000-4000-8000-00000000b062',
+      '00000000-0000-4000-8000-00000000b022',
+      '00000000-0000-4000-8000-00000000b001',
+      990,
+      'CNY',
+      'Synthetic credit pack manual refund verification',
+      'APPROVED',
+      '00000000-0000-4000-8000-00000000b002',
+      'Manual only',
+      clock_timestamp()
+    );
+    update public.billing_orders
+    set status = 'REFUNDING', refund_status = 'REQUESTED'
+    where id = '00000000-0000-4000-8000-00000000b022';
+    result := public.billing_claim_approved_refund(
+      '00000000-0000-4000-8000-00000000b062',
+      '00000000-0000-4000-8000-00000000b082',
+      clock_timestamp()
+    );
+    if result ->> 'status' is distinct from 'MANUAL_REVIEW_REQUIRED'
+       or exists (
+         select 1 from public.billing_refunds
+         where refund_request_id = '00000000-0000-4000-8000-00000000b062'
+       ) then
+      raise exception 'credit pack automatic refund was not rejected';
+    end if;
+
+    raise exception 'refund execution rollback sentinel' using errcode = 'P1200';
+  exception
+    when sqlstate 'P1200' then
+      refund_rollback_observed := true;
+  end;
+  if refund_rollback_observed is not true
+     or not exists (
+       select 1 from public.billing_orders
+       where id = '00000000-0000-4000-8000-00000000b021'
+         and status = 'PAID'
+         and refund_status = 'NONE'
+     )
+     or exists (
+       select 1 from public.billing_refunds
+       where refund_request_id = '00000000-0000-4000-8000-00000000b060'
+     ) then
+    raise exception 'refund execution rollback failed';
+  end if;
+
   select * into strict quota_before
   from public.billing_usage_quotas
   where id = '00000000-0000-4000-8000-00000000b042';

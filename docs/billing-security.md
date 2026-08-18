@@ -54,6 +54,13 @@
 - The default sink writes one `billing_security_event` JSON record per event to server stderr. Records are built only from the allowlisted event code, provider, verified or server-owned identifiers, fixed error code, and fixed status; raw webhook bodies, signatures, headers, keys, tokens, email addresses, tax identifiers, raw errors, and stacks are excluded.
 - External alert delivery is not configured. Production monitoring remains incomplete until an approved monitoring, alert-routing, retention, and response process is configured and tested.
 
+## Automatic refund boundary
+
+- Automatic Provider refunds are limited to unused `SUBSCRIPTION` orders that contain no credit grant. The service derives the full refund amount and currency from the paid order and payment; administrators cannot supply either value.
+- `CREDIT_PACK` requests return `REFUND_REQUIRES_MANUAL_REVIEW` before a claim lease is created or a Provider is called. The approved request remains available for an audited manual process.
+- `RETRY_REQUIRED` means the approval was persisted but automatic execution did not finish. Operators must retry with the same review idempotency key so that the existing review and refund claim can be recovered safely.
+- Once a Provider call may have occurred, the claim lease is retained and the same Provider refund idempotency key is reused. Deterministic configuration failures detected before the Provider call release the claim for a corrected retry.
+
 ## 上线前安全门
 
 在正式收费前必须完成：

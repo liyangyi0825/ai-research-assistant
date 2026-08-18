@@ -949,6 +949,13 @@ test("manifest reports and verification requires the exact 001-012 migration his
     verify,
     /tgname\s*=\s*'billing_block_refunding_quota_usage'[\s\S]*billing_guard_refunding_quota_usage\(\)/i,
   );
+  assert.match(verify, /refund_quota_trigger_count[\s\S]*is distinct from 1/i);
+  assert.match(verify, /tgtype\s*=\s*19/i);
+  assert.match(verify, /tgenabled\s*=\s*'O'/i);
+  assert.match(
+    verify,
+    /tgattr::TEXT[\s\S]*reserved_units[\s\S]*used_units/i,
+  );
   assert.match(
     verify,
     /update\s+public\.billing_plan_entitlements[\s\S]*billing_assert_semester_plan\s*\([^)]+\)[\s\S]*sqlstate\s+'23514'/i,
@@ -1176,6 +1183,11 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /'USD'[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement currency was accepted/i);
   assert.match(verify, /billing_request_refund\s*\([\s\S]*b022[\s\S]*refund request replay was not idempotent/i);
   assert.match(verify, /billing_admin_review_invoice\s*\([\s\S]*ALREADY_APPLIED[\s\S]*administrator replay was not idempotent/i);
+  assert.match(verify, /billing_claim_approved_refund\s*\([\s\S]*billing_fail_refund_claim\s*\([\s\S]*billing_complete_refund\s*\(/i);
+  assert.match(verify, /MANUAL_REVIEW_REQUIRED[\s\S]*credit pack automatic refund was not rejected/i);
+  assert.match(verify, /refund execution rollback sentinel[\s\S]*refund execution rollback failed/i);
+  assert.match(verify, /source_order_id[\s\S]*status\s*=\s*'CANCELLED'/i);
+  assert.match(verify, /subscription_id[\s\S]*quota_limit\s*=\s*0/i);
 
   const finalizedStateChecks = sqlBetween(verify, "'verify-finalize-009'", "'verify-release-009'");
   assert.match(finalizedStateChecks, /from\s+public\.billing_usage_quotas[\s\S]*reserved_units[\s\S]*used_units/i);

@@ -214,7 +214,7 @@ values (
   'summarize',
   'PLAN',
   '00000000-0000-4000-8000-00000000b021',
-  '{"periodic_limit":100}'::jsonb,
+  '{"feature_key":"summarize","periodic_limit":100}'::jsonb,
   timestamptz '2026-01-02 00:00:00+00',
   timestamptz '2099-01-01 00:00:00+00',
   timestamptz '2026-01-02 00:00:00+00',

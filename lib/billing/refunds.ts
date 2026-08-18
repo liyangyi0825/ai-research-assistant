@@ -29,6 +29,7 @@ export type ApprovedRefundClaim = {
 export type RefundClaimResult =
   | ApprovedRefundClaim
   | { status: "IN_PROGRESS" }
+  | { status: "MANUAL_REVIEW_REQUIRED" }
   | { status: "SUCCEEDED"; refund: RefundResult };
 
 export type RefundExecutionResult = {
@@ -130,6 +131,9 @@ function mapRefundResult(value: unknown): RefundResult {
 function mapClaim(value: unknown): RefundClaimResult {
   const row = record(value);
   if (row.status === "IN_PROGRESS") return { status: "IN_PROGRESS" };
+  if (row.status === "MANUAL_REVIEW_REQUIRED") {
+    return { status: "MANUAL_REVIEW_REQUIRED" };
+  }
   if (row.status === "SUCCEEDED") {
     return { status: "SUCCEEDED", refund: mapRefundResult(row) };
   }
@@ -310,6 +314,13 @@ export async function executeApprovedRefund(
     throw storageError();
   }
   if (claim.status === "SUCCEEDED") return claim;
+  if (claim.status === "MANUAL_REVIEW_REQUIRED") {
+    throw new BillingError(
+      "REFUND_REQUIRES_MANUAL_REVIEW",
+      "This refund requires manual review and cannot be executed automatically.",
+      409,
+    );
+  }
   if (claim.status === "IN_PROGRESS") {
     throw new BillingError(
       "REFUND_EXECUTION_IN_PROGRESS",
@@ -317,11 +328,26 @@ export async function executeApprovedRefund(
       409,
     );
   }
-  validateClaim(claim, requestId, config);
-  const paymentProvider = (dependencies.getProvider ?? getPaymentProvider)(
-    modeForProvider(claim.provider),
-    config,
-  );
+  let paymentProvider: PaymentProvider;
+  try {
+    validateClaim(claim, requestId, config);
+    paymentProvider = (dependencies.getProvider ?? getPaymentProvider)(
+      modeForProvider(claim.provider),
+      config,
+    );
+  } catch (error) {
+    try {
+      await repository.failRefundClaim({
+        refundId: claim.refundId,
+        claimToken,
+        errorCode: "REFUND_EXECUTION_CONFIGURATION_FAILED",
+      });
+    } catch {
+      // The bounded lease remains recoverable if deterministic cleanup fails.
+    }
+    if (error instanceof BillingError) throw error;
+    throw storageError();
+  }
   const logger = dependencies.logger ?? billingSecurityLogger;
   let refund: RefundResult;
   try {
@@ -339,15 +365,8 @@ export async function executeApprovedRefund(
       errorCode: "REFUND_PROVIDER_FAILED",
       status: "FAILED",
     });
-    try {
-      await repository.failRefundClaim({
-        refundId: claim.refundId,
-        claimToken,
-        errorCode: "REFUND_PROVIDER_FAILED",
-      });
-    } catch {
-      // A bounded database lease also makes a failed claim retryable.
-    }
+    // Once a provider call begins, its outcome may be unknown. Keep the claim
+    // and retry with the same provider idempotency key after the lease expires.
     throw new BillingError(
       "REFUND_PROVIDER_UNAVAILABLE",
       "The payment provider could not complete the refund.",

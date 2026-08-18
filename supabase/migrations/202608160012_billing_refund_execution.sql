@@ -48,15 +48,11 @@ AS $$
 DECLARE
   v_order public.billing_orders%ROWTYPE;
   v_subscription public.billing_subscriptions%ROWTYPE;
-  v_credit_ledger public.billing_credit_ledger%ROWTYPE;
-  v_credit_account public.billing_credit_accounts%ROWTYPE;
   v_subscription_count BIGINT;
   v_expected_entitlement_count BIGINT := 0;
   v_actual_entitlement_count BIGINT := 0;
   v_expected_quota_count BIGINT := 0;
   v_actual_quota_count BIGINT := 0;
-  v_credit_ledger_count BIGINT := 0;
-  v_credit_grant BIGINT := 0;
 BEGIN
   SELECT * INTO v_order
   FROM public.billing_orders
@@ -69,7 +65,17 @@ BEGIN
       USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
 
-  IF v_order.snapshot_product_type = 'SUBSCRIPTION' THEN
+  IF v_order.snapshot_product_type <> 'SUBSCRIPTION'
+     OR v_order.snapshot_credit_grant <> 0
+     OR EXISTS (
+       SELECT 1
+       FROM jsonb_array_elements(v_order.snapshot_entitlements) AS snapshot(value)
+       WHERE COALESCE((snapshot.value ->> 'credit_grant')::BIGINT, 0) <> 0
+     ) THEN
+    RAISE EXCEPTION 'only subscription refunds without credits are automatic'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+
     SELECT count(*) INTO v_subscription_count
     FROM public.billing_subscriptions
     WHERE source_order_id = v_order.id
@@ -156,70 +162,8 @@ BEGIN
         USING ERRCODE = 'object_not_in_prerequisite_state';
     END IF;
 
-    SELECT COALESCE(sum(COALESCE((snapshot.value ->> 'credit_grant')::BIGINT, 0)), 0)
-      INTO v_credit_grant
-    FROM jsonb_array_elements(v_order.snapshot_entitlements) AS snapshot(value);
-  ELSE
-    SELECT count(*) INTO v_subscription_count
-    FROM public.billing_subscriptions
-    WHERE source_order_id = v_order.id;
-    SELECT count(*) INTO v_actual_entitlement_count
-    FROM public.billing_user_entitlements
-    WHERE source_order_id = v_order.id
-      AND source_type = 'PLAN';
-    IF v_subscription_count <> 0 OR v_actual_entitlement_count <> 0 THEN
-      RAISE EXCEPTION 'refund credit pack state mismatch'
-        USING ERRCODE = 'object_not_in_prerequisite_state';
-    END IF;
-    v_credit_grant := v_order.snapshot_credit_grant;
-  END IF;
-
-  SELECT count(*) INTO v_credit_ledger_count
-  FROM public.billing_credit_ledger
-  WHERE user_id = v_order.user_id
-    AND reference_type = 'ORDER'
-    AND reference_id = v_order.id::TEXT;
-  IF (v_credit_grant = 0 AND v_credit_ledger_count <> 0)
-     OR (v_credit_grant > 0 AND v_credit_ledger_count <> 1) THEN
-    RAISE EXCEPTION 'refund credit settlement mismatch'
-      USING ERRCODE = 'object_not_in_prerequisite_state';
-  END IF;
-
-  IF v_credit_grant > 0 THEN
-    SELECT * INTO v_credit_ledger
-    FROM public.billing_credit_ledger
-    WHERE user_id = v_order.user_id
-      AND reference_type = 'ORDER'
-      AND reference_id = v_order.id::TEXT
-    FOR UPDATE;
-    IF v_credit_ledger.entry_type IS DISTINCT FROM CASE
-         WHEN v_order.snapshot_product_type = 'CREDIT_PACK' THEN 'PURCHASE'
-         ELSE 'GRANT'
-       END
-       OR v_credit_ledger.delta_available IS DISTINCT FROM v_credit_grant
-       OR v_credit_ledger.delta_reserved IS DISTINCT FROM 0 THEN
-      RAISE EXCEPTION 'refund credit grant mismatch'
-        USING ERRCODE = 'object_not_in_prerequisite_state';
-    END IF;
-
-    SELECT * INTO v_credit_account
-    FROM public.billing_credit_accounts
-    WHERE id = v_credit_ledger.account_id
-      AND user_id = v_order.user_id
-      AND currency = 'CREDITS'
-    FOR UPDATE;
-    IF NOT FOUND
-       OR v_credit_account.available_balance < v_credit_grant
-       OR v_credit_account.reserved_balance <> 0 THEN
-      RAISE EXCEPTION 'refund credits are no longer reversible'
-        USING ERRCODE = 'object_not_in_prerequisite_state';
-    END IF;
-  END IF;
-
   RETURN jsonb_build_object(
-    'subscription_id', v_subscription.id,
-    'credit_account_id', v_credit_account.id,
-    'credit_grant', v_credit_grant
+    'subscription_id', v_subscription.id
   );
 END;
 $$;
@@ -302,6 +246,17 @@ BEGIN
   IF NOT FOUND OR v_order.user_id IS DISTINCT FROM v_request.user_id THEN
     RAISE EXCEPTION 'refund order contract mismatch'
       USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+
+  IF v_order.snapshot_product_type = 'CREDIT_PACK' THEN
+    IF v_order.status <> 'REFUNDING'
+       OR v_order.refund_status <> 'REQUESTED'
+       OR v_request.requested_amount_minor IS DISTINCT FROM v_order.amount_minor
+       OR v_request.currency IS DISTINCT FROM v_order.currency THEN
+      RAISE EXCEPTION 'refund order contract mismatch'
+        USING ERRCODE = 'object_not_in_prerequisite_state';
+    END IF;
+    RETURN jsonb_build_object('status', 'MANUAL_REVIEW_REQUIRED');
   END IF;
 
   v_idempotency_key := 'billing-refund:' || p_request_id::TEXT;
@@ -469,11 +424,8 @@ DECLARE
   v_request public.billing_refund_requests%ROWTYPE;
   v_order public.billing_orders%ROWTYPE;
   v_payment public.billing_payments%ROWTYPE;
-  v_credit_account public.billing_credit_accounts%ROWTYPE;
   v_benefits JSONB;
   v_subscription_id UUID;
-  v_credit_account_id UUID;
-  v_credit_grant BIGINT;
   v_completed_at TIMESTAMPTZ;
 BEGIN
   IF p_refund_id IS NULL
@@ -564,8 +516,6 @@ BEGIN
 
   v_benefits := public.billing_assert_refund_reversible(v_order.id);
   v_subscription_id := NULLIF(v_benefits ->> 'subscription_id', '')::UUID;
-  v_credit_account_id := NULLIF(v_benefits ->> 'credit_account_id', '')::UUID;
-  v_credit_grant := COALESCE((v_benefits ->> 'credit_grant')::BIGINT, 0);
   v_completed_at := clock_timestamp();
 
   IF v_subscription_id IS NOT NULL THEN
@@ -597,54 +547,6 @@ BEGIN
       AND user_id = v_order.user_id
       AND reserved_units = 0
       AND used_units = 0;
-  END IF;
-
-  IF v_credit_grant > 0 THEN
-    SELECT * INTO v_credit_account
-    FROM public.billing_credit_accounts
-    WHERE id = v_credit_account_id
-      AND user_id = v_order.user_id
-      AND currency = 'CREDITS'
-    FOR UPDATE;
-    IF NOT FOUND
-       OR v_credit_account.available_balance < v_credit_grant
-       OR v_credit_account.reserved_balance <> 0 THEN
-      RAISE EXCEPTION 'refund credits are no longer reversible'
-        USING ERRCODE = 'object_not_in_prerequisite_state';
-    END IF;
-
-    UPDATE public.billing_credit_accounts
-    SET available_balance = available_balance - v_credit_grant,
-        version = version + 1,
-        updated_at = v_completed_at
-    WHERE id = v_credit_account.id
-    RETURNING * INTO v_credit_account;
-
-    INSERT INTO public.billing_credit_ledger (
-      account_id,
-      user_id,
-      entry_type,
-      delta_available,
-      delta_reserved,
-      available_after,
-      reserved_after,
-      idempotency_key,
-      reference_type,
-      reference_id,
-      metadata
-    ) VALUES (
-      v_credit_account.id,
-      v_order.user_id,
-      'ADJUSTMENT',
-      -v_credit_grant,
-      0,
-      v_credit_account.available_balance,
-      v_credit_account.reserved_balance,
-      'refund:' || v_request.id::TEXT || ':credit-reversal',
-      'REFUND',
-      v_refund.id::TEXT,
-      jsonb_build_object('order_id', v_order.id, 'refund_request_id', v_request.id)
-    );
   END IF;
 
   UPDATE public.billing_refunds

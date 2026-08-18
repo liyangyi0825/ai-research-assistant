@@ -48,6 +48,7 @@ type RefundModule = {
         }): Promise<
           | Claim
           | { status: "IN_PROGRESS" }
+          | { status: "MANUAL_REVIEW_REQUIRED" }
           | { status: "SUCCEEDED"; refund: RefundResult }
         >;
         completeRefund(input: {
@@ -249,6 +250,7 @@ test("refund execution fails closed when the approved payment provider differs f
   const executeApprovedRefund = refundModule.executeApprovedRefund!;
   const { provider, payment } = await paidProvider();
   let providerCalls = 0;
+  const failures: unknown[] = [];
   provider.refundPayment = async () => {
     providerCalls += 1;
     throw new Error("must not execute");
@@ -275,7 +277,13 @@ test("refund execution fails closed when the approved payment provider differs f
           async completeRefund() {
             throw new Error("must not complete");
           },
-          async failRefundClaim() {},
+          async failRefundClaim(input: {
+            refundId: string;
+            claimToken: string;
+            errorCode: string;
+          }) {
+            failures.push(input);
+          },
         },
         getConfig: () => config,
         getProvider: () => provider,
@@ -288,9 +296,14 @@ test("refund execution fails closed when the approved payment provider differs f
       error.status === 409,
   );
   assert.equal(providerCalls, 0);
+  assert.deepEqual(failures, [{
+    refundId: "refund-1",
+    claimToken: "claim-1",
+    errorCode: "REFUND_EXECUTION_CONFIGURATION_FAILED",
+  }]);
 });
 
-test("provider failures release the claim and emit only allowlisted refund diagnostics", async () => {
+test("provider errors preserve the claim for same-key recovery and emit only safe diagnostics", async () => {
   const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
   assert.equal(typeof refundModule.executeApprovedRefund, "function");
   const executeApprovedRefund = refundModule.executeApprovedRefund!;
@@ -345,13 +358,7 @@ test("provider failures release the claim and emit only allowlisted refund diagn
       !error.message.includes(transactionSecret),
   );
 
-  assert.deepEqual(failures, [
-    {
-      refundId: "refund-1",
-      claimToken: "claim-1",
-      errorCode: "REFUND_PROVIDER_FAILED",
-    },
-  ]);
+  assert.deepEqual(failures, []);
   assert.equal(logs.length, 1);
   assert.deepEqual(
     JSON.parse(logs[0].slice("billing_security_event ".length)),
@@ -366,6 +373,39 @@ test("provider failures release the claim and emit only allowlisted refund diagn
   assert.equal(logs[0].includes(transactionSecret), false);
 });
 
+test("credit-pack refunds require manual review before provider construction", async () => {
+  const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
+  const executeApprovedRefund = refundModule.executeApprovedRefund!;
+  let providerConstructed = false;
+
+  await assert.rejects(
+    () => executeApprovedRefund("credit-refund-1", {
+      repository: {
+        async claimApprovedRefund() {
+          return { status: "MANUAL_REVIEW_REQUIRED" as const };
+        },
+        async completeRefund() {
+          assert.fail("manual refunds cannot complete automatically");
+        },
+        async failRefundClaim() {
+          assert.fail("manual refunds must not create a lease to release");
+        },
+      },
+      getConfig: () => config,
+      getProvider: () => {
+        providerConstructed = true;
+        return new MockPaymentProvider({ secret: "unused" });
+      },
+      now: () => now,
+      createClaimToken: () => "claim-credit",
+    }),
+    (error: unknown) => error instanceof BillingError &&
+      error.code === "REFUND_REQUIRES_MANUAL_REVIEW" &&
+      error.status === 409,
+  );
+  assert.equal(providerConstructed, false);
+});
+
 test("the forward refund migration claims approved full refunds and completes all final state atomically", async () => {
   const sql = await readFile(
     "supabase/migrations/202608160012_billing_refund_execution.sql",
@@ -375,12 +415,13 @@ test("the forward refund migration claims approved full refunds and completes al
   assert.match(sql, /ALTER TABLE public\.billing_refunds[\s\S]*claim_token UUID[\s\S]*claim_expires_at TIMESTAMPTZ[\s\S]*last_error_code TEXT/i);
   assert.match(sql, /UPDATE public\.billing_refunds[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i);
   assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_claim_approved_refund\s*\(/i);
+  assert.match(sql, /snapshot_product_type\s*=\s*'CREDIT_PACK'[\s\S]*'status',\s*'MANUAL_REVIEW_REQUIRED'/i);
   assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_assert_refund_reversible\s*\(/i);
-  assert.match(sql, /snapshot_product_type\s*=\s*'SUBSCRIPTION'[\s\S]*billing_subscriptions[\s\S]*source_order_id\s*=\s*v_order\.id[\s\S]*status\s*=\s*'ACTIVE'/i);
+  assert.match(sql, /snapshot_product_type\s*<>\s*'SUBSCRIPTION'/i);
+  assert.match(sql, /billing_subscriptions[\s\S]*source_order_id\s*=\s*v_order\.id[\s\S]*status\s*=\s*'ACTIVE'/i);
   assert.match(sql, /billing_usage_records[\s\S]*status\s+IN\s*\('RESERVED',\s*'FINALIZED'\)/i);
   assert.match(sql, /billing_usage_quotas[\s\S]*reserved_units\s*<>\s*0[\s\S]*used_units\s*<>\s*0/i);
-  assert.match(sql, /billing_credit_ledger[\s\S]*reference_type\s*=\s*'ORDER'[\s\S]*reference_id\s*=\s*v_order\.id::TEXT/i);
-  assert.match(sql, /billing_credit_accounts[\s\S]*available_balance\s*<\s*v_credit_grant[\s\S]*reserved_balance\s*<>\s*0/i);
+  assert.doesNotMatch(sql, /billing_credit_accounts[\s\S]*available_balance\s*-\s*v_credit_grant/i);
   assert.match(sql, /CREATE TRIGGER billing_block_refunding_quota_usage/i);
   assert.doesNotMatch(sql, /CREATE TRIGGER billing_block_refunding_credit_debit/i);
   assert.match(sql, /v_request\.status\s*<>\s*'APPROVED'/i);
@@ -402,8 +443,8 @@ test("the forward refund migration claims approved full refunds and completes al
   assert.match(sql, /UPDATE public\.billing_subscriptions[\s\S]*status\s*=\s*'CANCELLED'[\s\S]*source_order_id\s*=\s*v_order\.id/i);
   assert.match(sql, /UPDATE public\.billing_user_entitlements[\s\S]*valid_until\s*=[\s\S]*source_order_id\s*=\s*v_order\.id[\s\S]*source_type\s*=\s*'PLAN'/i);
   assert.match(sql, /UPDATE public\.billing_usage_quotas[\s\S]*quota_limit\s*=\s*0[\s\S]*subscription_id\s*=\s*v_subscription_id/i);
-  assert.match(sql, /INSERT INTO public\.billing_credit_ledger[\s\S]*'ADJUSTMENT'[\s\S]*-v_credit_grant[\s\S]*'REFUND'/i);
-  assert.match(sql, /'refund:'\s*\|\|\s*v_request\.id::TEXT\s*\|\|\s*':credit-reversal'/i);
+  assert.doesNotMatch(sql, /INSERT INTO public\.billing_credit_ledger/i);
+  assert.doesNotMatch(sql, /credit-reversal/i);
   assert.doesNotMatch(sql, /DELETE\s+FROM\s+public\.billing_(?:subscriptions|user_entitlements|usage_quotas|credit_ledger)/i);
   assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_fail_refund_claim\s*\(/i);
   assert.match(sql, /REVOKE ALL ON FUNCTION public\.billing_claim_approved_refund[\s\S]*FROM PUBLIC, anon, authenticated/i);
