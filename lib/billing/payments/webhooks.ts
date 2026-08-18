@@ -820,6 +820,34 @@ export async function confirmMockOrderPayment(
   } catch (error) {
     throw normalizeError(error);
   }
+  let providerPayment;
+  try {
+    providerPayment = await provider.confirmPayment({
+      providerTransactionId,
+    });
+  } catch {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_UNAVAILABLE",
+      "The mock payment provider could not confirm the payment.",
+      503,
+    );
+  }
+  if (
+    providerPayment.orderNumber !== order.orderNumber ||
+    providerPayment.providerTransactionId !== storedPayment.providerTransactionId ||
+    providerPayment.status !== "PAID" ||
+    providerPayment.amountMinor !== storedPayment.amountMinor ||
+    providerPayment.currency !== storedPayment.currency ||
+    providerPayment.paymentToken !== storedPayment.paymentToken ||
+    providerPayment.expiresAt !== storedPayment.expiresAt ||
+    providerPayment.paidAt === null
+  ) {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "The mock payment provider returned an invalid confirmation.",
+      503,
+    );
+  }
   const callback = await provider.createPaidPaymentWebhook({
     orderNumber: order.orderNumber,
     ...storedPayment,

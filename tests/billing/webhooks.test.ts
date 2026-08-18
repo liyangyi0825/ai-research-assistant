@@ -848,7 +848,6 @@ test("Mock confirmation creates a stable signed callback and settles only throug
     idempotencyKey: `billing-payment:MOCK:${settlementOrder().orderNumber}`,
   });
   const webhookRepository = new MemoryWebhookRepository();
-  const confirmingProvider = mockProvider();
   const paymentOrder: PaymentOrderSnapshot = {
     id: "order-id-1",
     userId: "user-1",
@@ -881,7 +880,7 @@ test("Mock confirmation creates a stable signed callback and settles only throug
       } as unknown as PaymentServiceRepository,
       webhookRepository,
       getConfig: () => config,
-      getProvider: () => confirmingProvider,
+      getProvider: () => creatingProvider,
       now: () => now,
     },
   );
