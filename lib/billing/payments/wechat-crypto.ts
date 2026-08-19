@@ -25,6 +25,20 @@ type WechatCryptoErrorCode =
   | "WECHAT_TIMESTAMP_INVALID"
   | "WECHAT_RESOURCE_INVALID";
 
+const MAX_METHOD_LENGTH = 32;
+const MAX_PATH_WITH_QUERY_BYTES = 2_048;
+const MAX_NONCE_LENGTH = 32;
+const MAX_MCH_ID_LENGTH = 32;
+const MAX_CERTIFICATE_SERIAL_LENGTH = 64;
+const RSA_2048_SIGNATURE_BASE64_LENGTH = 344;
+const RSA_2048_SIGNATURE_BYTES = 256;
+const MAX_RESOURCE_BASE64_LENGTH = 1_048_576;
+const BASE64_PATTERN =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const UPPERCASE_HTTP_TOKEN_PATTERN = /^[A-Z0-9!#$%&'*+.^_`|~-]+$/;
+const SAFE_HEADER_VALUE_PATTERN = /^[A-Za-z0-9_-]+$/;
+const ASCII_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
+
 function cryptoError(
   code: WechatCryptoErrorCode,
   message: string,
@@ -48,10 +62,72 @@ function resourceInvalid(): BillingError {
   return cryptoError("WECHAT_RESOURCE_INVALID", "WeChat resource is invalid.");
 }
 
+function signingFailed(): BillingError {
+  return cryptoError(
+    "WECHAT_SIGNING_FAILED",
+    "WeChat request signing failed.",
+    500,
+  );
+}
+
+function hasSafeHeaderValue(value: string, maximumLength: number): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= maximumLength &&
+    SAFE_HEADER_VALUE_PATTERN.test(value)
+  );
+}
+
+function hasValidSigningInput(input: WechatRequestSigningInput): boolean {
+  return (
+    Number.isSafeInteger(input.timestamp) &&
+    input.timestamp >= 0 &&
+    input.method.length <= MAX_METHOD_LENGTH &&
+    UPPERCASE_HTTP_TOKEN_PATTERN.test(input.method) &&
+    input.pathWithQuery.startsWith("/") &&
+    Buffer.byteLength(input.pathWithQuery, "utf8") <=
+      MAX_PATH_WITH_QUERY_BYTES &&
+    !ASCII_CONTROL_PATTERN.test(input.pathWithQuery) &&
+    hasSafeHeaderValue(input.nonce, MAX_NONCE_LENGTH) &&
+    hasSafeHeaderValue(input.mchId, MAX_MCH_ID_LENGTH) &&
+    hasSafeHeaderValue(
+      input.certificateSerialNumber,
+      MAX_CERTIFICATE_SERIAL_LENGTH,
+    )
+  );
+}
+
+function decodeStrictBase64(
+  value: string,
+  maximumEncodedLength: number,
+  expectedDecodedLength?: number,
+): Buffer | null {
+  if (
+    value.length === 0 ||
+    value.length > maximumEncodedLength ||
+    value.length % 4 !== 0 ||
+    !BASE64_PATTERN.test(value)
+  ) {
+    return null;
+  }
+
+  const decoded = Buffer.from(value, "base64");
+  if (
+    decoded.toString("base64") !== value ||
+    (expectedDecodedLength !== undefined &&
+      decoded.length !== expectedDecodedLength)
+  ) {
+    return null;
+  }
+  return decoded;
+}
+
 export function signWechatRequest(input: WechatRequestSigningInput): {
   authorization: string;
   message: string;
 } {
+  if (!hasValidSigningInput(input)) throw signingFailed();
+
   const message = `${input.method}\n${input.pathWithQuery}\n${input.timestamp}\n${input.nonce}\n${input.body}\n`;
 
   let signatureBase64: string;
@@ -62,11 +138,7 @@ export function signWechatRequest(input: WechatRequestSigningInput): {
       input.privateKeyPem,
     ).toString("base64");
   } catch {
-    throw cryptoError(
-      "WECHAT_SIGNING_FAILED",
-      "WeChat request signing failed.",
-      500,
-    );
+    throw signingFailed();
   }
 
   return {
@@ -104,13 +176,20 @@ export function verifyWechatSignature(input: {
       : input.verifier.certificatePem;
   const message = `${input.timestamp}\n${input.nonce}\n${input.body}\n`;
 
+  const signature = decodeStrictBase64(
+    input.signatureBase64,
+    RSA_2048_SIGNATURE_BASE64_LENGTH,
+    RSA_2048_SIGNATURE_BYTES,
+  );
+  if (!signature) throw signatureInvalid();
+
   let verified = false;
   try {
     verified = rsaVerify(
       "RSA-SHA256",
       Buffer.from(message, "utf8"),
       verifierPem,
-      Buffer.from(input.signatureBase64, "base64"),
+      signature,
     );
   } catch {
     throw signatureInvalid();
@@ -150,17 +229,12 @@ export function decryptWechatResource(input: {
 }): string {
   try {
     if (input.apiV3Key.length !== 32) throw resourceInvalid();
-    if (
-      input.ciphertextBase64.length === 0 ||
-      input.ciphertextBase64.length % 4 !== 0 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-        input.ciphertextBase64,
-      )
-    ) {
-      throw resourceInvalid();
-    }
-
-    const encrypted = Buffer.from(input.ciphertextBase64, "base64");
+    if (Buffer.byteLength(input.nonce, "utf8") !== 12) throw resourceInvalid();
+    const encrypted = decodeStrictBase64(
+      input.ciphertextBase64,
+      MAX_RESOURCE_BASE64_LENGTH,
+    );
+    if (!encrypted) throw resourceInvalid();
     if (encrypted.length < 16) throw resourceInvalid();
 
     const ciphertext = encrypted.subarray(0, encrypted.length - 16);

@@ -11,6 +11,7 @@ import { BillingError } from "../../lib/billing/errors";
 import {
   decryptWechatResource,
   signWechatRequest,
+  type WechatRequestSigningInput,
   verifyWechatSignature,
   verifyWechatTimestamp,
 } from "../../lib/billing/payments/wechat-crypto";
@@ -124,6 +125,54 @@ function isBillingError(
   return true;
 }
 
+function signingInput(
+  overrides: Partial<WechatRequestSigningInput> = {},
+): WechatRequestSigningInput {
+  return {
+    method: "POST",
+    pathWithQuery: "/v3/pay/transactions/native?x=1",
+    body: "{\"amount\":{\"total\":7900}}",
+    timestamp: 1_787_073_600,
+    nonce: "nonce-1",
+    mchId: "1900000001",
+    certificateSerialNumber: "MERCHANT_SERIAL",
+    privateKeyPem,
+    ...overrides,
+  };
+}
+
+function isSigningFailure(
+  error: unknown,
+  sensitiveValue: string,
+): boolean {
+  assert.ok(error instanceof BillingError);
+  assert.equal(error.code, "WECHAT_SIGNING_FAILED");
+  assert.equal(error.status, 500);
+  assert.equal(error.message, "WeChat request signing failed.");
+  if (sensitiveValue.length > 0) {
+    assert.equal(error.message.includes(sensitiveValue), false);
+  }
+  return true;
+}
+
+function publicKeyVerifier(): WechatVerifierConfig {
+  return {
+    mode: "PUBLIC_KEY",
+    keyId: "PUB_KEY_ID_1",
+    publicKeyPem,
+  };
+}
+
+function nonCanonicalPaddingBits(value: string): string {
+  assert.equal(value.endsWith("=="), true);
+  const index = value.length - 3;
+  const replacement = { A: "B", Q: "R", g: "h", w: "x" }[
+    value[index]
+  ];
+  assert.ok(replacement);
+  return `${value.slice(0, index)}${replacement}==`;
+}
+
 test("signWechatRequest signs the exact canonical request and authorization fields", () => {
   const signed = signWechatRequest({
     method: "POST",
@@ -200,6 +249,79 @@ test("request signatures reject query, body, and signature-byte tampering", () =
     ),
     false,
   );
+});
+
+test("signWechatRequest rejects header injection and canonical-field control characters", () => {
+  const invalidInputs: Array<
+    [Partial<WechatRequestSigningInput>, string]
+  > = [
+    [{ nonce: 'n",foo="bar' }, 'n",foo="bar'],
+    [{ method: "POST\r\nX-Evil: 1" }, "POST\r\nX-Evil: 1"],
+    [
+      { pathWithQuery: "/v3/pay\r\nX-Evil: 1" },
+      "/v3/pay\r\nX-Evil: 1",
+    ],
+    [{ nonce: "nonce\r\nX-Evil: 1" }, "nonce\r\nX-Evil: 1"],
+    [{ mchId: "1900000001\r\nX-Evil: 1" }, "1900000001\r\nX-Evil: 1"],
+    [
+      { certificateSerialNumber: "SERIAL\r\nX-Evil: 1" },
+      "SERIAL\r\nX-Evil: 1",
+    ],
+  ];
+
+  for (const [overrides, sensitiveValue] of invalidInputs) {
+    assert.throws(
+      () => signWechatRequest(signingInput(overrides)),
+      (error: unknown) => isSigningFailure(error, sensitiveValue),
+    );
+  }
+});
+
+test("signWechatRequest rejects invalid timestamp numbers", () => {
+  for (const timestamp of [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    -1,
+    1_787_073_600.5,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    assert.throws(
+      () => signWechatRequest(signingInput({ timestamp })),
+      (error: unknown) => isSigningFailure(error, String(timestamp)),
+    );
+  }
+});
+
+test("signWechatRequest rejects empty, malformed, and overlong protocol fields", () => {
+  const invalidInputs: Array<
+    [Partial<WechatRequestSigningInput>, string]
+  > = [
+    [{ method: "" }, ""],
+    [{ method: "post" }, "post"],
+    [{ method: "P".repeat(33) }, "P".repeat(33)],
+    [{ pathWithQuery: "" }, ""],
+    [{ pathWithQuery: "v3/pay" }, "v3/pay"],
+    [{ pathWithQuery: `/${"p".repeat(2_048)}` }, "p".repeat(2_048)],
+    [{ nonce: "" }, ""],
+    [{ nonce: "n,foo" }, "n,foo"],
+    [{ nonce: "n".repeat(33) }, "n".repeat(33)],
+    [{ mchId: "" }, ""],
+    [{ mchId: "m,ch" }, "m,ch"],
+    [{ mchId: "m".repeat(33) }, "m".repeat(33)],
+    [{ certificateSerialNumber: "" }, ""],
+    [{ certificateSerialNumber: "serial\u0000value" }, "serial\u0000value"],
+    [
+      { certificateSerialNumber: "S".repeat(65) },
+      "S".repeat(65),
+    ],
+  ];
+
+  for (const [overrides, sensitiveValue] of invalidInputs) {
+    assert.throws(
+      () => signWechatRequest(signingInput(overrides)),
+      (error: unknown) => isSigningFailure(error, sensitiveValue),
+    );
+  }
 });
 
 test("verifyWechatSignature accepts a matching public-key verifier", () => {
@@ -313,6 +435,68 @@ test("verifyWechatSignature rejects body, nonce, and signature-byte tampering", 
   }
 });
 
+test("verifyWechatSignature rejects whitespace, trailing data, malformed, and oversized Base64", () => {
+  const timestamp = "1787073600";
+  const nonce = "strict-base64-nonce";
+  const body = "{\"id\":\"strict-base64\"}";
+  const validSignature = signatureFor(timestamp, nonce, body);
+  const invalidSignatures = [
+    "",
+    ` ${validSignature}`,
+    `${validSignature.slice(0, 100)}\n${validSignature.slice(100)}`,
+    `${validSignature}AAAA`,
+    "%%%not-base64%%%",
+    "A".repeat(348),
+  ];
+
+  for (const signatureBase64 of invalidSignatures) {
+    assert.throws(
+      () =>
+        verifyWechatSignature({
+          timestamp,
+          nonce,
+          body,
+          signatureBase64,
+          verifierId: "PUB_KEY_ID_1",
+          verifier: publicKeyVerifier(),
+        }),
+      (error: unknown) =>
+        isBillingError(error, "WECHAT_SIGNATURE_INVALID", [
+          signatureBase64,
+          nonce,
+          body,
+        ]),
+    );
+  }
+});
+
+test("verifyWechatSignature rejects non-canonical Base64 padding bits", () => {
+  const timestamp = "1787073600";
+  const nonce = "padding-bits-nonce";
+  const body = "{\"id\":\"padding-bits\"}";
+  const signatureBase64 = nonCanonicalPaddingBits(
+    signatureFor(timestamp, nonce, body),
+  );
+
+  assert.throws(
+    () =>
+      verifyWechatSignature({
+        timestamp,
+        nonce,
+        body,
+        signatureBase64,
+        verifierId: "PUB_KEY_ID_1",
+        verifier: publicKeyVerifier(),
+      }),
+    (error: unknown) =>
+      isBillingError(error, "WECHAT_SIGNATURE_INVALID", [
+        signatureBase64,
+        nonce,
+        body,
+      ]),
+  );
+});
+
 test("verifyWechatTimestamp accepts both inclusive 300-second boundaries", () => {
   const now = new Date(1_787_073_600_000);
 
@@ -340,10 +524,39 @@ test("verifyWechatTimestamp rejects values outside the boundary and non-integers
     "1787073901",
     "1787073600.5",
     "1787073600x",
+    "-1",
+    "9007199254740992",
+    "1787073600000",
     "",
   ]) {
     assert.throws(
       () => verifyWechatTimestamp({ timestamp, now, toleranceSeconds: 300 }),
+      (error: unknown) =>
+        isBillingError(error, "WECHAT_TIMESTAMP_INVALID", [timestamp]),
+    );
+  }
+});
+
+test("verifyWechatTimestamp rejects invalid clocks and non-integer tolerances", () => {
+  const timestamp = "1787073600";
+  const invalidInputs = [
+    { now: new Date(Number.NaN), toleranceSeconds: 300 },
+    { now: new Date(1_787_073_600_000), toleranceSeconds: -1 },
+    { now: new Date(1_787_073_600_000), toleranceSeconds: 0.5 },
+    { now: new Date(1_787_073_600_000), toleranceSeconds: Number.NaN },
+    {
+      now: new Date(1_787_073_600_000),
+      toleranceSeconds: Number.POSITIVE_INFINITY,
+    },
+    {
+      now: new Date(1_787_073_600_000),
+      toleranceSeconds: Number.MAX_SAFE_INTEGER + 1,
+    },
+  ];
+
+  for (const invalid of invalidInputs) {
+    assert.throws(
+      () => verifyWechatTimestamp({ timestamp, ...invalid }),
       (error: unknown) =>
         isBillingError(error, "WECHAT_TIMESTAMP_INVALID", [timestamp]),
     );
@@ -401,6 +614,70 @@ test("decryptWechatResource rejects wrong key, nonce, AAD, tag, and ciphertext",
           invalid.associatedData,
           invalid.ciphertextBase64,
           invalid.apiV3Key.toString("utf8"),
+        ]),
+    );
+  }
+});
+
+test("decryptWechatResource rejects non-canonical and bounded Base64 violations", () => {
+  const valid = {
+    apiV3Key: Buffer.from("0123456789abcdef0123456789abcdef", "utf8"),
+    nonce: "0123456789ab",
+    associatedData: "transaction",
+  };
+  const invalidCiphertexts = [
+    "4ouKWSuj/DnPJxKEgzRMF3K25P41tTpaw61Kv9zml1GNQhPsUW1=",
+    " 4ouKWSuj/DnPJxKEgzRMF3K25P41tTpaw61Kv9zml1GNQhPsUW0=",
+    "4ouKWSuj/DnPJxKEgzRMF3K25P41tTpaw61Kv9zml1GNQhPsUW0=AAAA",
+    "A".repeat(1_048_580),
+  ];
+
+  for (const ciphertextBase64 of invalidCiphertexts) {
+    assert.throws(
+      () => decryptWechatResource({ ...valid, ciphertextBase64 }),
+      (error: unknown) =>
+        isBillingError(error, "WECHAT_RESOURCE_INVALID", [valid.nonce]),
+    );
+  }
+});
+
+test("decryptWechatResource rejects authenticated resources with non-12-byte nonces", () => {
+  const apiV3Key = Buffer.from(
+    "0123456789abcdef0123456789abcdef",
+    "utf8",
+  );
+  const associatedData = "transaction";
+  const invalidNonceFixtures = [
+    {
+      nonce: "0123456789a",
+      ciphertextBase64:
+        "4Qp96tOIWttKSDyEOIMJF+UDRg0G+o9iObBfSrx72E61RVf5qRY=",
+    },
+    {
+      nonce: "0123456789abc",
+      ciphertextBase64:
+        "0Ys9GKmKrqttodHsRkYq5rtq20hE3hNW2U/VnbOccrfGu+A3/lw=",
+    },
+    {
+      nonce: "微0123456789",
+      ciphertextBase64:
+        "EGGn73U9DfTWam4nfz+re1L7iULcse/2DgIN5jK6QsxzCiVJWz8=",
+    },
+  ];
+
+  for (const invalid of invalidNonceFixtures) {
+    assert.notEqual(Buffer.byteLength(invalid.nonce, "utf8"), 12);
+    assert.throws(
+      () =>
+        decryptWechatResource({
+          apiV3Key,
+          associatedData,
+          ...invalid,
+        }),
+      (error: unknown) =>
+        isBillingError(error, "WECHAT_RESOURCE_INVALID", [
+          invalid.nonce,
+          invalid.ciphertextBase64,
         ]),
     );
   }
