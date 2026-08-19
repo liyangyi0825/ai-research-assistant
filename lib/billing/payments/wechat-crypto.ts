@@ -36,7 +36,9 @@ const MAX_RESOURCE_BASE64_LENGTH = 1_048_576;
 const BASE64_PATTERN =
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const UPPERCASE_HTTP_TOKEN_PATTERN = /^[A-Z0-9!#$%&'*+.^_`|~-]+$/;
-const SAFE_HEADER_VALUE_PATTERN = /^[A-Za-z0-9_-]+$/;
+const NONCE_PATTERN = /^[A-Za-z0-9._~-]+$/;
+const MCH_ID_PATTERN = /^\d+$/;
+const CERTIFICATE_SERIAL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const ASCII_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
 
 function cryptoError(
@@ -70,11 +72,27 @@ function signingFailed(): BillingError {
   );
 }
 
-function hasSafeHeaderValue(value: string, maximumLength: number): boolean {
+function hasValidNonce(value: string): boolean {
   return (
     value.length > 0 &&
-    value.length <= maximumLength &&
-    SAFE_HEADER_VALUE_PATTERN.test(value)
+    value.length <= MAX_NONCE_LENGTH &&
+    NONCE_PATTERN.test(value)
+  );
+}
+
+function hasValidMchId(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_MCH_ID_LENGTH &&
+    MCH_ID_PATTERN.test(value)
+  );
+}
+
+function hasValidCertificateSerial(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_CERTIFICATE_SERIAL_LENGTH &&
+    CERTIFICATE_SERIAL_PATTERN.test(value)
   );
 }
 
@@ -88,12 +106,9 @@ function hasValidSigningInput(input: WechatRequestSigningInput): boolean {
     Buffer.byteLength(input.pathWithQuery, "utf8") <=
       MAX_PATH_WITH_QUERY_BYTES &&
     !ASCII_CONTROL_PATTERN.test(input.pathWithQuery) &&
-    hasSafeHeaderValue(input.nonce, MAX_NONCE_LENGTH) &&
-    hasSafeHeaderValue(input.mchId, MAX_MCH_ID_LENGTH) &&
-    hasSafeHeaderValue(
-      input.certificateSerialNumber,
-      MAX_CERTIFICATE_SERIAL_LENGTH,
-    )
+    hasValidNonce(input.nonce) &&
+    hasValidMchId(input.mchId) &&
+    hasValidCertificateSerial(input.certificateSerialNumber)
   );
 }
 

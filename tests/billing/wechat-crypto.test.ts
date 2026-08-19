@@ -207,6 +207,18 @@ test("signWechatRequest signs the exact canonical request and authorization fiel
   );
 });
 
+test("signWechatRequest accepts RFC3986-unreserved nonce characters", () => {
+  const signed = signWechatRequest(
+    signingInput({ nonce: "nonce-dot.~_safe" }),
+  );
+
+  assert.equal(
+    signed.message,
+    "POST\n/v3/pay/transactions/native?x=1\n1787073600\nnonce-dot.~_safe\n{\"amount\":{\"total\":7900}}\n",
+  );
+  assert.match(signed.authorization, /nonce_str="nonce-dot\.~_safe"/);
+});
+
 test("request signatures reject query, body, and signature-byte tampering", () => {
   const signed = signWechatRequest({
     method: "POST",
@@ -307,6 +319,7 @@ test("signWechatRequest rejects empty, malformed, and overlong protocol fields",
     [{ nonce: "n".repeat(33) }, "n".repeat(33)],
     [{ mchId: "" }, ""],
     [{ mchId: "m,ch" }, "m,ch"],
+    [{ mchId: "merchant_1" }, "merchant_1"],
     [{ mchId: "m".repeat(33) }, "m".repeat(33)],
     [{ certificateSerialNumber: "" }, ""],
     [{ certificateSerialNumber: "serial\u0000value" }, "serial\u0000value"],
@@ -535,6 +548,21 @@ test("verifyWechatTimestamp rejects values outside the boundary and non-integers
         isBillingError(error, "WECHAT_TIMESTAMP_INVALID", [timestamp]),
     );
   }
+});
+
+test("verifyWechatTimestamp rejects an unsafe integer independently of the replay window", () => {
+  assert.throws(
+    () =>
+      verifyWechatTimestamp({
+        timestamp: "9007199254740992",
+        now: new Date(8_640_000_000_000_000),
+        toleranceSeconds: 8_998_559_254_740_992,
+      }),
+    (error: unknown) =>
+      isBillingError(error, "WECHAT_TIMESTAMP_INVALID", [
+        "9007199254740992",
+      ]),
+  );
 });
 
 test("verifyWechatTimestamp rejects invalid clocks and non-integer tolerances", () => {
