@@ -1,4 +1,5 @@
 import { BillingError } from "./errors";
+import { loadWechatPayConfig } from "./payments/wechat-config";
 
 export type PaymentMode = "mock" | "wechat" | "alipay";
 
@@ -24,16 +25,6 @@ export type PaymentRuntimeContext = {
 };
 
 type BillingEnvironment = Readonly<Record<string, string | undefined>>;
-
-const WECHAT_REQUIRED_VARIABLES = [
-  "WECHAT_PAY_MCH_ID",
-  "WECHAT_PAY_APP_ID",
-  "WECHAT_PAY_API_V3_KEY",
-  "WECHAT_PAY_PRIVATE_KEY",
-  "WECHAT_PAY_CERT_SERIAL_NO",
-  "WECHAT_PAY_PLATFORM_CERT",
-  "WECHAT_PAY_NOTIFY_URL",
-] as const;
 
 const ALIPAY_REQUIRED_VARIABLES = [
   "ALIPAY_APP_ID",
@@ -107,10 +98,12 @@ function assertProviderConfigured(
   mode: PaymentMode,
   env: BillingEnvironment,
 ): void {
+  if (mode === "wechat") {
+    loadWechatPayConfig(env);
+    return;
+  }
   const requiredVariables =
-    mode === "wechat"
-      ? WECHAT_REQUIRED_VARIABLES
-      : mode === "alipay"
+    mode === "alipay"
         ? ALIPAY_REQUIRED_VARIABLES
         : [];
   const missing = missingVariables(env, requiredVariables);
@@ -143,7 +136,14 @@ export function getBillingConfig(
   const paymentMode = parsePaymentMode(paymentEnv.PAYMENT_MODE);
   const testUserIds = parseTestUserIds(paymentEnv.BILLING_TEST_USER_IDS);
   const wechatConfigured =
-    missingVariables(paymentEnv, WECHAT_REQUIRED_VARIABLES).length === 0;
+    (() => {
+      try {
+        loadWechatPayConfig(paymentEnv);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
   const alipayConfigured =
     missingVariables(paymentEnv, ALIPAY_REQUIRED_VARIABLES).length === 0;
   const config: BillingConfig = {

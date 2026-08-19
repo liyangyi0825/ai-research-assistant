@@ -1040,6 +1040,7 @@ test("Mock confirmation creates a stable signed callback and settles only throug
   const creatingProvider = mockProvider();
   const payment = await creatingProvider.createPayment({
     orderNumber: settlementOrder().orderNumber,
+    description: "Settlement Membership",
     amountMinor: 1_990,
     currency: "CNY",
     expiresAt: settlementOrder().expiresAt,
@@ -1055,6 +1056,7 @@ test("Mock confirmation creates a stable signed callback and settles only throug
     amountMinor: 1_990,
     currency: "CNY",
     expiresAt: settlementOrder().expiresAt,
+    snapshotProductName: "Settlement Membership",
   };
   const result = await confirmMockOrderPayment(
     { id: "user-1", email: "student@example.com", isAdmin: false },

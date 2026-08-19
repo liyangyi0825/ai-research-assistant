@@ -9,6 +9,7 @@ export type PaymentStatus =
 
 export type CreatePaymentInput = {
   orderNumber: string;
+  description: string;
   amountMinor: number;
   currency: PaymentCurrency;
   expiresAt: string;
@@ -16,7 +17,8 @@ export type CreatePaymentInput = {
 };
 
 export type PaymentReferenceInput = {
-  providerTransactionId: string;
+  orderNumber: string;
+  providerTransactionId: string | null;
 };
 
 export type PaymentResult = {
@@ -30,7 +32,8 @@ export type PaymentResult = {
   paidAt: string | null;
 };
 
-export type RefundPaymentInput = PaymentReferenceInput & {
+export type RefundPaymentInput = {
+  providerTransactionId: string;
   amountMinor: number;
   currency: PaymentCurrency;
   idempotencyKey: string;

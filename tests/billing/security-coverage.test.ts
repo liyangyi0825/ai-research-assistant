@@ -227,24 +227,28 @@ test("Mock payment succeeds idempotently and cannot create a second payment", as
   });
   const pending = await provider.createPayment({
     orderNumber: "BILL-MOCK-1",
+    description: "Mock Membership",
     amountMinor: 1_990,
     currency: "CNY",
     expiresAt: "2026-07-30T00:30:00.000Z",
     idempotencyKey: "mock-create-1",
   });
   const paid = await provider.confirmPayment({
+    orderNumber: pending.orderNumber,
     providerTransactionId: pending.providerTransactionId,
   });
 
   assert.equal(paid.status, "PAID");
   assert.equal(paid.amountMinor, 1_990);
   const replay = await provider.confirmPayment({
+    orderNumber: pending.orderNumber,
     providerTransactionId: pending.providerTransactionId,
   });
   assert.deepEqual(replay, paid);
   await assert.rejects(
     provider.createPayment({
       orderNumber: "BILL-MOCK-1",
+      description: "Mock Membership",
       amountMinor: 1_990,
       currency: "CNY",
       expiresAt: "2026-07-30T00:30:00.000Z",

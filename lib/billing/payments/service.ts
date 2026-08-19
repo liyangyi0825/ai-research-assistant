@@ -30,6 +30,7 @@ export type PaymentOrderSnapshot = {
   amountMinor: number;
   currency: "CNY";
   expiresAt: string;
+  snapshotProductName: string;
 };
 
 export type PaymentServiceRepository = {
@@ -121,6 +122,7 @@ const PAYMENT_ORDER_COLUMNS = [
   "amount_minor",
   "currency",
   "expires_at",
+  "snapshot_product_name",
 ].join(", ");
 
 function storageError(): BillingError {
@@ -232,6 +234,7 @@ function mapOrder(value: unknown): PaymentOrderSnapshot {
     amountMinor,
     currency: "CNY",
     expiresAt: normalizedTimestamp(row.expires_at),
+    snapshotProductName: requiredString(row.snapshot_product_name),
   };
 }
 
@@ -397,6 +400,13 @@ function assertCreatedPayment(
   }
 }
 
+function normalizedProductDescription(value: string): string {
+  const normalized = value.normalize("NFC").trim();
+  const length = Array.from(normalized).length;
+  if (length < 1 || length > 127) throw storageError();
+  return normalized;
+}
+
 export async function createOrderPayment(
   userId: string,
   orderId: string,
@@ -479,6 +489,7 @@ export async function createOrderPayment(
   try {
     payment = await provider.createPayment({
       orderNumber: order.orderNumber,
+      description: normalizedProductDescription(order.snapshotProductName),
       amountMinor: order.amountMinor,
       currency: order.currency,
       expiresAt: order.expiresAt,

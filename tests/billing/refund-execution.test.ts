@@ -77,12 +77,14 @@ async function paidProvider() {
   });
   const payment = await provider.createPayment({
     orderNumber: "BILL-REFUND-1",
+    description: "Refundable Semester",
     amountMinor: 7_900,
     currency: "CNY",
     expiresAt: "2026-08-16T03:00:00.000Z",
     idempotencyKey: "billing-payment:MOCK:BILL-REFUND-1",
   });
   await provider.confirmPayment({
+    orderNumber: payment.orderNumber,
     providerTransactionId: payment.providerTransactionId,
   });
   return { provider, payment };
@@ -156,6 +158,7 @@ test("an approved full refund uses the locked backend payment and completes idem
   assert.equal(completeCalls, 1);
   assert.equal(
     (await provider.queryPayment({
+      orderNumber: payment.orderNumber,
       providerTransactionId: payment.providerTransactionId,
     })).status,
     "REFUNDED",
@@ -238,7 +241,7 @@ test("a provider success followed by database failure retries with the same back
     },
   ]);
   assert.equal(
-    (await provider.queryPayment({ providerTransactionId: payment.providerTransactionId }))
+    (await provider.queryPayment({ orderNumber: payment.orderNumber, providerTransactionId: payment.providerTransactionId }))
       .status,
     "REFUNDED",
   );

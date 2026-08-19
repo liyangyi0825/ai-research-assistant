@@ -946,6 +946,7 @@ export async function confirmMockOrderPayment(
   let providerPayment;
   try {
     providerPayment = await provider.confirmPayment({
+      orderNumber: order.orderNumber,
       providerTransactionId,
     });
   } catch (cause) {

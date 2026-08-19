@@ -10,6 +10,7 @@ import type { PaymentProvider } from "../../lib/billing/payments/provider";
 import { getPaymentProvider } from "../../lib/billing/payments/registry";
 import type {
   CreatePaymentInput,
+  PaymentReferenceInput,
   PaymentWebhookEvent,
 } from "../../lib/billing/payments/types";
 import { WechatPayProvider } from "../../lib/billing/payments/wechat";
@@ -26,6 +27,7 @@ function createInput(
 ): CreatePaymentInput {
   return {
     orderNumber: "BILL-ORDER-1",
+    description: "Pro Semester",
     amountMinor: 1_990,
     currency: "CNY",
     expiresAt: "2026-07-22T03:30:00.000Z",
@@ -71,9 +73,11 @@ test("Mock creates an opaque pending payment and can query it", async () => {
   });
 
   const created = await provider.createPayment(createInput());
-  const queried = await provider.queryPayment({
-    providerTransactionId: created.providerTransactionId,
-  });
+  const reference: PaymentReferenceInput = {
+    orderNumber: "BILL-ORDER-1",
+    providerTransactionId: null,
+  };
+  const queried = await provider.queryPayment(reference);
 
   assert.equal(created.status, "PENDING");
   assert.equal(created.orderNumber, "BILL-ORDER-1");
@@ -94,6 +98,14 @@ test("Mock creates an opaque pending payment and can query it", async () => {
     "status",
   ]);
   assert.deepEqual(queried, created);
+  await assert.rejects(
+    () =>
+      provider.queryPayment({
+        orderNumber: "BILL-OTHER-ORDER",
+        providerTransactionId: created.providerTransactionId,
+      }),
+    (error: unknown) => expectBillingError(error, "PAYMENT_NOT_FOUND", 404),
+  );
 });
 
 test("Mock create is idempotent only for an identical request", async () => {
@@ -166,9 +178,11 @@ test("Mock server confirmation pays a pending unexpired payment only", async () 
   const created = await provider.createPayment(createInput());
 
   const paid = await provider.confirmPayment({
+    orderNumber: created.orderNumber,
     providerTransactionId: created.providerTransactionId,
   });
   const repeated = await provider.confirmPayment({
+    orderNumber: created.orderNumber,
     providerTransactionId: created.providerTransactionId,
   });
 
@@ -188,6 +202,7 @@ test("Mock server confirmation pays a pending unexpired payment only", async () 
   await assert.rejects(
     () =>
       expiredProvider.confirmPayment({
+        orderNumber: expired.orderNumber,
         providerTransactionId: expired.providerTransactionId,
       }),
     (error: unknown) => expectBillingError(error, "PAYMENT_EXPIRED", 409),
@@ -208,6 +223,7 @@ test("Mock confirmation uses one timestamp across the expiration boundary", asyn
   const pending = await provider.createPayment(createInput());
 
   const paid = await provider.confirmPayment({
+    orderNumber: pending.orderNumber,
     providerTransactionId: pending.providerTransactionId,
   });
 
@@ -221,11 +237,13 @@ test("Mock closes pending payments and rejects inconsistent transitions", async 
   const pending = await provider.createPayment(createInput());
 
   const closed = await provider.closePayment({
+    orderNumber: pending.orderNumber,
     providerTransactionId: pending.providerTransactionId,
   });
   assert.equal(closed.status, "CLOSED");
   assert.deepEqual(
     await provider.closePayment({
+      orderNumber: pending.orderNumber,
       providerTransactionId: pending.providerTransactionId,
     }),
     closed,
@@ -233,6 +251,7 @@ test("Mock closes pending payments and rejects inconsistent transitions", async 
   await assert.rejects(
     () =>
       provider.confirmPayment({
+        orderNumber: pending.orderNumber,
         providerTransactionId: pending.providerTransactionId,
       }),
     (error: unknown) =>
@@ -244,6 +263,7 @@ test("Mock refunds a paid payment once and rejects conflicting refunds", async (
   const provider = mockProvider();
   const pending = await provider.createPayment(createInput());
   await provider.confirmPayment({
+    orderNumber: pending.orderNumber,
     providerTransactionId: pending.providerTransactionId,
   });
 
@@ -259,6 +279,7 @@ test("Mock refunds a paid payment once and rejects conflicting refunds", async (
   assert.equal(
     (
       await provider.queryPayment({
+        orderNumber: pending.orderNumber,
         providerTransactionId: pending.providerTransactionId,
       })
     ).status,
@@ -366,9 +387,9 @@ test("formal provider skeletons fail closed for every method", async () => {
     const operations = [
       () => provider.createPayment(createInput()),
       () =>
-        provider.queryPayment({ providerTransactionId: "payment-id" }),
+        provider.queryPayment({ orderNumber: "order-id", providerTransactionId: "payment-id" }),
       () =>
-        provider.closePayment({ providerTransactionId: "payment-id" }),
+        provider.closePayment({ orderNumber: "order-id", providerTransactionId: "payment-id" }),
       () =>
         provider.refundPayment({
           providerTransactionId: "payment-id",
@@ -424,6 +445,7 @@ test("registry keeps Mock state and server confirmation across acquisitions", as
   const secondProvider = getPaymentProvider("mock", config);
   assert.ok(secondProvider instanceof MockPaymentProvider);
   const paid = await secondProvider.confirmPayment({
+    orderNumber: created.orderNumber,
     providerTransactionId: created.providerTransactionId,
   });
 
@@ -431,6 +453,7 @@ test("registry keeps Mock state and server confirmation across acquisitions", as
   assert.equal(
     (
       await firstProvider.queryPayment({
+        orderNumber: created.orderNumber,
         providerTransactionId: created.providerTransactionId,
       })
     ).status,

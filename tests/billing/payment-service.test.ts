@@ -35,6 +35,7 @@ function order(
     amountMinor: 1_990,
     currency: "CNY",
     expiresAt: "2026-07-22T03:30:00.000Z",
+    snapshotProductName: "Pro Semester",
     ...overrides,
   };
 }
@@ -125,9 +126,11 @@ test("createOrderPayment prices a pending payment only from the owned database s
     now: () => now,
   });
   let providerCreateCalls = 0;
+  let providerDescription: string | undefined;
   const createPayment = provider.createPayment.bind(provider);
   provider.createPayment = async (input) => {
     providerCreateCalls += 1;
+    providerDescription = input.description;
     return createPayment(input);
   };
 
@@ -142,6 +145,7 @@ test("createOrderPayment prices a pending payment only from the owned database s
   assert.equal(payment.amountMinor, 1_990);
   assert.equal(payment.currency, "CNY");
   assert.equal(payment.expiresAt, order().expiresAt);
+  assert.equal(providerDescription, "Pro Semester");
   assert.equal(
     paymentRequestIdempotencyKey("MOCK", order().orderNumber),
     `billing-payment:MOCK:${order().orderNumber}`,

@@ -44,7 +44,9 @@ class CountingMockPaymentProvider extends MockPaymentProvider {
   refundCalls = 0;
   failNextConfirmation = false;
 
-  override async confirmPayment(input: { providerTransactionId: string }) {
+  override async confirmPayment(
+    input: Parameters<MockPaymentProvider["confirmPayment"]>[0],
+  ) {
     if (this.failNextConfirmation) {
       this.failNextConfirmation = false;
       throw new BillingError("MOCK_CONFIRM_FAILED", "Mock confirmation failed.", 503);
@@ -327,7 +329,7 @@ test("a database claim failure leaves provider-paid state recoverable without gr
   );
 
   await assert.rejects(confirm, (error: unknown) => error instanceof BillingError && error.code === "BILLING_STORAGE_UNAVAILABLE");
-  assert.equal((await provider.queryPayment({ providerTransactionId: payment.providerTransactionId })).status, "PAID");
+  assert.equal((await provider.queryPayment({ orderNumber: payment.orderNumber, providerTransactionId: payment.providerTransactionId })).status, "PAID");
   assert.equal(state.paymentIntents.get(order.id)?.status, "PENDING");
   assert.equal(state.orders[0]?.status, "PENDING");
   assert.equal(state.webhookEvents.size, 0);

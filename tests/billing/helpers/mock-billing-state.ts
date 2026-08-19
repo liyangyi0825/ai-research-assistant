@@ -219,7 +219,7 @@ export class MockBillingState {
   readonly paymentRepository: PaymentServiceRepository = {
     findOwnedOrder: async (userId, orderId): Promise<PaymentOrderSnapshot | null> => {
       const order = this.orders.find((item) => item.userId === userId && item.id === orderId);
-      return order ? { id: order.id, userId: order.userId, orderNumber: order.orderNumber, provider: order.provider, status: order.status, amountMinor: order.amountMinor, currency: order.currency, expiresAt: order.expiresAt } : null;
+      return order ? { id: order.id, userId: order.userId, orderNumber: order.orderNumber, provider: order.provider, status: order.status, amountMinor: order.amountMinor, currency: order.currency, expiresAt: order.expiresAt, snapshotProductName: order.snapshotProductName } : null;
     },
     claimPaymentIntent: async (input: ClaimPaymentIntentInput) => {
       const stored = this.paymentIntents.get(input.orderId);

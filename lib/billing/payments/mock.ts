@@ -70,6 +70,7 @@ function equalCreateInput(
 ): boolean {
   return (
     first.orderNumber === second.orderNumber &&
+    first.description === second.description &&
     first.amountMinor === second.amountMinor &&
     first.currency === second.currency &&
     first.expiresAt === second.expiresAt &&
@@ -177,11 +178,11 @@ export class MockPaymentProvider implements PaymentProvider {
   }
 
   async queryPayment(input: PaymentReferenceInput): Promise<PaymentResult> {
-    return clonePayment(this.requiredPayment(input.providerTransactionId));
+    return clonePayment(this.requiredReferencedPayment(input));
   }
 
   async closePayment(input: PaymentReferenceInput): Promise<PaymentResult> {
-    const payment = this.requiredPayment(input.providerTransactionId);
+    const payment = this.requiredReferencedPayment(input);
 
     if (payment.status === "CLOSED") {
       return clonePayment(payment);
@@ -295,7 +296,7 @@ export class MockPaymentProvider implements PaymentProvider {
   }
 
   async confirmPayment(input: PaymentReferenceInput): Promise<PaymentResult> {
-    const payment = this.requiredPayment(input.providerTransactionId);
+    const payment = this.requiredReferencedPayment(input);
 
     if (payment.status === "PAID") {
       return clonePayment(payment);
@@ -320,15 +321,15 @@ export class MockPaymentProvider implements PaymentProvider {
   async confirmPaymentAndCreateWebhook(
     input: PaymentReferenceInput,
   ): Promise<SignedPaymentWebhook> {
+    const payment = this.requiredReferencedPayment(input);
     const existing = this.confirmationWebhooks.get(
-      input.providerTransactionId.trim(),
+      payment.providerTransactionId,
     );
     if (existing) {
       return { rawBody: existing.rawBody, headers: { ...existing.headers } };
     }
 
-    const payment = await this.confirmPayment(input);
-    return this.createPaidPaymentWebhook(payment);
+    return this.createPaidPaymentWebhook(await this.confirmPayment(input));
   }
 
   async createPaidPaymentWebhook(
@@ -403,6 +404,11 @@ export class MockPaymentProvider implements PaymentProvider {
       "INVALID_IDEMPOTENCY_KEY",
       "A payment idempotency key is required.",
     );
+    const description = requiredString(
+      input.description,
+      "INVALID_PAYMENT_DESCRIPTION",
+      "A server-owned payment description is required.",
+    );
 
     if (!validAmount(input.amountMinor)) {
       throw new BillingError(
@@ -430,6 +436,7 @@ export class MockPaymentProvider implements PaymentProvider {
 
     return {
       orderNumber,
+      description,
       amountMinor: input.amountMinor,
       currency: "CNY",
       expiresAt: new Date(expiration).toISOString(),
@@ -492,6 +499,27 @@ export class MockPaymentProvider implements PaymentProvider {
       );
     }
 
+    return payment;
+  }
+
+  private requiredReferencedPayment(input: PaymentReferenceInput): StoredPayment {
+    const providerTransactionId =
+      input.providerTransactionId ?? this.paymentsByOrder.get(input.orderNumber);
+    if (!providerTransactionId) {
+      throw new BillingError(
+        "PAYMENT_NOT_FOUND",
+        "The payment was not found.",
+        404,
+      );
+    }
+    const payment = this.requiredPayment(providerTransactionId);
+    if (payment.orderNumber !== input.orderNumber.trim()) {
+      throw new BillingError(
+        "PAYMENT_NOT_FOUND",
+        "The payment was not found.",
+        404,
+      );
+    }
     return payment;
   }
 
