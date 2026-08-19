@@ -6,9 +6,11 @@ import { BillingError } from "../../lib/billing/errors";
 import { createBillingSecurityLogger } from "../../lib/billing/security-logger";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
 import {
+  createPaymentServiceRepository,
   createOrderPayment,
   paymentRequestIdempotencyKey,
   type PaymentOrderSnapshot,
+  type PaymentServiceAdminClient,
   type PaymentServiceRepository,
 } from "../../lib/billing/payments/service";
 
@@ -118,6 +120,123 @@ function expectBillingError(error: unknown, code: string, status: number) {
     error instanceof BillingError && error.code === code && error.status === status
   );
 }
+
+function paymentOrderRow(snapshotProductName: string) {
+  return {
+    id: "order-id-1",
+    user_id: "user-1",
+    order_number: "BILL-00000000000000000000000000000001",
+    provider: "MOCK",
+    status: "PENDING",
+    amount_minor: 1_990,
+    currency: "CNY",
+    expires_at: "2026-07-22T03:30:00.000Z",
+    snapshot_product_name: snapshotProductName,
+  };
+}
+
+test("payment repository selects and maps the immutable product snapshot name", async () => {
+  let selectedColumns = "";
+  const row = paymentOrderRow("Repository Semester");
+  const query = {
+    select(columns: string) {
+      selectedColumns = columns;
+      return this;
+    },
+    eq() {
+      return this;
+    },
+    maybeSingle() {
+      return this;
+    },
+    then<TResult1 = unknown, TResult2 = never>(
+      onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ) {
+      const data = selectedColumns.includes("snapshot_product_name")
+        ? row
+        : { ...row, snapshot_product_name: undefined };
+      return Promise.resolve({ data, error: null }).then(
+        onfulfilled,
+        onrejected,
+      );
+    },
+  };
+  const client = {
+    from(table: string) {
+      assert.equal(table, "billing_orders");
+      return query;
+    },
+    async rpc() {
+      throw new Error("not used");
+    },
+  } as unknown as PaymentServiceAdminClient;
+
+  const mapped = await createPaymentServiceRepository(client).findOwnedOrder(
+    "user-1",
+    "order-id-1",
+  );
+
+  assert.match(selectedColumns, /snapshot_product_name/);
+  assert.equal(mapped?.snapshotProductName, "Repository Semester");
+});
+
+async function capturedDescription(snapshotProductName: string): Promise<string> {
+  const repository = new MemoryPaymentRepository(order({ snapshotProductName }));
+  const provider = new MockPaymentProvider({
+    secret: "description-boundary-test-secret",
+    now: () => now,
+  });
+  let description = "";
+  const createPayment = provider.createPayment.bind(provider);
+  provider.createPayment = async (input) => {
+    description = input.description;
+    return createPayment(input);
+  };
+
+  await createOrderPayment(
+    "user-1",
+    "order-id-1",
+    dependencies(repository, provider),
+  );
+  return description;
+}
+
+test("createOrderPayment normalizes the server snapshot description to NFC", async () => {
+  assert.equal(await capturedDescription("Cafe\u0301"), "Café");
+});
+
+test("createOrderPayment accepts one and 127 Unicode code point descriptions", async () => {
+  assert.equal(await capturedDescription("界"), "界");
+  assert.equal(await capturedDescription("界".repeat(127)), "界".repeat(127));
+});
+
+test("createOrderPayment rejects blank and 128 code point snapshot descriptions", async () => {
+  for (const snapshotProductName of ["   ", "界".repeat(128)]) {
+    const repository = new MemoryPaymentRepository(order({ snapshotProductName }));
+    let providerCalled = false;
+    const provider = new MockPaymentProvider({
+      secret: "invalid-description-test-secret",
+      now: () => now,
+    });
+    provider.createPayment = async () => {
+      providerCalled = true;
+      throw new Error("must not run");
+    };
+
+    await assert.rejects(
+      () =>
+        createOrderPayment(
+          "user-1",
+          "order-id-1",
+          dependencies(repository, provider),
+        ),
+      (error: unknown) =>
+        expectBillingError(error, "PAYMENT_PROVIDER_UNAVAILABLE", 503),
+    );
+    assert.equal(providerCalled, false);
+  }
+});
 
 test("createOrderPayment prices a pending payment only from the owned database snapshot", async () => {
   const repository = new MemoryPaymentRepository();

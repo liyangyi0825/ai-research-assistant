@@ -65,6 +65,53 @@ test("WeChat configuration accepts one public-key verifier and a 32-byte API v3 
   assert.equal(config.verifier.keyId, "PUB_KEY_ID_1");
 });
 
+test("WeChat API v3 key validates and preserves the raw 32 UTF-8 bytes", () => {
+  const exactMultibyteKey = `${"界".repeat(10)}xx`;
+  const config = loadWechatPayConfig({
+    ...validWechatEnvironment(),
+    WECHAT_PAY_API_V3_KEY: exactMultibyteKey,
+  });
+
+  assert.equal(Buffer.byteLength(exactMultibyteKey, "utf8"), 32);
+  assert.deepEqual(config.apiV3Key, Buffer.from(exactMultibyteKey, "utf8"));
+});
+
+test("WeChat API v3 key rejects raw leading or trailing whitespace", () => {
+  for (const apiV3Key of [
+    ` ${"x".repeat(32)}`,
+    `${"x".repeat(32)} `,
+  ]) {
+    assert.throws(
+      () =>
+        loadWechatPayConfig({
+          ...validWechatEnvironment(),
+          WECHAT_PAY_API_V3_KEY: apiV3Key,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof BillingError);
+        assert.equal(error.code, "PROVIDER_NOT_CONFIGURED");
+        assert.match(error.message, /WECHAT_PAY_API_V3_KEY/);
+        assert.doesNotMatch(error.message, new RegExp(apiV3Key));
+        return true;
+      },
+    );
+  }
+});
+
+test("WeChat API v3 key rejects 31-byte and 33-byte multibyte values", () => {
+  for (const apiV3Key of [`${"界".repeat(10)}x`, "界".repeat(11)]) {
+    assert.throws(
+      () =>
+        loadWechatPayConfig({
+          ...validWechatEnvironment(),
+          WECHAT_PAY_API_V3_KEY: apiV3Key,
+        }),
+      (error: unknown) =>
+        billingErrorCode(error) === "PROVIDER_NOT_CONFIGURED",
+    );
+  }
+});
+
 test("WeChat configuration requires exactly one complete verifier mode", () => {
   assert.throws(
     () =>
@@ -100,35 +147,75 @@ test("WeChat configuration derives a normalized platform certificate serial numb
   });
 });
 
-test("WeChat configuration rejects malformed key material and unsafe values without leaking them", () => {
-  const secret = "not-a-private-key-secret";
+test("WeChat configuration rejects a non-HTTPS notification URL independently", () => {
   assert.throws(
     () =>
       loadWechatPayConfig({
         ...validWechatEnvironment(),
-        WECHAT_PAY_API_V3_KEY: "too-short",
-        WECHAT_PAY_PRIVATE_KEY: secret,
         WECHAT_PAY_NOTIFY_URL: "http://example.test/notify",
       }),
     (error: unknown) => {
       assert.ok(error instanceof BillingError);
-      assert.match(error.message, /WECHAT_PAY_API_V3_KEY/);
+      assert.match(error.message, /WECHAT_PAY_NOTIFY_URL/);
+      assert.doesNotMatch(error.message, /http:\/\/example\.test/);
+      return true;
+    },
+  );
+});
+
+test("WeChat configuration rejects a malformed public key independently", () => {
+  const secret = "not-a-public-key-secret";
+  assert.throws(
+    () =>
+      loadWechatPayConfig({
+        ...validWechatEnvironment(),
+        WECHAT_PAY_PUBLIC_KEY: secret,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof BillingError);
+      assert.match(error.message, /WECHAT_PAY_PUBLIC_KEY/);
       assert.doesNotMatch(error.message, new RegExp(secret));
       return true;
     },
+  );
+});
+
+test("WeChat configuration rejects conflicting canonical and alias values", () => {
+  assert.throws(
+    () =>
+      loadWechatPayConfig({
+        ...validWechatEnvironment(),
+        WECHAT_PAY_MCH_PRIVATE_KEY: testPublicKey,
+      }),
+    (error: unknown) =>
+      billingErrorCode(error) === "PAYMENT_CONFIGURATION_CONFLICT",
   );
   assert.throws(
     () =>
       loadWechatPayConfig({
         ...validWechatEnvironment(),
-        WECHAT_PAY_PRIVATE_KEY: secret,
+        WECHAT_PAY_MCH_SERIAL_NO: "different-merchant-cert",
       }),
-    (error: unknown) => {
-      assert.ok(error instanceof BillingError);
-      assert.match(error.message, /WECHAT_PAY_PRIVATE_KEY/);
-      assert.doesNotMatch(error.message, new RegExp(secret));
-      return true;
-    },
+    (error: unknown) =>
+      billingErrorCode(error) === "PAYMENT_CONFIGURATION_CONFLICT",
+  );
+});
+
+test("disabled billing reports only fully valid WeChat configuration as configured", () => {
+  assert.equal(
+    getBillingConfig({
+      ...validWechatEnvironment(),
+      BILLING_FEATURE_ENABLED: "false",
+    }).wechatConfigured,
+    true,
+  );
+  assert.equal(
+    getBillingConfig({
+      ...validWechatEnvironment(),
+      BILLING_FEATURE_ENABLED: "false",
+      WECHAT_PAY_PUBLIC_KEY: undefined,
+    }).wechatConfigured,
+    false,
   );
 });
 

@@ -259,6 +259,32 @@ test("Mock closes pending payments and rejects inconsistent transitions", async 
   );
 });
 
+test("Mock closes by owned order number and rejects mismatched transaction references", async () => {
+  const provider = mockProvider();
+  const byOrder = await provider.createPayment(createInput());
+
+  const closed = await provider.closePayment({
+    orderNumber: byOrder.orderNumber,
+    providerTransactionId: null,
+  });
+  assert.equal(closed.status, "CLOSED");
+
+  const second = await provider.createPayment(
+    createInput({
+      orderNumber: "BILL-ORDER-2",
+      idempotencyKey: "create-order-2",
+    }),
+  );
+  await assert.rejects(
+    () =>
+      provider.closePayment({
+        orderNumber: "BILL-WRONG-ORDER",
+        providerTransactionId: second.providerTransactionId,
+      }),
+    (error: unknown) => expectBillingError(error, "PAYMENT_NOT_FOUND", 404),
+  );
+});
+
 test("Mock refunds a paid payment once and rejects conflicting refunds", async () => {
   const provider = mockProvider();
   const pending = await provider.createPayment(createInput());

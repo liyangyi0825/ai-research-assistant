@@ -142,8 +142,11 @@ function verifier(env: WechatEnvironment): WechatVerifierConfig {
 }
 
 export function loadWechatPayConfig(env: WechatEnvironment): WechatPayConfig {
-  const apiV3KeyValue = required(env, "WECHAT_PAY_API_V3_KEY");
-  if (Buffer.byteLength(apiV3KeyValue, "utf8") !== 32) {
+  const apiV3KeyValue = env.WECHAT_PAY_API_V3_KEY;
+  if (
+    apiV3KeyValue === undefined ||
+    Buffer.byteLength(apiV3KeyValue, "utf8") !== 32
+  ) {
     throw configurationError("PROVIDER_NOT_CONFIGURED", ["WECHAT_PAY_API_V3_KEY"]);
   }
   const merchantPrivateKeyPem = canonicalValue(
