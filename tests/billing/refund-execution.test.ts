@@ -413,6 +413,15 @@ test("the forward refund migration claims approved full refunds and completes al
   ).catch(() => "");
 
   assert.match(sql, /ALTER TABLE public\.billing_refunds[\s\S]*claim_token UUID[\s\S]*claim_expires_at TIMESTAMPTZ[\s\S]*last_error_code TEXT/i);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS execution_managed BOOLEAN/i);
+  const addMarker = sql.indexOf("ADD COLUMN IF NOT EXISTS execution_managed BOOLEAN");
+  const markLegacy = sql.indexOf("SET execution_managed = FALSE");
+  const futureDefault = sql.indexOf("ALTER COLUMN execution_managed SET DEFAULT TRUE");
+  const requireMarker = sql.indexOf("ALTER COLUMN execution_managed SET NOT NULL");
+  assert.ok(addMarker >= 0 && addMarker < markLegacy && markLegacy < futureDefault && futureDefault < requireMarker);
+  assert.doesNotMatch(sql.slice(0, markLegacy), /execution_managed[^;]*DEFAULT\s+TRUE/i);
+  assert.match(sql, /billing_refunds_claim_state_check[\s\S]*NOT execution_managed[\s\S]*execution_managed[\s\S]*status\s*=\s*'FAILED'/i);
+  assert.match(sql, /CREATE TRIGGER billing_refunds_execution_management_immutable[\s\S]*BEFORE INSERT OR UPDATE[\s\S]*billing_guard_refund_execution_management\(\)/i);
   assert.match(sql, /UPDATE public\.billing_refunds[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i);
   assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_claim_approved_refund\s*\(/i);
   assert.match(sql, /snapshot_product_type\s*=\s*'CREDIT_PACK'[\s\S]*'status',\s*'MANUAL_REVIEW_REQUIRED'/i);
@@ -430,11 +439,14 @@ test("the forward refund migration claims approved full refunds and completes al
   assert.match(sql, /v_request\.requested_amount_minor\s+IS DISTINCT FROM\s+v_order\.amount_minor/i);
   assert.match(sql, /v_payment\.amount_minor\s+IS DISTINCT FROM\s+v_order\.amount_minor/i);
   assert.match(sql, /'billing-refund:'\s*\|\|\s*p_request_id::TEXT/i);
+  assert.match(sql, /v_refund_exists\s+AND\s+NOT v_refund\.execution_managed[\s\S]*legacy refund is not execution managed/i);
+  assert.match(sql, /INSERT INTO public\.billing_refunds[\s\S]*execution_managed[\s\S]*TRUE/i);
   assert.match(sql, /v_claimed_at\s+TIMESTAMPTZ\s*:=\s*clock_timestamp\(\)/i);
   assert.match(sql, /claim_expires_at\s*=\s*v_claimed_at\s*\+\s*interval\s*'5 minutes'/i);
   assert.doesNotMatch(sql, /claim_expires_at\s*=\s*p_claimed_at\s*\+/i);
   assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_complete_refund\s*\(/i);
   assert.match(sql, /v_refund\.claim_token\s+IS DISTINCT FROM\s+p_claim_token/i);
+  assert.match(sql, /NOT v_refund\.execution_managed[\s\S]*refund claim is not completable/i);
   assert.match(sql, /p_provider_transaction_id\s+IS DISTINCT FROM\s+v_payment\.provider_transaction_id/i);
   assert.match(sql, /p_refunded_amount_minor\s+IS DISTINCT FROM\s+v_refund\.refunded_amount_minor/i);
   assert.match(sql, /UPDATE public\.billing_refunds[\s\S]*status\s*=\s*'SUCCEEDED'/i);
@@ -447,6 +459,7 @@ test("the forward refund migration claims approved full refunds and completes al
   assert.doesNotMatch(sql, /credit-reversal/i);
   assert.doesNotMatch(sql, /DELETE\s+FROM\s+public\.billing_(?:subscriptions|user_entitlements|usage_quotas|credit_ledger)/i);
   assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_fail_refund_claim\s*\(/i);
+  assert.match(sql, /NOT v_refund\.execution_managed[\s\S]*refund claim cannot be failed/i);
   assert.match(sql, /REVOKE ALL ON FUNCTION public\.billing_claim_approved_refund[\s\S]*FROM PUBLIC, anon, authenticated/i);
   assert.match(sql, /GRANT EXECUTE ON FUNCTION public\.billing_complete_refund[\s\S]*TO service_role/i);
   assert.match(sql, /SET search_path = pg_catalog, public/gi);
@@ -458,6 +471,7 @@ test("database types expose the durable refund lease and service-role RPC contra
   assert.match(source, /billing_claim_approved_refund: \{[\s\S]*p_request_id: UUID;[\s\S]*p_claim_token: UUID;[\s\S]*p_claimed_at: Timestamp;[\s\S]*Returns: Json;/i);
   assert.match(source, /billing_complete_refund: \{[\s\S]*p_refund_id: UUID;[\s\S]*p_claim_token: UUID;[\s\S]*p_provider_refund_id: string;[\s\S]*p_provider_transaction_id: string;[\s\S]*p_refunded_amount_minor: number;[\s\S]*p_currency: string;[\s\S]*p_response_summary: Json;[\s\S]*Returns: Json;/i);
   assert.match(source, /billing_fail_refund_claim: \{[\s\S]*p_refund_id: UUID;[\s\S]*p_claim_token: UUID;[\s\S]*p_error_code: string;[\s\S]*Returns: Json;/i);
+  assert.match(source, /BillingRefundRow = \{[\s\S]*execution_managed: boolean;/i);
 });
 
 test("refund repository sends only server claim and provider result fields to the three RPCs", async () => {

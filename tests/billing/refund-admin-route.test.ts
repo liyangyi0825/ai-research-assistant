@@ -25,6 +25,17 @@ function request(decision: "APPROVED" | "REJECTED" = "APPROVED") {
   });
 }
 
+function retryRequest() {
+  return new Request("http://localhost/api/admin/billing/refunds", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      action: "RETRY_EXECUTION",
+      requestId: "refund-request-1",
+    }),
+  });
+}
+
 function success() {
   return {
     status: "SUCCEEDED" as const,
@@ -133,7 +144,7 @@ test("unexpected execution failures emit one fixed safe event while manual revie
   assert.equal(events.length, 1);
 });
 
-test("retrying the same idempotent approval can recover execution", async () => {
+test("an explicit retry recovers an approved refund without reviewing it again", async () => {
   let reviewCalls = 0;
   let executionCalls = 0;
   const handler = createRefundReviewHandler({
@@ -152,8 +163,50 @@ test("retrying the same idempotent approval can recover execution", async () => 
   const first = await handler(request());
   assert.equal(first.status, 503);
   assert.equal((await first.json()).refundExecution.status, "RETRY_REQUIRED");
-  const second = await handler(request());
+  const second = await handler(retryRequest());
   assert.equal((await second.json()).refundExecution.status, "SUCCEEDED");
-  assert.equal(reviewCalls, 2);
+  assert.equal(reviewCalls, 1);
   assert.equal(executionCalls, 2);
+});
+
+test("an ordinary user cannot invoke the approved refund retry action", async () => {
+  let executions = 0;
+  const handler = createRefundReviewHandler({
+    requireAdmin: async () => {
+      throw new BillingError(
+        "BILLING_ADMIN_REQUIRED",
+        "An active billing administrator is required.",
+        403,
+      );
+    },
+    reviewRefund: async () => assert.fail("retry must not review"),
+    executeRefund: async () => {
+      executions += 1;
+      return success();
+    },
+  });
+
+  const response = await handler(retryRequest());
+  assert.equal(response.status, 403);
+  assert.equal(executions, 0);
+});
+
+test("retry preserves the manual-refund outcome without starting a new review", async () => {
+  const handler = createRefundReviewHandler({
+    requireAdmin: async () => admin,
+    reviewRefund: async () => assert.fail("retry must not review"),
+    executeRefund: async () => {
+      throw new BillingError("REFUND_REQUIRES_MANUAL_REVIEW", "manual", 409);
+    },
+  });
+
+  const response = await handler(retryRequest());
+  assert.equal(response.status, 202);
+  assert.deepEqual(await response.json(), {
+    success: true,
+    approvalPersisted: true,
+    refundCompleted: false,
+    requiresManualAction: true,
+    refundExecution: { status: "MANUAL_REVIEW_REQUIRED" },
+  });
 });

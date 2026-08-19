@@ -2,15 +2,16 @@
 
 import { useState, type FormEvent } from "react";
 
-type Action = {
+export type Action = {
   title: string;
   endpoint: string;
   method?: "POST" | "PATCH";
   fields: Array<{ name: string; label: string; type?: string; options?: string[] }>;
   fixed?: Record<string, unknown>;
+  requiresIdempotencyKey?: boolean;
 };
 
-const actions: Action[] = [
+export const adminBillingActions: Action[] = [
   { title: "人工调整额度", endpoint: "/api/admin/billing/credits", fields: [
     { name: "userId", label: "用户 ID" }, { name: "amount", label: "额度增减整数", type: "number" },
     { name: "reason", label: "操作原因" },
@@ -37,11 +38,32 @@ const actions: Action[] = [
     { name: "requestId", label: "退款申请 ID" }, { name: "decision", label: "结论", options: ["APPROVED", "REJECTED"] },
     { name: "reason", label: "审核原因" },
   ] },
+  { title: "重试已批准退款", endpoint: "/api/admin/billing/refunds", method: "PATCH", fixed: { action: "RETRY_EXECUTION" }, requiresIdempotencyKey: false, fields: [
+    { name: "requestId", label: "已批准退款申请 ID" },
+  ] },
   { title: "审核发票", endpoint: "/api/admin/billing/invoices", method: "PATCH", fields: [
     { name: "requestId", label: "发票申请 ID" }, { name: "decision", label: "结论", options: ["ISSUED", "REJECTED"] },
     { name: "reason", label: "审核原因" },
   ] },
 ];
+
+export function buildAdminActionBody(
+  action: Pick<Action, "fields" | "fixed" | "requiresIdempotencyKey">,
+  raw: Record<string, FormDataEntryValue>,
+  createIdempotencyKey: () => string = () => crypto.randomUUID(),
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { ...action.fixed };
+  if (action.requiresIdempotencyKey !== false) {
+    body.idempotencyKey = createIdempotencyKey();
+  }
+  for (const field of action.fields) {
+    const value = raw[field.name];
+    if (field.type === "number") body[field.name] = value === "" ? null : Number(value);
+    else if (field.name === "isActive") body[field.name] = value === "true";
+    else body[field.name] = value;
+  }
+  return body;
+}
 
 type AdminActionResult = {
   auditId?: string;
@@ -65,7 +87,7 @@ export function formatAdminActionResult(
       return `已批准待人工退款，审计 ID：${result.auditId ?? "-"}`;
     }
     if (result.approvalPersisted || result.refundExecution?.status === "RETRY_REQUIRED") {
-      return `审批已保存但退款执行失败需重试，审计 ID：${result.auditId ?? "-"}`;
+      return `审批已保存但退款执行失败需重试，请使用“重试已批准退款”操作，审计 ID：${result.auditId ?? "-"}`;
     }
   }
   return responseOk
@@ -79,13 +101,7 @@ export function AdminBillingActions({ canWrite }: { canWrite: boolean }) {
     event.preventDefault();
     if (!canWrite) return;
     const raw = Object.fromEntries(new FormData(event.currentTarget));
-    const body: Record<string, unknown> = { ...action.fixed, idempotencyKey: crypto.randomUUID() };
-    for (const field of action.fields) {
-      const value = raw[field.name];
-      if (field.type === "number") body[field.name] = value === "" ? null : Number(value);
-      else if (field.name === "isActive") body[field.name] = value === "true";
-      else body[field.name] = value;
-    }
+    const body = buildAdminActionBody(action, raw);
     const response = await fetch(action.endpoint, {
       method: action.method ?? "POST",
       headers: { "content-type": "application/json" },
@@ -98,7 +114,7 @@ export function AdminBillingActions({ canWrite }: { canWrite: boolean }) {
     <section className="grid gap-4 lg:grid-cols-2">
       {!canWrite && <p className="lg:col-span-2 rounded-xl border border-amber-400/30 bg-amber-400/10 p-4 text-amber-200">当前为审核员只读权限，所有变更按钮均已禁用。</p>}
       {message && <p className="lg:col-span-2 rounded-xl bg-slate-800 p-4 text-sm">{message}</p>}
-      {actions.map((action) => (
+      {adminBillingActions.map((action) => (
         <form key={action.title} onSubmit={(event) => submit(action, event)}
           className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-5">
           <h2 className="font-semibold">{action.title}</h2>

@@ -62,6 +62,21 @@ begin
     raise exception 'missing billing tables: %', missing_items;
   end if;
 
+  if not exists (
+    select 1
+    from pg_catalog.pg_attribute as attribute
+    join pg_catalog.pg_attrdef as default_value
+      on default_value.adrelid = attribute.attrelid
+     and default_value.adnum = attribute.attnum
+    where attribute.attrelid = 'public.billing_refunds'::regclass
+      and attribute.attname = 'execution_managed'
+      and attribute.attnotnull
+      and not attribute.attisdropped
+      and pg_catalog.pg_get_expr(default_value.adbin, default_value.adrelid) = 'true'
+  ) then
+    raise exception 'billing refund execution marker contract mismatch';
+  end if;
+
   with expected_indexes(
     schema_name, table_name, index_name, column_names, expected_indoptions,
     access_method, expected_unique, expected_predicate
@@ -277,7 +292,7 @@ begin
       ('public', 'billing_refunds', null::text, 'c', '^CHECK \(\(status = ANY \(ARRAY\[''PENDING''::text, ''SUCCEEDED''::text, ''FAILED''::text\]\)\)\)$'),
       ('public', 'billing_refunds', null::text, 'c', '^CHECK \(\(refunded_amount_minor > 0\)\)$'),
       ('public', 'billing_refunds', null::text, 'c', '^CHECK \(\(currency = ''CNY''::text\)\)$'),
-      ('public', 'billing_refunds', 'billing_refunds_claim_state_check', 'c', '^CHECK \(\(\(\(status = ''PENDING''::text\) AND \(completed_at IS NULL\) AND \(\(\(claim_token IS NULL\) AND \(claim_expires_at IS NULL\)\) OR \(\(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\)\)\)\) OR \(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(completed_at IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\) OR \(\(status = ''SUCCEEDED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\) AND \(NULLIF\(btrim\(provider_refund_id\), ''''::text\) IS NOT NULL\) AND \(completed_at IS NOT NULL\)\)\)\)$'),
+      ('public', 'billing_refunds', 'billing_refunds_claim_state_check', 'c', '^CHECK \(\(\(\(NOT execution_managed\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\)\) OR \(execution_managed AND \(\(\(status = ''PENDING''::text\) AND \(completed_at IS NULL\) AND \(\(\(claim_token IS NULL\) AND \(claim_expires_at IS NULL\)\) OR \(\(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\)\)\)\) OR \(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(completed_at IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\) OR \(\(status = ''SUCCEEDED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\) AND \(NULLIF\(btrim\(provider_refund_id\), ''''::text\) IS NOT NULL\) AND \(completed_at IS NOT NULL\)\)\)\)\)\)$'),
 
       ('public', 'billing_invoice_requests', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_invoice_requests', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -500,11 +515,13 @@ declare
     'public.billing_set_updated_at()',
     'public.billing_protect_order_snapshot()',
     'public.billing_protect_credit_ledger()',
-    'public.billing_validate_webhook_event_update()'
+    'public.billing_validate_webhook_event_update()',
+    'public.billing_guard_refund_execution_management()'
   ];
   missing_or_unsafe text[];
   updated_trigger_count integer;
   refund_quota_trigger_count integer;
+  refund_management_trigger_count integer;
 begin
   select array_agg(signature order by signature)
   into missing_or_unsafe
@@ -570,6 +587,28 @@ begin
     and not tgisinternal;
   if refund_quota_trigger_count is distinct from 1 then
     raise exception 'billing refund quota lock trigger inventory mismatch';
+  end if;
+
+  select count(*)
+  into refund_management_trigger_count
+  from pg_catalog.pg_trigger
+  where tgrelid = 'public.billing_refunds'::regclass
+    and tgname = 'billing_refunds_execution_management_immutable'
+    and not tgisinternal;
+  if refund_management_trigger_count is distinct from 1 then
+    raise exception 'billing refund execution management trigger inventory mismatch';
+  end if;
+  if not exists (
+    select 1
+    from pg_catalog.pg_trigger
+    where tgrelid = 'public.billing_refunds'::regclass
+      and tgname = 'billing_refunds_execution_management_immutable'
+      and tgfoid = 'public.billing_guard_refund_execution_management()'::regprocedure
+      and tgtype = 23
+      and tgenabled = 'O'
+      and not tgisinternal
+  ) then
+    raise exception 'billing refund execution management trigger missing';
   end if;
 
   if not exists (
@@ -724,7 +763,8 @@ declare
   expected_internal_functions constant text[] := array[
     'public.billing_assert_semester_plan(uuid)',
     'public.billing_assert_refund_reversible(uuid)',
-    'public.billing_guard_refunding_quota_usage()'
+    'public.billing_guard_refunding_quota_usage()',
+    'public.billing_guard_refund_execution_management()'
   ];
   unsafe_functions text[];
 begin
@@ -926,6 +966,46 @@ declare
   retry_lease_mutation_rejected boolean := false;
   refund_execution_id uuid;
 begin
+  if exists (
+    select 1
+    from public.billing_refunds
+    where id in (
+      '00000000-0000-4000-8000-00000000b065',
+      '00000000-0000-4000-8000-00000000b066'
+    )
+      and (
+        execution_managed is distinct from false
+        or provider_refund_id is not null
+        or completed_at is not null
+        or last_error_code is not null
+      )
+  ) or (
+    select count(*)
+    from public.billing_refunds
+    where id in (
+      '00000000-0000-4000-8000-00000000b065',
+      '00000000-0000-4000-8000-00000000b066'
+    )
+      and status in ('FAILED', 'SUCCEEDED')
+  ) is distinct from 2::bigint then
+    raise exception 'legacy refund rows were rewritten';
+  end if;
+
+  expected_failure := false;
+  begin
+    perform public.billing_claim_approved_refund(
+      '00000000-0000-4000-8000-00000000b063',
+      '00000000-0000-4000-8000-00000000b083',
+      clock_timestamp()
+    );
+  exception
+    when sqlstate '55000' then
+      expected_failure := true;
+  end;
+  if expected_failure is not true then
+    raise exception 'legacy refund was execution claimed';
+  end if;
+
   begin
     result := public.billing_admin_review_refund(
       '00000000-0000-4000-8000-00000000b002',

@@ -291,6 +291,7 @@ export type BillingRefundRow = {
   user_id: UUID;
   provider: "MOCK" | "WECHAT" | "ALIPAY";
   provider_refund_id: string | null;
+  execution_managed: boolean;
   status: "PENDING" | "SUCCEEDED" | "FAILED";
   refunded_amount_minor: number;
   currency: "CNY";

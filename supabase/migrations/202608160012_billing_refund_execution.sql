@@ -3,36 +3,81 @@ BEGIN;
 ALTER TABLE public.billing_refunds
   ADD COLUMN IF NOT EXISTS claim_token UUID,
   ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ,
-  ADD COLUMN IF NOT EXISTS last_error_code TEXT;
+  ADD COLUMN IF NOT EXISTS last_error_code TEXT,
+  ADD COLUMN IF NOT EXISTS execution_managed BOOLEAN;
+
+UPDATE public.billing_refunds
+SET execution_managed = FALSE
+WHERE execution_managed IS NULL;
+
+ALTER TABLE public.billing_refunds
+  ALTER COLUMN execution_managed SET DEFAULT TRUE,
+  ALTER COLUMN execution_managed SET NOT NULL;
 
 ALTER TABLE public.billing_refunds
   DROP CONSTRAINT IF EXISTS billing_refunds_claim_state_check;
 ALTER TABLE public.billing_refunds
   ADD CONSTRAINT billing_refunds_claim_state_check CHECK (
     (
-      status = 'PENDING'
-      AND completed_at IS NULL
-      AND (
-        (claim_token IS NULL AND claim_expires_at IS NULL)
-        OR (claim_token IS NOT NULL AND claim_expires_at IS NOT NULL)
-      )
-    )
-    OR (
-      status = 'FAILED'
-      AND claim_token IS NULL
-      AND claim_expires_at IS NULL
-      AND completed_at IS NULL
-      AND NULLIF(btrim(last_error_code), '') IS NOT NULL
-    )
-    OR (
-      status = 'SUCCEEDED'
+      NOT execution_managed
       AND claim_token IS NULL
       AND claim_expires_at IS NULL
       AND last_error_code IS NULL
-      AND NULLIF(btrim(provider_refund_id), '') IS NOT NULL
-      AND completed_at IS NOT NULL
+    )
+    OR (
+      execution_managed
+      AND (
+        (
+          status = 'PENDING'
+          AND completed_at IS NULL
+          AND (
+            (claim_token IS NULL AND claim_expires_at IS NULL)
+            OR (claim_token IS NOT NULL AND claim_expires_at IS NOT NULL)
+          )
+        )
+        OR (
+          status = 'FAILED'
+          AND claim_token IS NULL
+          AND claim_expires_at IS NULL
+          AND completed_at IS NULL
+          AND NULLIF(btrim(last_error_code), '') IS NOT NULL
+        )
+        OR (
+          status = 'SUCCEEDED'
+          AND claim_token IS NULL
+          AND claim_expires_at IS NULL
+          AND last_error_code IS NULL
+          AND NULLIF(btrim(provider_refund_id), '') IS NOT NULL
+          AND completed_at IS NOT NULL
+        )
+      )
     )
   );
+
+CREATE OR REPLACE FUNCTION public.billing_guard_refund_execution_management()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' AND NEW.execution_managed IS NOT TRUE THEN
+    RAISE EXCEPTION 'new refunds must be execution managed'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+  IF TG_OP = 'UPDATE'
+     AND NEW.execution_managed IS DISTINCT FROM OLD.execution_managed THEN
+    RAISE EXCEPTION 'refund execution management is immutable'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS billing_refunds_execution_management_immutable
+  ON public.billing_refunds;
+CREATE TRIGGER billing_refunds_execution_management_immutable
+BEFORE INSERT OR UPDATE ON public.billing_refunds
+FOR EACH ROW EXECUTE FUNCTION public.billing_guard_refund_execution_management();
 
 CREATE INDEX IF NOT EXISTS billing_refunds_claim_expiry_idx
   ON public.billing_refunds (claim_expires_at)
@@ -248,6 +293,18 @@ BEGIN
       USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
 
+  v_idempotency_key := 'billing-refund:' || p_request_id::TEXT;
+  SELECT * INTO v_refund
+  FROM public.billing_refunds
+  WHERE refund_request_id = p_request_id
+  FOR UPDATE;
+  v_refund_exists := FOUND;
+
+  IF v_refund_exists AND NOT v_refund.execution_managed THEN
+    RAISE EXCEPTION 'legacy refund is not execution managed'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+
   IF v_order.snapshot_product_type = 'CREDIT_PACK' THEN
     IF v_order.status <> 'REFUNDING'
        OR v_order.refund_status <> 'REQUESTED'
@@ -258,13 +315,6 @@ BEGIN
     END IF;
     RETURN jsonb_build_object('status', 'MANUAL_REVIEW_REQUIRED');
   END IF;
-
-  v_idempotency_key := 'billing-refund:' || p_request_id::TEXT;
-  SELECT * INTO v_refund
-  FROM public.billing_refunds
-  WHERE refund_request_id = p_request_id
-  FOR UPDATE;
-  v_refund_exists := FOUND;
 
   IF v_refund_exists AND v_refund.status = 'SUCCEEDED' THEN
     SELECT * INTO v_payment
@@ -346,6 +396,7 @@ BEGIN
       payment_id,
       user_id,
       provider,
+      execution_managed,
       status,
       refunded_amount_minor,
       currency,
@@ -359,6 +410,7 @@ BEGIN
       v_payment.id,
       v_order.user_id,
       v_order.provider,
+      TRUE,
       'PENDING',
       v_order.amount_minor,
       v_order.currency,
@@ -446,6 +498,10 @@ BEGIN
   FOR UPDATE;
   IF NOT FOUND THEN
     RAISE EXCEPTION 'refund not found' USING ERRCODE = 'no_data_found';
+  END IF;
+  IF NOT v_refund.execution_managed THEN
+    RAISE EXCEPTION 'refund claim is not completable'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
 
   SELECT * INTO v_request
@@ -613,6 +669,10 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'refund not found' USING ERRCODE = 'no_data_found';
   END IF;
+  IF NOT v_refund.execution_managed THEN
+    RAISE EXCEPTION 'refund claim cannot be failed'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
   IF v_refund.status = 'SUCCEEDED' THEN
     RETURN jsonb_build_object('status', 'SUCCEEDED');
   END IF;
@@ -641,6 +701,8 @@ REVOKE ALL ON FUNCTION public.billing_fail_refund_claim(UUID, UUID, TEXT)
 REVOKE ALL ON FUNCTION public.billing_assert_refund_reversible(UUID)
   FROM PUBLIC, anon, authenticated, service_role;
 REVOKE ALL ON FUNCTION public.billing_guard_refunding_quota_usage()
+  FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public.billing_guard_refund_execution_management()
   FROM PUBLIC, anon, authenticated, service_role;
 
 GRANT EXECUTE ON FUNCTION public.billing_claim_approved_refund(UUID, UUID, TIMESTAMPTZ)

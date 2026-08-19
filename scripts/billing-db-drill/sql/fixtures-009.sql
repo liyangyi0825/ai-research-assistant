@@ -148,6 +148,54 @@ values
     'NONE',
     timestamptz '2026-01-01 00:00:00+00',
     timestamptz '2026-01-03 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-00000000b023',
+    'DRILL-LEGACY-REFUND-FAILED-009',
+    '00000000-0000-4000-8000-00000000b001',
+    '00000000-0000-4000-8000-00000000b011',
+    'MOCK',
+    'REFUNDING',
+    1990,
+    'CNY',
+    'Pro Monthly',
+    'SUBSCRIPTION',
+    '00000000-0000-4000-8000-00000000b010',
+    30,
+    0,
+    'pro-v1',
+    '[{"feature_key":"summarize","periodic_limit":100,"credit_grant":0}]'::jsonb,
+    '{"fixture":"billing-drill","legacy_refund":"FAILED"}'::jsonb,
+    'billing-drill-v1',
+    timestamptz '2099-01-01 00:00:00+00',
+    timestamptz '2026-01-04 00:00:00+00',
+    'REQUESTED',
+    timestamptz '2026-01-01 00:00:00+00',
+    timestamptz '2026-01-04 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-00000000b024',
+    'DRILL-LEGACY-REFUND-SUCCEEDED-009',
+    '00000000-0000-4000-8000-00000000b001',
+    '00000000-0000-4000-8000-00000000b011',
+    'MOCK',
+    'REFUNDING',
+    1990,
+    'CNY',
+    'Pro Monthly',
+    'SUBSCRIPTION',
+    '00000000-0000-4000-8000-00000000b010',
+    30,
+    0,
+    'pro-v1',
+    '[{"feature_key":"summarize","periodic_limit":100,"credit_grant":0}]'::jsonb,
+    '{"fixture":"billing-drill","legacy_refund":"SUCCEEDED"}'::jsonb,
+    'billing-drill-v1',
+    timestamptz '2099-01-01 00:00:00+00',
+    timestamptz '2026-01-05 00:00:00+00',
+    'REQUESTED',
+    timestamptz '2026-01-01 00:00:00+00',
+    timestamptz '2026-01-05 00:00:00+00'
   );
 
 insert into public.billing_payments (
@@ -185,6 +233,36 @@ values
     timestamptz '2026-01-03 00:00:00+00',
     timestamptz '2026-01-03 00:00:00+00',
     timestamptz '2026-01-03 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-00000000b032',
+    '00000000-0000-4000-8000-00000000b023',
+    '00000000-0000-4000-8000-00000000b001',
+    'MOCK',
+    'DRILL-MOCK-LEGACY-FAILED-009',
+    'PAID',
+    1990,
+    'CNY',
+    'drill-legacy-failed-payment-009',
+    '{"fixture":"billing-drill"}'::jsonb,
+    timestamptz '2026-01-04 00:00:00+00',
+    timestamptz '2026-01-04 00:00:00+00',
+    timestamptz '2026-01-04 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-00000000b033',
+    '00000000-0000-4000-8000-00000000b024',
+    '00000000-0000-4000-8000-00000000b001',
+    'MOCK',
+    'DRILL-MOCK-LEGACY-SUCCEEDED-009',
+    'PAID',
+    1990,
+    'CNY',
+    'drill-legacy-succeeded-payment-009',
+    '{"fixture":"billing-drill"}'::jsonb,
+    timestamptz '2026-01-05 00:00:00+00',
+    timestamptz '2026-01-05 00:00:00+00',
+    timestamptz '2026-01-05 00:00:00+00'
   );
 
 insert into public.billing_subscriptions (
@@ -280,17 +358,81 @@ insert into public.billing_refund_requests (
   id, order_id, user_id, requested_amount_minor, currency, reason, status,
   created_at, updated_at
 )
-values (
-  '00000000-0000-4000-8000-00000000b060',
-  '00000000-0000-4000-8000-00000000b021',
-  '00000000-0000-4000-8000-00000000b001',
-  1990,
-  'CNY',
-  'Synthetic billing recovery drill refund request',
-  'PENDING',
-  timestamptz '2026-01-04 00:00:00+00',
-  timestamptz '2026-01-04 00:00:00+00'
-);
+values
+  (
+    '00000000-0000-4000-8000-00000000b060',
+    '00000000-0000-4000-8000-00000000b021',
+    '00000000-0000-4000-8000-00000000b001',
+    1990,
+    'CNY',
+    'Synthetic billing recovery drill refund request',
+    'PENDING',
+    timestamptz '2026-01-04 00:00:00+00',
+    timestamptz '2026-01-04 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-00000000b063',
+    '00000000-0000-4000-8000-00000000b023',
+    '00000000-0000-4000-8000-00000000b001',
+    1990,
+    'CNY',
+    'Synthetic legacy failed refund request',
+    'APPROVED',
+    timestamptz '2026-01-04 00:00:00+00',
+    timestamptz '2026-01-04 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-00000000b064',
+    '00000000-0000-4000-8000-00000000b024',
+    '00000000-0000-4000-8000-00000000b001',
+    1990,
+    'CNY',
+    'Synthetic legacy succeeded refund request',
+    'APPROVED',
+    timestamptz '2026-01-05 00:00:00+00',
+    timestamptz '2026-01-05 00:00:00+00'
+  );
+
+insert into public.billing_refunds (
+  id, refund_request_id, order_id, payment_id, user_id, provider,
+  provider_refund_id, status, refunded_amount_minor, currency,
+  idempotency_key, response_summary, completed_at, created_at, updated_at
+)
+values
+  (
+    '00000000-0000-4000-8000-00000000b065',
+    '00000000-0000-4000-8000-00000000b063',
+    '00000000-0000-4000-8000-00000000b023',
+    '00000000-0000-4000-8000-00000000b032',
+    '00000000-0000-4000-8000-00000000b001',
+    'MOCK',
+    null,
+    'FAILED',
+    1990,
+    'CNY',
+    'drill-legacy-failed-refund-009',
+    '{}',
+    null,
+    timestamptz '2026-01-04 00:00:00+00',
+    timestamptz '2026-01-04 00:00:00+00'
+  ),
+  (
+    '00000000-0000-4000-8000-00000000b066',
+    '00000000-0000-4000-8000-00000000b064',
+    '00000000-0000-4000-8000-00000000b024',
+    '00000000-0000-4000-8000-00000000b033',
+    '00000000-0000-4000-8000-00000000b001',
+    'MOCK',
+    null,
+    'SUCCEEDED',
+    1990,
+    'CNY',
+    'drill-legacy-succeeded-refund-009',
+    '{}',
+    null,
+    timestamptz '2026-01-05 00:00:00+00',
+    timestamptz '2026-01-05 00:00:00+00'
+  );
 
 insert into public.billing_invoice_requests (
   id, order_id, user_id, invoice_title, tax_identifier, amount_minor, currency,

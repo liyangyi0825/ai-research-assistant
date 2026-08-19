@@ -848,6 +848,14 @@ test("009 fixtures are deterministic, synthetic, and transaction-safe", async ()
   assert.match(fixtures009, /begin;/i);
   assert.match(fixtures009, /\\if\s+:drill_commit[\s\S]*commit;[\s\S]*\\else[\s\S]*rollback;/i);
   assert.doesNotMatch(fixtures009, /service_role|api[_ -]?key|private[_ -]?key/i);
+  assert.match(
+    fixtures009,
+    /insert into public\.billing_refunds[\s\S]*00000000-0000-4000-8000-00000000b065[\s\S]*'FAILED'[\s\S]*00000000-0000-4000-8000-00000000b066[\s\S]*'SUCCEEDED'/i,
+  );
+  assert.match(
+    fixtures009,
+    /provider_refund_id[\s\S]*completed_at[\s\S]*00000000-0000-4000-8000-00000000b065[\s\S]*null[\s\S]*'FAILED'[\s\S]*null[\s\S]*00000000-0000-4000-8000-00000000b066[\s\S]*null[\s\S]*'SUCCEEDED'[\s\S]*null/i,
+  );
 
   for (const table of [
     "auth.users",
@@ -1199,6 +1207,14 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /billing_claim_approved_refund\s*\([\s\S]*billing_fail_refund_claim\s*\([\s\S]*billing_complete_refund\s*\(/i);
   assert.match(verify, /MANUAL_REVIEW_REQUIRED[\s\S]*credit pack automatic refund was not rejected/i);
   assert.match(verify, /refund execution rollback sentinel[\s\S]*refund execution rollback failed/i);
+  assert.match(
+    verify,
+    /00000000-0000-4000-8000-00000000b065[\s\S]*00000000-0000-4000-8000-00000000b066[\s\S]*execution_managed\s+is\s+distinct\s+from\s+false[\s\S]*provider_refund_id\s+is\s+not\s+null[\s\S]*completed_at\s+is\s+not\s+null[\s\S]*last_error_code\s+is\s+not\s+null[\s\S]*legacy refund rows were rewritten/i,
+  );
+  assert.match(
+    verify,
+    /billing_claim_approved_refund\s*\([\s\S]*00000000-0000-4000-8000-00000000b063[\s\S]*sqlstate\s+'55000'[\s\S]*legacy refund was execution claimed/i,
+  );
   assert.match(verify, /source_order_id[\s\S]*status\s*=\s*'CANCELLED'/i);
   assert.match(verify, /subscription_id[\s\S]*quota_limit\s*=\s*0/i);
 
