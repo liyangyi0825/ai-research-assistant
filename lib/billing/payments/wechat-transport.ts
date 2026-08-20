@@ -11,6 +11,18 @@ export type WechatFetch = (
   init: RequestInit,
 ) => Promise<Response>;
 
+const WECHAT_CONNECTION_ERROR_BRAND = Symbol("WechatConnectionError");
+
+export class WechatConnectionError extends Error {
+  readonly [WECHAT_CONNECTION_ERROR_BRAND] = true;
+
+  constructor() {
+    super("WeChat connection failed.");
+    this.name = "WechatConnectionError";
+    Object.setPrototypeOf(this, WechatConnectionError.prototype);
+  }
+}
+
 const WECHAT_ORIGIN = "https://api.mch.weixin.qq.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1_024;
@@ -63,6 +75,21 @@ function unavailable(): BillingError {
   );
 }
 
+function isConnectionError(error: unknown): error is WechatConnectionError {
+  return (
+    error instanceof WechatConnectionError &&
+    error[WECHAT_CONNECTION_ERROR_BRAND]
+  );
+}
+
+function transportFailed(): BillingError {
+  return new BillingError(
+    "PAYMENT_PROVIDER_TRANSPORT_FAILED",
+    "WeChat Pay transport failed.",
+    502,
+  );
+}
+
 function validatedPath(pathWithQuery: string): string {
   if (
     !pathWithQuery.startsWith("/v3/") ||
@@ -71,6 +98,31 @@ function validatedPath(pathWithQuery: string): string {
     pathWithQuery.includes("#")
   ) {
     throw requestInvalid();
+  }
+
+  const queryStart = pathWithQuery.indexOf("?");
+  const pathname =
+    queryStart === -1 ? pathWithQuery : pathWithQuery.slice(0, queryStart);
+  const segments = pathname.split("/");
+  if (segments.some((segment, index) => index > 0 && segment.length === 0)) {
+    throw requestInvalid();
+  }
+  for (const segment of segments.slice(1)) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw requestInvalid();
+    }
+    if (
+      decoded === "." ||
+      decoded === ".." ||
+      decoded.includes("/") ||
+      decoded.includes("\\") ||
+      ASCII_CONTROL_PATTERN.test(decoded)
+    ) {
+      throw requestInvalid();
+    }
   }
 
   let parsed: URL;
@@ -144,30 +196,59 @@ async function boundedResponseBody(
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
-  while (true) {
-    let result: ReadableStreamReadResult<Uint8Array>;
-    try {
-      result = await reader.read();
-    } catch {
-      throw unavailable();
-    }
-    if (result.done) break;
-    totalBytes += result.value.byteLength;
-    if (totalBytes > maximumBytes) {
+  try {
+    while (true) {
+      let result: ReadableStreamReadResult<Uint8Array>;
       try {
-        await reader.cancel();
-      } catch {
-        // The bounded failure is authoritative even if stream cancellation fails.
+        result = await reader.read();
+      } catch (error) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the classified read failure when cancellation also fails.
+        }
+        if (isConnectionError(error)) throw unavailable();
+        throw transportFailed();
       }
+      if (result.done) break;
+      totalBytes += result.value.byteLength;
+      if (totalBytes > maximumBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The bounded failure is authoritative even if cancellation fails.
+        }
+        throw invalidResponse();
+      }
+      chunks.push(result.value);
+    }
+
+    const bytes = Buffer.concat(
+      chunks.map((chunk) =>
+        Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength),
+      ),
+      totalBytes,
+    );
+    let decoded: string;
+    try {
+      decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
       throw invalidResponse();
     }
-    chunks.push(result.value);
+    if (!Buffer.from(decoded, "utf8").equals(bytes)) throw invalidResponse();
+    return decoded;
+  } finally {
+    reader.releaseLock();
   }
+}
 
-  return Buffer.concat(
-    chunks.map((chunk) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)),
-    totalBytes,
-  ).toString("utf8");
+async function cancelUnreadResponseBody(response: Response): Promise<void> {
+  if (response.body === null) return;
+  try {
+    await response.body.cancel();
+  } catch {
+    // Missing authentication headers remain the authoritative failure.
+  }
 }
 
 export class WechatHttpClient {
@@ -207,6 +288,9 @@ export class WechatHttpClient {
   }
 
   async request<T>(input: RequestInput): Promise<{ status: number; body: T }> {
+    if (input.method === "GET" && input.body !== undefined) {
+      throw requestInvalid();
+    }
     const pathWithQuery = validatedPath(input.pathWithQuery);
     const body = serializeBody(input.body);
     const now = this.now();
@@ -247,7 +331,6 @@ export class WechatHttpClient {
           body,
           headers,
           signal: abortController.signal,
-          now,
         }),
         timeout,
       ]);
@@ -265,7 +348,6 @@ export class WechatHttpClient {
     body: string;
     headers: Headers;
     signal: AbortSignal;
-    now: Date;
   }): Promise<{ status: number; body: T }> {
     let response: Response;
     try {
@@ -273,11 +355,17 @@ export class WechatHttpClient {
         method: input.input.method,
         headers: input.headers,
         body: input.input.body === undefined ? undefined : input.body,
-        redirect: "error",
+        redirect: "manual",
         signal: input.signal,
       });
-    } catch {
-      throw unavailable();
+    } catch (error) {
+      if (
+        error instanceof WechatConnectionError &&
+        error[WECHAT_CONNECTION_ERROR_BRAND]
+      ) {
+        throw unavailable();
+      }
+      throw transportFailed();
     }
 
     const responseTimestamp = response.headers.get("Wechatpay-Timestamp");
@@ -288,8 +376,15 @@ export class WechatHttpClient {
       !responseTimestamp ||
       !responseNonce ||
       !responseSignature ||
-      !responseVerifierId
+      !responseVerifierId ||
+      [
+        responseTimestamp,
+        responseNonce,
+        responseSignature,
+        responseVerifierId,
+      ].some((value) => value.includes(","))
     ) {
+      await cancelUnreadResponseBody(response);
       throw invalidResponse();
     }
 
@@ -299,7 +394,7 @@ export class WechatHttpClient {
     );
     verifyWechatTimestamp({
       timestamp: responseTimestamp,
-      now: input.now,
+      now: this.now(),
       toleranceSeconds: RESPONSE_TIMESTAMP_TOLERANCE_SECONDS,
     });
     verifyWechatSignature({
@@ -311,6 +406,10 @@ export class WechatHttpClient {
       verifier: this.config.verifier,
     });
 
+    if (response.status >= 500 && response.status <= 599) {
+      throw unavailable();
+    }
+
     let parsedBody: unknown;
     try {
       parsedBody = JSON.parse(responseBody) as unknown;
@@ -318,9 +417,6 @@ export class WechatHttpClient {
       throw invalidResponse();
     }
 
-    if (response.status >= 500 && response.status <= 599) {
-      throw unavailable();
-    }
     if (response.status >= 400 && response.status <= 499) {
       throw mappedClientError(parsedBody);
     }
