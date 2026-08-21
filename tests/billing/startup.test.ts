@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -7,13 +8,21 @@ import {
 } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 
+const { privateKey: wechatPrivateKey, publicKey: wechatPublicKey } =
+  generateKeyPairSync("rsa", { modulusLength: 2048 });
+
 const configuredWechat = {
   WECHAT_PAY_MCH_ID: "test-mch",
   WECHAT_PAY_APP_ID: "test-app",
-  WECHAT_PAY_API_V3_KEY: "test-api-v3-key",
-  WECHAT_PAY_PRIVATE_KEY: "test-private-key",
+  WECHAT_PAY_API_V3_KEY: "12345678901234567890123456789012",
+  WECHAT_PAY_PRIVATE_KEY: wechatPrivateKey
+    .export({ type: "pkcs8", format: "pem" })
+    .toString(),
   WECHAT_PAY_CERT_SERIAL_NO: "test-serial",
-  WECHAT_PAY_PLATFORM_CERT: "test-platform-cert",
+  WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_TEST",
+  WECHAT_PAY_PUBLIC_KEY: wechatPublicKey
+    .export({ type: "spki", format: "pem" })
+    .toString(),
   WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
 };
 

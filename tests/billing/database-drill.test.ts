@@ -40,6 +40,7 @@ const expectedBillingMigrationFiles = [
   "202608120011_billing_fast_launch_catalog_guard.sql",
   "202608160012_billing_refund_execution.sql",
   "202608180013_billing_webhook_retry.sql",
+  "202608210014_wechat_native_payment_intents.sql",
 ] as const;
 const expectedBillingMigrationVersions = expectedBillingMigrationFiles.map(
   (name) => name.slice(0, 12),
@@ -317,13 +318,14 @@ function migrationConstraintShape(sql: string): string[] {
     ];
     constraints.push(`${match[1].toLowerCase()}.${type}`);
   }
-  for (const droppedName of [
-    "billing_webhook_events_status_check",
-    "billing_webhook_events_check",
-    "billing_webhook_events_check1",
-  ]) {
+  for (const [table, droppedName] of [
+    ["billing_webhook_events", "billing_webhook_events_status_check"],
+    ["billing_webhook_events", "billing_webhook_events_check"],
+    ["billing_webhook_events", "billing_webhook_events_check1"],
+    ["billing_payment_intents", "billing_payment_intents_check"],
+  ] as const) {
     if (new RegExp(`drop\\s+constraint\\s+if\\s+exists\\s+${droppedName}`, "i").test(sql)) {
-      const index = constraints.indexOf("billing_webhook_events.c");
+      const index = constraints.indexOf(`${table}.c`);
       assert.notEqual(index, -1, `dropped constraint missing from migration shape: ${droppedName}`);
       constraints.splice(index, 1);
     }
@@ -422,7 +424,7 @@ function verifyIndexManifest(sql: string) {
 
 const expectedConstraintCounts = new Map<string, number>([
   ["billing_plans", 3], ["billing_products", 9], ["billing_plan_entitlements", 5],
-  ["billing_orders", 17], ["billing_payment_intents", 13], ["billing_payments", 9],
+  ["billing_orders", 17], ["billing_payment_intents", 14], ["billing_payments", 9],
   ["billing_subscriptions", 8], ["billing_user_entitlements", 7], ["billing_usage_quotas", 10],
   ["billing_credit_accounts", 7], ["billing_usage_records", 10], ["billing_usage_continuations", 7],
   ["billing_credit_ledger", 8], ["billing_webhook_events", 11], ["billing_refund_requests", 8],
@@ -449,16 +451,16 @@ function assertConstraintInventoryMatchesMigrations(migrations: string, verify: 
       );
     }
   }
-  assert.equal(migrationShape.length, 168);
+  assert.equal(migrationShape.length, 169);
   assert.deepEqual(
     manifest.filter(({ name }) => name !== null).map(({ table, name }) => `${table}.${name}`).sort(),
     explicitNames,
     "only migration-explicit constraint names may be enforced",
   );
-  assert.equal(manifest.length, 168);
+  assert.equal(manifest.length, 169);
   assert.equal(
     new Set(manifest.map(({ table, type, definition }) => `${table}.${type}.${definition}`)).size,
-    168,
+    169,
     "constraint semantic signatures must form an exact multiset",
   );
 }
@@ -526,8 +528,8 @@ const wideConstraintSemantics = [
   {
     table: "billing_payment_intents",
     marker: "claim_expires_at IS NOT NULL",
-    migration: /status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
-    valid: "CHECK ((((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NOT NULL) AND (payment_status IS NOT NULL) AND (last_error_code IS NULL)) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL))))",
+    migration: /billing_payment_intents_lifecycle_check[\s\S]*merchant_order_number[\s\S]*status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_status\s*=\s*'PENDING'[\s\S]*provider_transaction_id\s+is\s+null[\s\S]*payment_status\s*=\s*'PAID'[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
+    valid: "CHECK (((NULLIF(btrim(merchant_order_number), ''::text) IS NOT NULL) AND (char_length(merchant_order_number) <= 64) AND (((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (last_error_code IS NULL) AND (((payment_status = 'PENDING'::text) AND ((provider <> 'WECHAT'::text) OR (provider_transaction_id IS NULL)) AND (payment_token IS NOT NULL) AND (paid_at IS NULL)) OR ((payment_status = 'PAID'::text) AND (provider_transaction_id IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((payment_status = ANY (ARRAY['FAILED'::text, 'CLOSED'::text])) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NULL) AND (paid_at IS NULL)))) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL)))))",
     mutationLeaf: "(claim_expires_at IS NOT NULL)",
   },
   {
@@ -624,7 +626,11 @@ function assertConstraintSemantics(migrations: string, verify: string): void {
   for (const expected of wideConstraintSemantics) {
     const migrationBody = migrationTables.get(expected.table);
     assert.ok(migrationBody, `migration table missing: ${expected.table}`);
-    assert.match(migrationBody, expected.migration, `migration semantic missing: ${expected.table}.${expected.marker}`);
+    assert.match(
+      expected.table === "billing_payment_intents" ? migrations : migrationBody,
+      expected.migration,
+      `migration semantic missing: ${expected.table}.${expected.marker}`,
+    );
     const matches = manifest.filter(({ table, type, definition }) =>
       table === expected.table && type === "c" && definition.includes(expected.marker));
     assert.equal(matches.length, 1, `expected one wide CHECK: ${expected.table}.${expected.marker}`);
@@ -931,7 +937,7 @@ test("manifest emits only the six safe top-level sections", async () => {
   ]);
 });
 
-test("manifest reports and verification requires the exact 001-013 migration history", async () => {
+test("manifest reports and verification requires the exact 001-014 migration history", async () => {
   const [manifest, verify] = await Promise.all([
     readDrillSql("manifest.sql"),
     readDrillSql("verify.sql"),
@@ -1180,7 +1186,7 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /expected_constraint_counts/i);
   for (const [table, expectedCounts] of [
     ["billing_orders", [1, 3, 1, 12]],
-    ["billing_payment_intents", [1, 2, 3, 7]],
+    ["billing_payment_intents", [1, 2, 4, 7]],
   ] as const) {
     const constraintCounts = verify.match(
       new RegExp(`\\('${table}',\\s*(\\d+),\\s*(\\d+),\\s*(\\d+),\\s*(\\d+)\\)`, "i"),
@@ -1200,6 +1206,10 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /verify-insufficient-balance-009[\s\S]*100000[\s\S]*sqlstate\s+'53000'[\s\S]*insufficient credit balance was accepted/i);
   assert.match(verify, /billing_settle_paid_order\s*\([\s\S]*ALREADY_PROCESSED[\s\S]*duplicate settlement was not idempotent/i);
   assert.match(verify, /DRILL-RETRY-EVENT-013[\s\S]*billing_mark_webhook_retryable[\s\S]*status[^;]*RETRYABLE[\s\S]*billing_prepare_webhook_settlement[\s\S]*status[^;]*RECEIVED[\s\S]*status\s*=\s*'PROCESSING'[\s\S]*status\s*=\s*'PROCESSED'/i);
+  assert.match(
+    verify,
+    /DRILL-WECHAT-MERCHANT-014[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*billing_settle_paid_order[\s\S]*DRILL-WECHAT-TXN-014[\s\S]*provider_transaction_id\s+is\s+distinct\s+from\s+'DRILL-WECHAT-TXN-014'[\s\S]*payment_status\s+is\s+distinct\s+from\s+'PAID'/i,
+  );
   assert.match(verify, /991[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement amount was accepted/i);
   assert.match(verify, /'USD'[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement currency was accepted/i);
   assert.match(verify, /billing_request_refund\s*\([\s\S]*b022[\s\S]*refund request replay was not idempotent/i);
@@ -1347,7 +1357,7 @@ test("preflight plan fails closed when restore billing relations or migration hi
   assert.equal(emptyCheck.targetRef, restoreRef);
 });
 
-test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 013 separately", () => {
+test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 014 separately", () => {
   const plan = buildUpgradePlan(planInput());
   assert.deepEqual(plan.map(({ operation }) => operation), [
     "prepare-upgrade-009-workspace",
@@ -1368,6 +1378,9 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
     "copy-migration-013",
     "verify-upgrade-workspace-ref-before-013",
     "push-migration-013",
+    "copy-migration-014",
+    "verify-upgrade-workspace-ref-before-014",
+    "push-migration-014",
     "verify-upgraded-restore",
   ]);
   assert.deepEqual(plan[0].args, ["copy-migrations", "001-009", "upgrade-workspace"]);
@@ -1379,6 +1392,7 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.equal(plan[12].cwd, fakeRunDirectory);
   assert.deepEqual(plan[12].args, ["copy-migrations", "012", "upgrade-workspace"]);
   assert.deepEqual(plan[15].args, ["copy-migrations", "013", "upgrade-workspace"]);
+  assert.deepEqual(plan[18].args, ["copy-migrations", "014", "upgrade-workspace"]);
   assert.deepEqual(plan[1].args, ["link", "--project-ref", restoreRef]);
   assert.deepEqual(plan[3].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[4].args.slice(0, 4), ["-X", "-v", "ON_ERROR_STOP=1", "-v"]);
@@ -1387,10 +1401,11 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.deepEqual(plan[11].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[14].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[17].args, ["db", "push", "--linked"]);
+  assert.deepEqual(plan[20].args, ["db", "push", "--linked"]);
   assert.ok(plan.every(({ targetRef }) => targetRef !== BILLING_SOURCE_PROJECT_REF));
 });
 
-test("migration copy ranges distinguish 010 through 013 and reject unknown or incomplete sets", () => {
+test("migration copy ranges distinguish 010 through 014 and reject unknown or incomplete sets", () => {
   assert.deepEqual(
     selectMigrationFiles("001-009", expectedBillingMigrationFiles),
     expectedBillingMigrationFiles.slice(0, 9),
@@ -1411,6 +1426,10 @@ test("migration copy ranges distinguish 010 through 013 and reject unknown or in
     selectMigrationFiles("013", expectedBillingMigrationFiles),
     [expectedBillingMigrationFiles[12]],
   );
+  assert.deepEqual(
+    selectMigrationFiles("014", expectedBillingMigrationFiles),
+    [expectedBillingMigrationFiles[13]],
+  );
   assert.throws(
     () => selectMigrationFiles("011", expectedBillingMigrationFiles.slice(0, 10)),
     /MIGRATION_SET_INVALID/,
@@ -1421,6 +1440,10 @@ test("migration copy ranges distinguish 010 through 013 and reject unknown or in
   );
   assert.throws(
     () => selectMigrationFiles("013", expectedBillingMigrationFiles.slice(0, 12)),
+    /MIGRATION_SET_INVALID/,
+  );
+  assert.throws(
+    () => selectMigrationFiles("014", expectedBillingMigrationFiles.slice(0, 13)),
     /MIGRATION_SET_INVALID/,
   );
 });

@@ -1,4 +1,5 @@
 import { BillingError } from "../errors";
+import { parseStrictWechatJson } from "./wechat-json";
 import type { WechatPayConfig } from "./wechat-config";
 import {
   signWechatRequest,
@@ -447,7 +448,7 @@ export class WechatHttpClient {
 
     let parsedBody: unknown;
     try {
-      parsedBody = JSON.parse(responseBody) as unknown;
+      parsedBody = parseStrictWechatJson(responseBody);
     } catch {
       throw invalidResponse();
     }

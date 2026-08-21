@@ -887,7 +887,7 @@ function assertMockConfirmationAllowed(
 export async function confirmMockOrderPayment(
   user: BillingUser,
   orderId: string,
-  providerTransactionId: string,
+  providerTransactionId: string | null,
   dependencies: ConfirmMockOrderPaymentDependencies = {},
 ): Promise<PaymentWebhookResult> {
   const config = (dependencies.getConfig ?? getBillingConfig)();
@@ -931,6 +931,13 @@ export async function confirmMockOrderPayment(
       409,
     );
   }
+  if (!providerTransactionId?.trim()) {
+    throw new BillingError(
+      "PAYMENT_NOT_FOUND",
+      "The payment was not found.",
+      404,
+    );
+  }
 
   const provider = (dependencies.getProvider ?? getPaymentProvider)(
     "mock",
@@ -948,6 +955,10 @@ export async function confirmMockOrderPayment(
     providerPayment = await provider.confirmPayment({
       orderNumber: order.orderNumber,
       providerTransactionId,
+      amountMinor: order.amountMinor,
+      currency: order.currency,
+      expiresAt: order.expiresAt,
+      paymentToken: null,
     });
   } catch (cause) {
     if (
@@ -978,7 +989,7 @@ export async function confirmMockOrderPayment(
     providerPayment.amountMinor !== order.amountMinor ||
     providerPayment.currency !== order.currency ||
     providerPayment.expiresAt !== order.expiresAt ||
-    !providerPayment.paymentToken.trim() ||
+    !providerPayment.paymentToken?.trim() ||
     providerPayment.paidAt === null
   ) {
     throw new BillingError(
@@ -1013,10 +1024,7 @@ export async function confirmMockOrderPayment(
       503,
     );
   }
-  const callback = await provider.createPaidPaymentWebhook({
-    orderNumber: order.orderNumber,
-    ...storedPayment,
-  });
+  const callback = await provider.createPaidPaymentWebhook(storedPayment);
   return processPaymentWebhook("mock", callback.rawBody, callback.headers, {
     repository: dependencies.webhookRepository,
     getConfig: () => config,

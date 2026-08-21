@@ -1069,6 +1069,7 @@ test("Mock confirmation creates a stable signed callback and settles only throug
             ? paymentOrder
             : null,
         claimMockPaymentConfirmation: async () => ({
+          orderNumber: payment.orderNumber,
           providerTransactionId: payment.providerTransactionId,
           status: "PAID" as const,
           amountMinor: payment.amountMinor,

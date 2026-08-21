@@ -35,6 +35,87 @@ test("013 webhook retries are bounded, server-timed, immutable, and service-role
   assert.match(sql, /new\.provider_event_id[\s\S]*old\.provider_event_id/);
 });
 
+test("014 persists owned Native intent expectations and atomically binds only verified transaction IDs", () => {
+  const sql = compactSql(
+    "supabase/migrations/202608210014_wechat_native_payment_intents.sql",
+  );
+
+  assert.match(sql, /^begin;/);
+  assert.match(sql, /commit;$/);
+  assert.match(sql, /add column merchant_order_number text/);
+  assert.match(
+    sql,
+    /update public\.billing_payment_intents as intent set merchant_order_number = billing_order\.order_number from public\.billing_orders as billing_order where billing_order\.id = intent\.order_id and intent\.merchant_order_number is null/,
+  );
+  assert.match(
+    sql,
+    /update public\.billing_payment_intents set provider_transaction_id = null where provider = 'wechat' and provider_transaction_id = merchant_order_number/,
+  );
+  assert.match(sql, /unique \(provider, merchant_order_number\)/);
+  assert.match(sql, /payment_status = 'pending'[\s\S]*provider_transaction_id is null[\s\S]*payment_token is not null/);
+  assert.match(sql, /payment_status = 'paid'[\s\S]*provider_transaction_id is not null[\s\S]*paid_at is not null/);
+
+  assert.match(
+    sql,
+    /create function public\.billing_claim_payment_intent\( p_user_id uuid, p_order_id uuid, p_provider text, p_merchant_order_number text, p_request_idempotency_key text, p_claim_token uuid \)/,
+  );
+  assert.match(
+    sql,
+    /merchant_order_number = case when last_error_code = 'payment_requires_new_payment' then p_merchant_order_number else v_intent\.merchant_order_number end/,
+  );
+  assert.match(
+    sql,
+    /request_idempotency_key = case when last_error_code = 'payment_requires_new_payment' then p_request_idempotency_key else v_intent\.request_idempotency_key end/,
+  );
+  assert.match(sql, /'merchant_order_number', v_intent\.merchant_order_number/);
+  assert.match(sql, /'request_idempotency_key', v_intent\.request_idempotency_key/);
+
+  assert.match(
+    sql,
+    /create function public\.billing_complete_payment_intent\( p_intent_id uuid, p_claim_token uuid, p_merchant_order_number text, p_provider_transaction_id text, p_payment_token text/,
+  );
+  assert.match(sql, /v_intent\.merchant_order_number is distinct from p_merchant_order_number/);
+  assert.match(sql, /p_payment_status = 'pending'[\s\S]*p_payment_token is not null[\s\S]*p_paid_at is null/);
+  assert.match(sql, /v_intent\.provider = 'wechat'[\s\S]*p_payment_status = 'pending'[\s\S]*p_provider_transaction_id is not null/);
+  assert.match(sql, /p_payment_status = 'paid'[\s\S]*p_provider_transaction_id is not null[\s\S]*p_paid_at is not null/);
+
+  const intentLock = sql.indexOf(
+    "from public.billing_payment_intents where provider = upper(p_provider) and merchant_order_number = p_order_number for update",
+  );
+  const orderLock = sql.indexOf(
+    "from public.billing_orders where id = v_intent.order_id for update",
+  );
+  assert.ok(intentLock >= 0, "settlement must lock the merchant-reference intent");
+  assert.ok(orderLock > intentLock, "settlement must resolve its owned order through the locked intent");
+  assert.match(
+    sql,
+    /v_intent\.provider_transaction_id is not null and v_intent\.provider_transaction_id is distinct from p_provider_transaction_id/,
+  );
+  assert.match(
+    sql,
+    /update public\.billing_payment_intents set provider_transaction_id = p_provider_transaction_id,[\s\S]*payment_status = 'paid'/,
+  );
+  assert.doesNotMatch(
+    sql,
+    /from public\.billing_orders where order_number = p_order_number for update/,
+  );
+
+  for (const signature of [
+    "public.billing_claim_payment_intent(uuid, uuid, text, text, text, uuid)",
+    "public.billing_complete_payment_intent(uuid, uuid, text, text, text, text, timestamptz, timestamptz)",
+    "public.billing_settle_paid_order(text, text, text, text, text, bigint, text, timestamptz, jsonb)",
+  ]) {
+    const escaped = signature.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const flexible = escaped
+      .replaceAll(" ", "\\s*")
+      .replace("\\(", "\\(\\s*")
+      .replace("\\)", "\\s*\\)");
+    assert.match(sql, new RegExp(`revoke all on function ${flexible} from public, anon, authenticated`));
+    assert.match(sql, new RegExp(`grant execute on function ${flexible} to service_role`));
+  }
+  assert.equal((sql.match(/security definer set search_path = pg_catalog, public/g) ?? []).length >= 4, true);
+});
+
 const sqlFunction = (name: string, path = functionsPath) => {
   const sql = compactSql(path);
   const block = sql.match(

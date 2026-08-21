@@ -19,7 +19,8 @@ declare
     '202608050010',
     '202608120011',
     '202608160012',
-    '202608180013'
+    '202608180013',
+    '202608210014'
   ];
   expected_tables constant text[] := array[
     'billing_plans',
@@ -177,13 +178,14 @@ begin
       ('public', 'billing_payment_intents', null::text, 'u', '^UNIQUE \(order_id\)$'),
       ('public', 'billing_payment_intents', null::text, 'u', '^UNIQUE \(request_idempotency_key\)$'),
       ('public', 'billing_payment_intents', null::text, 'u', '^UNIQUE \(provider, provider_transaction_id\)$'),
+      ('public', 'billing_payment_intents', 'billing_payment_intents_merchant_order_unique', 'u', '^UNIQUE \(provider, merchant_order_number\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(provider = ANY \(ARRAY\[''MOCK''::text, ''WECHAT''::text, ''ALIPAY''::text\]\)\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(status = ANY \(ARRAY\[''CREATING''::text, ''CREATED''::text, ''FAILED''::text\]\)\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(\(payment_status IS NULL\) OR \(payment_status = ANY \(ARRAY\[''PENDING''::text, ''PAID''::text, ''FAILED''::text, ''CLOSED''::text\]\)\)\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(amount_minor >= 0\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(currency = ''CNY''::text\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(attempt_count > 0\)\)$'),
-      ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\) OR \(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(payment_token IS NOT NULL\) AND \(payment_status IS NOT NULL\) AND \(last_error_code IS NULL\)\) OR \(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)$'),
+      ('public', 'billing_payment_intents', 'billing_payment_intents_lifecycle_check', 'c', '^CHECK \(\(\(NULLIF\(btrim\(merchant_order_number\), ''''::text\) IS NOT NULL\) AND \(char_length\(merchant_order_number\) <= 64\) AND \(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\).*\(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\).*\(payment_status = ''PENDING''::text\).*\(provider <> ''WECHAT''::text\).*\(provider_transaction_id IS NULL\).*\(payment_token IS NOT NULL\).*\(paid_at IS NULL\).*\(payment_status = ''PAID''::text\).*\(provider_transaction_id IS NOT NULL\).*\(paid_at IS NOT NULL\).*\(payment_status = ANY \(ARRAY\[''FAILED''::text, ''CLOSED''::text\]\)\).*\(payment_token IS NULL\).*\(paid_at IS NULL\).*\(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)\)$'),
 
       ('public', 'billing_payments', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_payments', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -416,7 +418,7 @@ begin
       ('billing_products', 1, 1, 1, 6),
       ('billing_plan_entitlements', 1, 1, 1, 2),
       ('billing_orders', 1, 3, 1, 12),
-      ('billing_payment_intents', 1, 2, 3, 7),
+      ('billing_payment_intents', 1, 2, 4, 7),
       ('billing_payments', 1, 2, 2, 4),
       ('billing_subscriptions', 1, 3, 1, 3),
       ('billing_user_entitlements', 1, 3, 1, 2),
@@ -648,8 +650,8 @@ $verify$;
 do $verify$
 declare
   expected_functions constant text[] := array[
-    'public.billing_claim_payment_intent(uuid,uuid,text,text,uuid)',
-    'public.billing_complete_payment_intent(uuid,uuid,text,text,text,timestamptz,timestamptz)',
+    'public.billing_claim_payment_intent(uuid,uuid,text,text,text,uuid)',
+    'public.billing_complete_payment_intent(uuid,uuid,text,text,text,text,timestamptz,timestamptz)',
     'public.billing_fail_payment_intent(uuid,uuid,text)',
     'public.billing_claim_mock_payment_confirmation(uuid,uuid,text,timestamptz)',
     'public.billing_mark_webhook_retryable(text,text,text)',
@@ -732,8 +734,8 @@ $verify$;
 do $verify$
 declare
   expected_writer_functions constant text[] := array[
-    'public.billing_claim_payment_intent(uuid,uuid,text,text,uuid)',
-    'public.billing_complete_payment_intent(uuid,uuid,text,text,text,timestamptz,timestamptz)',
+    'public.billing_claim_payment_intent(uuid,uuid,text,text,text,uuid)',
+    'public.billing_complete_payment_intent(uuid,uuid,text,text,text,text,timestamptz,timestamptz)',
     'public.billing_fail_payment_intent(uuid,uuid,text)',
     'public.billing_claim_mock_payment_confirmation(uuid,uuid,text,timestamptz)',
     'public.billing_mark_webhook_retryable(text,text,text)',
@@ -1519,6 +1521,73 @@ begin
   end;
   if expected_failure is not true then
     raise exception 'mismatched settlement currency was accepted';
+  end if;
+
+  insert into public.billing_orders (
+    id, order_number, user_id, product_id, provider, status, amount_minor,
+    currency, snapshot_product_name, snapshot_product_type, snapshot_plan_id,
+    snapshot_duration_days, snapshot_credit_grant,
+    snapshot_entitlement_version, snapshot_entitlements, snapshot_details,
+    accepted_agreement_version, expires_at, paid_at, refund_status,
+    created_at, updated_at
+  )
+  select
+    '00000000-0000-4000-8000-00000000b090',
+    'DRILL-WECHAT-BILLING-014', user_id, product_id, 'WECHAT', 'PENDING',
+    amount_minor, currency, snapshot_product_name, snapshot_product_type,
+    snapshot_plan_id, snapshot_duration_days, snapshot_credit_grant,
+    snapshot_entitlement_version, snapshot_entitlements, snapshot_details,
+    accepted_agreement_version, expires_at, null, 'NONE', created_at, updated_at
+  from public.billing_orders
+  where id = '00000000-0000-4000-8000-00000000b022';
+
+  insert into public.billing_payment_intents (
+    id, order_id, user_id, provider, merchant_order_number,
+    request_idempotency_key, status, claim_token, claim_expires_at,
+    provider_transaction_id, payment_token, payment_status, amount_minor,
+    currency, expires_at, paid_at, last_error_code, attempt_count
+  ) values (
+    '00000000-0000-4000-8000-00000000b091',
+    '00000000-0000-4000-8000-00000000b090',
+    '00000000-0000-4000-8000-00000000b001',
+    'WECHAT', 'DRILL-WECHAT-MERCHANT-014', 'drill-wechat-payment-014',
+    'CREATED', null, null, null, 'weixin://verified-drill-014', 'PENDING',
+    990, 'CNY', timestamptz '2099-01-01 00:00:00+00', null, null, 1
+  );
+  if exists (
+    select 1 from public.billing_payment_intents
+    where merchant_order_number = 'DRILL-WECHAT-MERCHANT-014'
+      and provider_transaction_id is not null
+  ) then
+    raise exception 'unverified create transaction identity was persisted';
+  end if;
+
+  insert into public.billing_webhook_events (
+    provider, provider_event_id, order_number, provider_transaction_id,
+    request_idempotency_key, amount_minor, currency, paid_at,
+    signature_valid, status, payload_summary
+  ) values (
+    'WECHAT', 'DRILL-WECHAT-EVENT-014', 'DRILL-WECHAT-MERCHANT-014',
+    'DRILL-WECHAT-TXN-014', 'drill-wechat-payment-014', 990, 'CNY',
+    timestamptz '2026-01-06 00:00:00+00', true, 'RECEIVED',
+    '{"fixture":"billing-drill-wechat-014"}'::jsonb
+  );
+  result := public.billing_settle_paid_order(
+    'DRILL-WECHAT-MERCHANT-014', 'WECHAT', 'DRILL-WECHAT-TXN-014',
+    'DRILL-WECHAT-EVENT-014', 'drill-wechat-payment-014', 990, 'CNY',
+    timestamptz '2026-01-06 00:00:00+00',
+    '{"fixture":"billing-drill-wechat-014"}'::jsonb
+  );
+  if result ->> 'status' is distinct from 'PROCESSED'
+    or exists (
+      select 1 from public.billing_payment_intents
+      where merchant_order_number = 'DRILL-WECHAT-MERCHANT-014'
+        and (
+          provider_transaction_id is distinct from 'DRILL-WECHAT-TXN-014'
+          or payment_status is distinct from 'PAID'
+        )
+    ) then
+    raise exception 'verified webhook transaction identity was not atomically bound';
   end if;
 
   select count(*) into refund_count_before

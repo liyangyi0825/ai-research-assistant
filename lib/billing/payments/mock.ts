@@ -23,7 +23,16 @@ type MockPaymentProviderOptions = {
   now?: () => Date;
 };
 
-type StoredPayment = PaymentResult & {
+type MockPaymentResult = Omit<
+  PaymentResult,
+  "providerTransactionId" | "paymentToken" | "status"
+> & {
+  providerTransactionId: string;
+  paymentToken: string;
+  status: "PENDING" | "PAID" | "CLOSED" | "REFUNDED";
+};
+
+type StoredPayment = MockPaymentResult & {
   createInput: CreatePaymentInput;
 };
 
@@ -51,7 +60,7 @@ function validAmount(amountMinor: number): boolean {
   return Number.isSafeInteger(amountMinor) && amountMinor >= 0;
 }
 
-function clonePayment(payment: PaymentResult): PaymentResult {
+function clonePayment(payment: MockPaymentResult): MockPaymentResult {
   return {
     providerTransactionId: payment.providerTransactionId,
     orderNumber: payment.orderNumber,
@@ -123,7 +132,7 @@ export class MockPaymentProvider implements PaymentProvider {
     }
   }
 
-  async createPayment(input: CreatePaymentInput): Promise<PaymentResult> {
+  async createPayment(input: CreatePaymentInput): Promise<MockPaymentResult> {
     const normalized = this.normalizeCreateInput(input);
     const priorTransactionId = this.createRequests.get(
       normalized.idempotencyKey,
@@ -177,11 +186,11 @@ export class MockPaymentProvider implements PaymentProvider {
     return clonePayment(payment);
   }
 
-  async queryPayment(input: PaymentReferenceInput): Promise<PaymentResult> {
+  async queryPayment(input: PaymentReferenceInput): Promise<MockPaymentResult> {
     return clonePayment(this.requiredReferencedPayment(input));
   }
 
-  async closePayment(input: PaymentReferenceInput): Promise<PaymentResult> {
+  async closePayment(input: PaymentReferenceInput): Promise<MockPaymentResult> {
     const payment = this.requiredReferencedPayment(input);
 
     if (payment.status === "CLOSED") {
@@ -295,7 +304,7 @@ export class MockPaymentProvider implements PaymentProvider {
     };
   }
 
-  async confirmPayment(input: PaymentReferenceInput): Promise<PaymentResult> {
+  async confirmPayment(input: PaymentReferenceInput): Promise<MockPaymentResult> {
     const payment = this.requiredReferencedPayment(input);
 
     if (payment.status === "PAID") {
@@ -335,6 +344,7 @@ export class MockPaymentProvider implements PaymentProvider {
   async createPaidPaymentWebhook(
     payment: PaymentResult,
   ): Promise<SignedPaymentWebhook> {
+    const providerTransactionId = payment.providerTransactionId;
     if (!payment.paidAt) {
       throw new BillingError(
         "INVALID_PAYMENT_STATE",
@@ -345,7 +355,7 @@ export class MockPaymentProvider implements PaymentProvider {
 
     if (
       payment.status !== "PAID" ||
-      !payment.providerTransactionId.trim() ||
+      !providerTransactionId?.trim() ||
       !payment.orderNumber.trim() ||
       !validAmount(payment.amountMinor) ||
       payment.currency !== "CNY" ||
@@ -359,9 +369,9 @@ export class MockPaymentProvider implements PaymentProvider {
     }
 
     const event: PaymentWebhookEvent = {
-      eventId: `mock_event_${payment.providerTransactionId}`,
+      eventId: `mock_event_${providerTransactionId}`,
       eventType: "PAYMENT.PAID",
-      providerTransactionId: payment.providerTransactionId,
+      providerTransactionId,
       orderNumber: payment.orderNumber,
       amountMinor: payment.amountMinor,
       currency: payment.currency,
@@ -369,7 +379,7 @@ export class MockPaymentProvider implements PaymentProvider {
     };
     const rawBody = JSON.stringify(event);
     const existing = this.confirmationWebhooks.get(
-      payment.providerTransactionId.trim(),
+      providerTransactionId.trim(),
     );
     if (existing) {
       if (existing.rawBody !== rawBody) {
@@ -389,7 +399,7 @@ export class MockPaymentProvider implements PaymentProvider {
           .digest("hex")}`,
       },
     };
-    this.confirmationWebhooks.set(payment.providerTransactionId, webhook);
+    this.confirmationWebhooks.set(providerTransactionId, webhook);
     return { rawBody, headers: { ...webhook.headers } };
   }
 
@@ -513,7 +523,16 @@ export class MockPaymentProvider implements PaymentProvider {
       );
     }
     const payment = this.requiredPayment(providerTransactionId);
-    if (payment.orderNumber !== input.orderNumber.trim()) {
+    if (
+      payment.orderNumber !== input.orderNumber.trim() ||
+      (input.amountMinor !== undefined &&
+        payment.amountMinor !== input.amountMinor) ||
+      (input.currency !== undefined && payment.currency !== input.currency) ||
+      (input.expiresAt !== undefined && payment.expiresAt !== input.expiresAt) ||
+      (input.paymentToken !== undefined &&
+        input.paymentToken !== null &&
+        payment.paymentToken !== input.paymentToken)
+    ) {
       throw new BillingError(
         "PAYMENT_NOT_FOUND",
         "The payment was not found.",

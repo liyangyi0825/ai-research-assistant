@@ -5,10 +5,17 @@ import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 import { createBillingSecurityLogger } from "../../lib/billing/security-logger";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
+import type { PaymentProvider } from "../../lib/billing/payments/provider";
+import type {
+  CreatePaymentInput,
+  PaymentReferenceInput,
+  PaymentResult,
+} from "../../lib/billing/payments/types";
 import {
   createPaymentServiceRepository,
   createOrderPayment,
   paymentRequestIdempotencyKey,
+  type CompletePaymentIntentInput,
   type PaymentOrderSnapshot,
   type PaymentServiceAdminClient,
   type PaymentServiceRepository,
@@ -49,7 +56,7 @@ class MemoryPaymentRepository implements PaymentServiceRepository {
   claimCalls = 0;
   completeCalls = 0;
   failCalls: string[] = [];
-  intentPayment: Omit<Awaited<ReturnType<MockPaymentProvider["createPayment"]>>, "orderNumber"> | null = null;
+  intentPayment: PaymentResult | null = null;
 
   constructor(readonly storedOrder: PaymentOrderSnapshot | null = order()) {}
 
@@ -60,7 +67,10 @@ class MemoryPaymentRepository implements PaymentServiceRepository {
       : null;
   }
 
-  async claimPaymentIntent() {
+  async claimPaymentIntent(input: {
+    merchantOrderNumber: string;
+    requestIdempotencyKey: string;
+  }) {
     this.claimCalls += 1;
     if (this.claimState === "CREATED" && this.intentPayment) {
       return { status: "REUSE" as const, payment: { ...this.intentPayment } };
@@ -69,13 +79,19 @@ class MemoryPaymentRepository implements PaymentServiceRepository {
       return { status: "IN_PROGRESS" as const };
     }
     this.claimState = "CREATING";
-    return { status: "CLAIMED" as const, intentId: "intent-1" };
+    return {
+      status: "CLAIMED" as const,
+      intentId: "intent-1",
+      merchantOrderNumber: input.merchantOrderNumber,
+      requestIdempotencyKey: input.requestIdempotencyKey,
+    };
   }
 
-  async completePaymentIntent(input: { payment: Awaited<ReturnType<MockPaymentProvider["createPayment"]>> }) {
+  async completePaymentIntent(input: CompletePaymentIntentInput) {
     this.completeCalls += 1;
     if (this.completeFailWith) throw this.completeFailWith;
     this.intentPayment = {
+      orderNumber: input.payment.orderNumber,
       providerTransactionId: input.payment.providerTransactionId,
       status: input.payment.status,
       amountMinor: input.payment.amountMinor,
@@ -599,4 +615,222 @@ test("createOrderPayment fails closed without leaking database errors", async ()
       expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503) &&
       !error.message.includes("do-not-log"),
   );
+});
+
+test("payment repository durably carries the merchant reference and nullable verified fields", async () => {
+  const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+  const client = {
+    from() {
+      throw new Error("not used");
+    },
+    async rpc(name: string, args: Record<string, unknown>) {
+      calls.push({ name, args });
+      if (name === "billing_claim_payment_intent") {
+        return {
+          data: {
+            status: "CLAIMED",
+            intent_id: "intent-1",
+            merchant_order_number: "WX-MERCHANT-ATTEMPT-1",
+            request_idempotency_key: "billing-payment:WECHAT:WX-MERCHANT-ATTEMPT-1",
+          },
+          error: null,
+        };
+      }
+      return {
+        data: {
+          merchant_order_number: "WX-MERCHANT-ATTEMPT-1",
+          provider_transaction_id: null,
+          payment_status: "PENDING",
+          amount_minor: 7_900,
+          currency: "CNY",
+          payment_token: "weixin://verified-test-token",
+          expires_at: "2026-08-19T02:30:00.000Z",
+          paid_at: null,
+        },
+        error: null,
+      };
+    },
+  } as unknown as PaymentServiceAdminClient;
+  const repository = createPaymentServiceRepository(client);
+
+  const claim = await repository.claimPaymentIntent({
+    userId: "user-1",
+    orderId: "order-id-1",
+    provider: "WECHAT",
+    merchantOrderNumber: "WX-MERCHANT-ATTEMPT-1",
+    requestIdempotencyKey: "billing-payment:WECHAT:WX-MERCHANT-ATTEMPT-1",
+    claimToken: "00000000-0000-4000-8000-000000000001",
+  } as never);
+  assert.deepEqual(claim, {
+    status: "CLAIMED",
+    intentId: "intent-1",
+    merchantOrderNumber: "WX-MERCHANT-ATTEMPT-1",
+    requestIdempotencyKey: "billing-payment:WECHAT:WX-MERCHANT-ATTEMPT-1",
+  });
+
+  const pending: PaymentResult = {
+    orderNumber: "WX-MERCHANT-ATTEMPT-1",
+    providerTransactionId: null,
+    status: "PENDING",
+    amountMinor: 7_900,
+    currency: "CNY",
+    paymentToken: "weixin://verified-test-token",
+    expiresAt: "2026-08-19T02:30:00.000Z",
+    paidAt: null,
+  } as PaymentResult;
+  assert.deepEqual(
+    await repository.completePaymentIntent({
+      intentId: "intent-1",
+      claimToken: "00000000-0000-4000-8000-000000000001",
+      payment: pending,
+    }),
+    pending,
+  );
+  assert.deepEqual(calls, [
+    {
+      name: "billing_claim_payment_intent",
+      args: {
+        p_user_id: "user-1",
+        p_order_id: "order-id-1",
+        p_provider: "WECHAT",
+        p_merchant_order_number: "WX-MERCHANT-ATTEMPT-1",
+        p_request_idempotency_key: "billing-payment:WECHAT:WX-MERCHANT-ATTEMPT-1",
+        p_claim_token: "00000000-0000-4000-8000-000000000001",
+      },
+    },
+    {
+      name: "billing_complete_payment_intent",
+      args: {
+        p_intent_id: "intent-1",
+        p_claim_token: "00000000-0000-4000-8000-000000000001",
+        p_merchant_order_number: "WX-MERCHANT-ATTEMPT-1",
+        p_provider_transaction_id: null,
+        p_payment_token: "weixin://verified-test-token",
+        p_payment_status: "PENDING",
+        p_expires_at: "2026-08-19T02:30:00.000Z",
+        p_paid_at: null,
+      },
+    },
+  ]);
+});
+
+test("createOrderPayment persists a WeChat pending intent without fabricating a transaction ID", async () => {
+  const storedOrder = order({
+    provider: "WECHAT",
+    amountMinor: 7_900,
+    expiresAt: "2026-08-19T02:30:00.000Z",
+  });
+  let providerInputOrder = "";
+  let completed: PaymentResult | null = null;
+  const repository = {
+    async findOwnedOrder() { return storedOrder; },
+    async claimPaymentIntent() {
+      return {
+        status: "CLAIMED" as const,
+        intentId: "intent-1",
+        merchantOrderNumber: "WX-MERCHANT-ATTEMPT-1",
+        requestIdempotencyKey: "billing-payment:WECHAT:WX-MERCHANT-ATTEMPT-1",
+      };
+    },
+    async completePaymentIntent(input: { payment: PaymentResult }) {
+      completed = input.payment;
+      return input.payment;
+    },
+    async failPaymentIntent() { throw new Error("must not fail"); },
+    async claimMockPaymentConfirmation() { throw new Error("not used"); },
+  } as unknown as PaymentServiceRepository;
+  const provider = {
+    async createPayment(input: CreatePaymentInput) {
+      providerInputOrder = input.orderNumber;
+      return {
+        providerTransactionId: null,
+        orderNumber: input.orderNumber,
+        status: "PENDING",
+        amountMinor: input.amountMinor,
+        currency: input.currency,
+        paymentToken: "weixin://verified-test-token",
+        expiresAt: input.expiresAt,
+        paidAt: null,
+      };
+    },
+  } as unknown as PaymentProvider;
+
+  const payment = await createOrderPayment("user-1", "order-id-1", {
+    repository,
+    now: () => now,
+    getConfig: () => ({
+      ...config,
+      paymentMode: "wechat",
+      wechatConfigured: true,
+    }),
+    getProvider: () => provider,
+    createMerchantOrderNumber: () => "WX-MERCHANT-ATTEMPT-1",
+  } as never);
+
+  assert.equal(providerInputOrder, "WX-MERCHANT-ATTEMPT-1");
+  assert.equal(payment.providerTransactionId, null);
+  assert.equal(payment.orderNumber, "WX-MERCHANT-ATTEMPT-1");
+  assert.deepEqual(completed, payment);
+});
+
+test("createOrderPayment retires a verified closed uncertain attempt and explicitly requests a new payment", async () => {
+  const storedOrder = order({
+    provider: "WECHAT",
+    amountMinor: 7_900,
+    expiresAt: "2026-08-19T02:30:00.000Z",
+  });
+  const failures: string[] = [];
+  let closeCalls = 0;
+  const repository = {
+    async findOwnedOrder() { return storedOrder; },
+    async claimPaymentIntent() {
+      return {
+        status: "CLAIMED" as const,
+        intentId: "intent-1",
+        merchantOrderNumber: "WX-MERCHANT-ATTEMPT-1",
+        requestIdempotencyKey: "billing-payment:WECHAT:WX-MERCHANT-ATTEMPT-1",
+      };
+    },
+    async completePaymentIntent() { throw new Error("must not persist payable state"); },
+    async failPaymentIntent(_intentId: string, _claimToken: string, code: string) {
+      failures.push(code);
+    },
+    async claimMockPaymentConfirmation() { throw new Error("not used"); },
+  } as unknown as PaymentServiceRepository;
+  const requiresNewPayment = {
+    providerTransactionId: "4200000000001",
+    orderNumber: "WX-MERCHANT-ATTEMPT-1",
+    status: "REQUIRES_NEW_PAYMENT",
+    amountMinor: 7_900,
+    currency: "CNY",
+    paymentToken: null,
+    expiresAt: "2026-08-19T02:30:00.000Z",
+    paidAt: null,
+  } as PaymentResult;
+  const provider = {
+    async createPayment() { return requiresNewPayment; },
+    async closePayment(input: PaymentReferenceInput) {
+      closeCalls += 1;
+      assert.equal(input.paymentToken, null);
+      return { ...requiresNewPayment, status: "CLOSED" } as PaymentResult;
+    },
+  } as unknown as PaymentProvider;
+
+  await assert.rejects(
+    () => createOrderPayment("user-1", "order-id-1", {
+      repository,
+      now: () => now,
+      getConfig: () => ({
+        ...config,
+        paymentMode: "wechat",
+        wechatConfigured: true,
+      }),
+      getProvider: () => provider,
+      createMerchantOrderNumber: () => "WX-MERCHANT-ATTEMPT-1",
+    } as never),
+    (error: unknown) =>
+      expectBillingError(error, "PAYMENT_REQUIRES_NEW_PAYMENT", 409),
+  );
+  assert.equal(closeCalls, 1);
+  assert.deepEqual(failures, ["PAYMENT_REQUIRES_NEW_PAYMENT"]);
 });

@@ -116,6 +116,7 @@ export type BillingPaymentIntentRow = {
   order_id: UUID;
   user_id: UUID;
   provider: "MOCK" | "WECHAT" | "ALIPAY";
+  merchant_order_number: string;
   request_idempotency_key: string;
   status: "CREATING" | "CREATED" | "FAILED";
   claim_token: UUID | null;
@@ -453,6 +454,7 @@ export type Database = {
           | "order_id"
           | "user_id"
           | "provider"
+          | "merchant_order_number"
           | "request_idempotency_key"
           | "claim_token"
           | "claim_expires_at"
@@ -760,6 +762,7 @@ export type Database = {
           p_user_id: UUID;
           p_order_id: UUID;
           p_provider: string;
+          p_merchant_order_number: string;
           p_request_idempotency_key: string;
           p_claim_token: UUID;
         };
@@ -769,8 +772,9 @@ export type Database = {
         Args: {
           p_intent_id: UUID;
           p_claim_token: UUID;
-          p_provider_transaction_id: string;
-          p_payment_token: string;
+          p_merchant_order_number: string;
+          p_provider_transaction_id: string | null;
+          p_payment_token: string | null;
           p_payment_status: string;
           p_expires_at: Timestamp;
           p_paid_at?: Timestamp | null;

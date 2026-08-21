@@ -114,7 +114,12 @@ export const CREDIT_PRODUCT: BillingProduct = {
   entitlements: [],
 };
 
-type PaymentRow = StoredPaymentResult & {
+type PaymentRow = Omit<
+  StoredPaymentResult,
+  "providerTransactionId" | "status"
+> & {
+  providerTransactionId: string;
+  status: "PENDING" | "PAID" | "CLOSED" | "REFUNDED" | "FAILED";
   id: string;
   orderId: string;
   userId: string;
@@ -223,10 +228,18 @@ export class MockBillingState {
     },
     claimPaymentIntent: async (input: ClaimPaymentIntentInput) => {
       const stored = this.paymentIntents.get(input.orderId);
-      return stored ? { status: "REUSE" as const, payment: structuredClone(stored) } : { status: "CLAIMED" as const, intentId: input.orderId };
+      return stored
+        ? { status: "REUSE" as const, payment: structuredClone(stored) }
+        : {
+            status: "CLAIMED" as const,
+            intentId: input.orderId,
+            merchantOrderNumber: input.merchantOrderNumber,
+            requestIdempotencyKey: input.requestIdempotencyKey,
+          };
     },
     completePaymentIntent: async (input: CompletePaymentIntentInput) => {
       const stored: StoredPaymentResult = {
+        orderNumber: input.payment.orderNumber,
         providerTransactionId: input.payment.providerTransactionId, status: input.payment.status,
         amountMinor: input.payment.amountMinor, currency: input.payment.currency,
         paymentToken: input.payment.paymentToken, expiresAt: input.payment.expiresAt, paidAt: input.payment.paidAt,
@@ -293,7 +306,11 @@ export class MockBillingState {
     if (!intent || intent.providerTransactionId !== args.p_provider_transaction_id) throw new Error("payment intent mismatch");
     const payment: PaymentRow = {
       id: this.id("payment"), orderId: order.id, userId: order.userId, provider: "MOCK",
-      requestIdempotencyKey: args.p_request_idempotency_key, ...structuredClone(intent), status: "PAID", paidAt: args.p_paid_at,
+      requestIdempotencyKey: args.p_request_idempotency_key,
+      ...structuredClone(intent),
+      providerTransactionId: intent.providerTransactionId,
+      status: "PAID",
+      paidAt: args.p_paid_at,
     };
     this.payments.push(payment);
     order.status = "PAID"; order.paidAt = args.p_paid_at; order.updatedAt = args.p_paid_at;

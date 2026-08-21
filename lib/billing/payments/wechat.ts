@@ -10,6 +10,7 @@ import {
   parseWechatNativeCreateResponse,
   parseWechatNativeTransaction,
   parseWechatPaidNotification,
+  normalizeWechatRfc3339,
 } from "./wechat-mapping";
 import { parseStrictWechatJson } from "./wechat-json";
 import type { WechatHttpClient } from "./wechat-transport";
@@ -44,13 +45,6 @@ type WechatCallbackHeaders = {
   nonce: string;
   signature: string;
   verifierId: string;
-};
-
-type NativePaymentExpectation = {
-  amountMinor: number;
-  currency: "CNY";
-  expiresAt: string;
-  paymentToken: string;
 };
 
 const DEFAULT_WEBHOOK_TOLERANCE_SECONDS = 300;
@@ -124,8 +118,6 @@ function normalizedCallbackHeaders(
 export class WechatPayProvider implements PaymentProvider {
   private readonly dependencies: CallbackDependencies | null;
   private readonly legacyConfigured: boolean;
-  private readonly nativePayments = new Map<string, NativePaymentExpectation>();
-
   constructor(configured: boolean);
   constructor(dependencies: WechatPayProviderDependencies);
   constructor(input: boolean | WechatPayProviderDependencies) {
@@ -169,25 +161,20 @@ export class WechatPayProvider implements PaymentProvider {
     } catch (error) {
       if (!this.isUncertain(error)) throw error;
       return this.queryNativePayment(
-        { orderNumber: input.orderNumber, providerTransactionId: null },
         {
+          orderNumber: input.orderNumber,
+          providerTransactionId: null,
           amountMinor: input.amountMinor,
           currency: "CNY",
           expiresAt: input.expiresAt,
-          paymentToken: `wechat-native:${input.orderNumber}`,
+          paymentToken: null,
         },
       );
     }
 
     const { paymentToken } = parseWechatNativeCreateResponse(response.body);
-    this.nativePayments.set(input.orderNumber, {
-      amountMinor: input.amountMinor,
-      currency: "CNY",
-      expiresAt: input.expiresAt,
-      paymentToken,
-    });
     return {
-      providerTransactionId: input.orderNumber,
+      providerTransactionId: null,
       orderNumber: input.orderNumber,
       status: "PENDING",
       amountMinor: input.amountMinor,
@@ -206,6 +193,13 @@ export class WechatPayProvider implements PaymentProvider {
     const dependencies = this.callbackDependencies();
     const orderNumber = this.nativeOrderNumber(input.orderNumber);
     this.optionalNativeTransactionId(input.providerTransactionId);
+    const current = await this.queryNativePayment(input);
+    if (
+      current.status !== "PENDING" &&
+      current.status !== "REQUIRES_NEW_PAYMENT"
+    ) {
+      return current;
+    }
     try {
       await dependencies.httpClient.request<unknown>({
         method: "POST",
@@ -215,10 +209,7 @@ export class WechatPayProvider implements PaymentProvider {
     } catch (error) {
       if (!this.isUncertain(error) && !this.isStateConflict(error)) throw error;
     }
-    return this.queryNativePayment({
-      orderNumber,
-      providerTransactionId: input.providerTransactionId,
-    });
+    return this.queryNativePayment(input);
   }
 
   async refundPayment(_input: RefundPaymentInput): Promise<RefundResult> {
@@ -286,16 +277,13 @@ export class WechatPayProvider implements PaymentProvider {
 
   private async queryNativePayment(
     input: PaymentReferenceInput,
-    suppliedExpectation?: NativePaymentExpectation,
   ): Promise<PaymentResult> {
     const dependencies = this.callbackDependencies();
     const orderNumber = this.nativeOrderNumber(input.orderNumber);
     const transactionId = this.optionalNativeTransactionId(
       input.providerTransactionId,
     );
-    const expected = suppliedExpectation ?? this.nativePayments.get(orderNumber);
-    if (!expected) throw this.invalidNativeResponse();
-    const queryByOrder = transactionId === null || transactionId === orderNumber;
+    const queryByOrder = transactionId === null;
     const pathWithQuery = queryByOrder
       ? `/v3/pay/transactions/out-trade-no/${encodeURIComponent(orderNumber)}?mchid=${encodeURIComponent(dependencies.config.mchId)}`
       : `/v3/pay/transactions/id/${encodeURIComponent(transactionId)}?mchid=${encodeURIComponent(dependencies.config.mchId)}`;
@@ -309,10 +297,10 @@ export class WechatPayProvider implements PaymentProvider {
       expectedAppId: dependencies.config.appId,
       orderNumber,
       providerTransactionId: queryByOrder ? null : transactionId,
-      expectedAmountMinor: expected?.amountMinor,
-      expectedCurrency: expected?.currency,
-      expectedExpiresAt: expected?.expiresAt,
-      paymentToken: expected?.paymentToken ?? `wechat-native:${orderNumber}`,
+      expectedAmountMinor: input.amountMinor,
+      expectedCurrency: input.currency,
+      expectedExpiresAt: input.expiresAt,
+      paymentToken: input.paymentToken,
     });
   }
 
@@ -339,7 +327,7 @@ export class WechatPayProvider implements PaymentProvider {
       !Number.isSafeInteger(input.amountMinor) ||
       input.amountMinor <= 0 ||
       input.currency !== "CNY" ||
-      !Number.isFinite(Date.parse(input.expiresAt)) ||
+      normalizeWechatRfc3339(input.expiresAt) === null ||
       Date.parse(input.expiresAt) <= dependencies.now().getTime()
     ) {
       throw new BillingError(
@@ -378,6 +366,7 @@ export class WechatPayProvider implements PaymentProvider {
       typeof value === "string" &&
       value.length > 0 &&
       [...value].length <= 64 &&
+      Buffer.byteLength(value, "utf8") <= 64 * 4 &&
       value === value.trim() &&
       !/\p{C}/u.test(value)
     );

@@ -3,6 +3,7 @@ export type PaymentCurrency = "CNY";
 export type PaymentStatus =
   | "PENDING"
   | "PAID"
+  | "REQUIRES_NEW_PAYMENT"
   | "FAILED"
   | "CLOSED"
   | "REFUNDED";
@@ -19,15 +20,19 @@ export type CreatePaymentInput = {
 export type PaymentReferenceInput = {
   orderNumber: string;
   providerTransactionId: string | null;
+  amountMinor?: number;
+  currency?: PaymentCurrency;
+  expiresAt?: string;
+  paymentToken?: string | null;
 };
 
 export type PaymentResult = {
-  providerTransactionId: string;
+  providerTransactionId: string | null;
   orderNumber: string;
   status: PaymentStatus;
   amountMinor: number;
   currency: PaymentCurrency;
-  paymentToken: string;
+  paymentToken: string | null;
   expiresAt: string;
   paidAt: string | null;
 };

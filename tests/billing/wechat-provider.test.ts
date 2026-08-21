@@ -214,7 +214,10 @@ function provider(options: {
 }
 
 function signedResponse(body: unknown, status = 200): Response {
-  const rawBody = JSON.stringify(body);
+  return signedRawResponse(JSON.stringify(body), status);
+}
+
+function signedRawResponse(rawBody: string, status = 200): Response {
   return new Response(rawBody, {
     status,
     headers: {
@@ -281,6 +284,15 @@ const NATIVE_CREATE_INPUT = {
   currency: "CNY" as const,
   expiresAt: "2026-08-19T10:30:00+08:00",
   idempotencyKey: "create-order-1",
+};
+
+const NATIVE_REFERENCE = {
+  orderNumber: "BILL-ORDER-1",
+  providerTransactionId: "4200000000001",
+  amountMinor: 7_900,
+  currency: "CNY" as const,
+  expiresAt: "2026-08-19T10:30:00+08:00",
+  paymentToken: "weixin://wxpay/bizpayurl?pr=persisted",
 };
 
 function expectFixedError(
@@ -804,6 +816,7 @@ test("creates a Native payment with the exact server-owned request DTO", async (
     },
   ]);
   assert.equal(result.paymentToken, "weixin://wxpay/bizpayurl?pr=test-only");
+  assert.equal(result.providerTransactionId, null);
   assert.equal(result.orderNumber, "BILL-ORDER-1");
   assert.equal(result.status, "PENDING");
   assert.equal(result.amountMinor, 7_900);
@@ -834,7 +847,7 @@ test("bounds Native descriptions by code points and rejects create contract drif
   );
 });
 
-test("recovers an uncertain Native create by querying the same merchant order", async () => {
+test("marks an uncertain unpaid Native create as requiring a new payment without inventing a token", async () => {
   const recorded: Array<{ url: string; method: string; body: unknown }> = [];
   const wechat = nativeProvider(
     [
@@ -846,8 +859,9 @@ test("recovers an uncertain Native create by querying the same merchant order", 
 
   const result = await wechat.createPayment(NATIVE_CREATE_INPUT);
 
-  assert.equal(result.status, "PENDING");
-  assert.equal(result.paymentToken, "wechat-native:BILL-ORDER-1");
+  assert.equal(result.status, "REQUIRES_NEW_PAYMENT");
+  assert.equal(result.paymentToken, null);
+  assert.equal(result.providerTransactionId, "4200000000001");
   assert.deepEqual(recorded.map(({ url, method }) => ({ url, method })), [
     {
       url: "https://api.mch.weixin.qq.com/v3/pay/transactions/native",
@@ -860,23 +874,24 @@ test("recovers an uncertain Native create by querying the same merchant order", 
   ]);
 });
 
-test("queries a newly created Native payment by merchant order until WeChat returns its transaction ID", async () => {
+test("persists a verified paid recovery with the real transaction and no payment token", async () => {
   const recorded: Array<{ url: string; method: string; body: unknown }> = [];
   const wechat = nativeProvider(
     [
-      signedResponse({ code_url: "weixin://wxpay/bizpayurl?pr=created" }),
-      signedResponse(nativeTransaction()),
+      signedResponse({}, 500),
+      signedResponse(nativeTransaction({
+        trade_state: "SUCCESS",
+        success_time: "2026-08-19T10:00:00+08:00",
+      })),
     ],
     recorded,
   );
-  const created = await wechat.createPayment(NATIVE_CREATE_INPUT);
+  const queried = await wechat.createPayment(NATIVE_CREATE_INPUT);
 
-  const queried = await wechat.queryPayment({
-    orderNumber: created.orderNumber,
-    providerTransactionId: created.providerTransactionId,
-  });
-
+  assert.equal(queried.status, "PAID");
   assert.equal(queried.providerTransactionId, "4200000000001");
+  assert.equal(queried.paymentToken, null);
+  assert.equal(queried.paidAt, "2026-08-19T02:00:00.000Z");
   assert.equal(
     recorded[1]!.url,
     "https://api.mch.weixin.qq.com/v3/pay/transactions/out-trade-no/BILL-ORDER-1?mchid=1900000109",
@@ -902,7 +917,7 @@ test("rejects wrong server-owned amount and expiry when recovering an uncertain 
   }
 });
 
-test("maps every Native query trade state using the transaction-id endpoint", async () => {
+test("maps every Native query trade state from durable expectations in a fresh provider", async () => {
   const cases = [
     ["SUCCESS", "PAID", "2026-08-19T02:00:00.000Z"],
     ["NOTPAY", "PENDING", null],
@@ -914,54 +929,55 @@ test("maps every Native query trade state using the transaction-id endpoint", as
 
   for (const [tradeState, status, paidAt] of cases) {
     const recorded: Array<{ url: string; method: string; body: unknown }> = [];
-    const wechat = nativeProvider(
-      [
-        signedResponse({ code_url: "weixin://wxpay/bizpayurl?pr=state" }),
-        signedResponse(
-          nativeTransaction({
-            trade_state: tradeState,
-            ...(tradeState === "SUCCESS"
-              ? { success_time: "2026-08-19T10:00:00+08:00" }
-              : {}),
-          }),
-        ),
-      ],
-      recorded,
-    );
-    await wechat.createPayment(NATIVE_CREATE_INPUT);
+    const wechat = nativeProvider([
+      signedResponse(
+        nativeTransaction({
+          trade_state: tradeState,
+          ...(tradeState === "SUCCESS"
+            ? { success_time: "2026-08-19T10:00:00+08:00" }
+            : {}),
+        }),
+      ),
+    ], recorded);
     const result = await wechat.queryPayment({
-      orderNumber: "BILL-ORDER-1",
-      providerTransactionId: "4200000000001",
+      ...NATIVE_REFERENCE,
     });
 
     assert.equal(
-      recorded[1]!.url,
+      recorded[0]!.url,
       "https://api.mch.weixin.qq.com/v3/pay/transactions/id/4200000000001?mchid=1900000109",
     );
-    assert.equal(recorded[1]!.method, "GET");
-    assert.equal(recorded[1]!.body, undefined);
+    assert.equal(recorded[0]!.method, "GET");
+    assert.equal(recorded[0]!.body, undefined);
     assert.equal(result.status, status);
     assert.equal(result.paidAt, paidAt);
+    assert.equal(
+      result.paymentToken,
+      status === "PENDING" ? NATIVE_REFERENCE.paymentToken : null,
+    );
   }
 });
 
-test("closes pending Native payments and recovers already-paid and timed-out closes by query", async () => {
+test("validates a fresh Native close before POST and recovers paid and timed-out closes by query", async () => {
   const pendingCalls: Array<{ url: string; method: string; body: unknown }> = [];
   const pending = nativeProvider(
     [
-      signedResponse({ code_url: "weixin://wxpay/bizpayurl?pr=pending" }),
+      signedResponse(nativeTransaction()),
       signedResponse({}),
       signedResponse(nativeTransaction({ trade_state: "CLOSED" })),
     ],
     pendingCalls,
   );
-  await pending.createPayment(NATIVE_CREATE_INPUT);
   const closed = await pending.closePayment({
-    orderNumber: "BILL-ORDER-1",
-    providerTransactionId: "4200000000001",
+    ...NATIVE_REFERENCE,
   });
   assert.equal(closed.status, "CLOSED");
-  assert.deepEqual(pendingCalls.slice(1).map(({ url, method, body }) => ({ url, method, body })), [
+  assert.deepEqual(pendingCalls.map(({ url, method, body }) => ({ url, method, body })), [
+    {
+      url: "https://api.mch.weixin.qq.com/v3/pay/transactions/id/4200000000001?mchid=1900000109",
+      method: "GET",
+      body: undefined,
+    },
     {
       url: "https://api.mch.weixin.qq.com/v3/pay/transactions/out-trade-no/BILL-ORDER-1/close",
       method: "POST",
@@ -976,8 +992,6 @@ test("closes pending Native payments and recovers already-paid and timed-out clo
 
   const paid = nativeProvider(
     [
-      signedResponse({ code_url: "weixin://wxpay/bizpayurl?pr=paid" }),
-      signedResponse({ code: "ORDERPAID" }, 409),
       signedResponse(
         nativeTransaction({
           trade_state: "SUCCESS",
@@ -987,12 +1001,10 @@ test("closes pending Native payments and recovers already-paid and timed-out clo
     ],
     [],
   );
-  await paid.createPayment(NATIVE_CREATE_INPUT);
   assert.equal(
     (
       await paid.closePayment({
-        orderNumber: "BILL-ORDER-1",
-        providerTransactionId: "4200000000001",
+        ...NATIVE_REFERENCE,
       })
     ).status,
     "PAID",
@@ -1001,18 +1013,16 @@ test("closes pending Native payments and recovers already-paid and timed-out clo
   const timeoutCalls: Array<{ url: string; method: string; body: unknown }> = [];
   const timedOut = nativeProvider(
     [
-      signedResponse({ code_url: "weixin://wxpay/bizpayurl?pr=timeout" }),
+      signedResponse(nativeTransaction()),
       signedResponse(nativeTransaction({ trade_state: "CLOSED" })),
     ],
     timeoutCalls,
     { timeoutMs: 0, hangRequestAt: 2 },
   );
-  await timedOut.createPayment(NATIVE_CREATE_INPUT);
   assert.equal(
     (
       await timedOut.closePayment({
-        orderNumber: "BILL-ORDER-1",
-        providerTransactionId: "4200000000001",
+        ...NATIVE_REFERENCE,
       })
     ).status,
     "CLOSED",
@@ -1046,19 +1056,11 @@ test("rejects Native transaction identity, amount, and currency mismatches", asy
   ];
 
   for (const mismatch of mismatches) {
-    const wechat = nativeProvider(
-      [
-        signedResponse({ code_url: "weixin://wxpay/bizpayurl?pr=known" }),
-        signedResponse(nativeTransaction(mismatch)),
-      ],
-      [],
-    );
-    await wechat.createPayment(NATIVE_CREATE_INPUT);
+    const wechat = nativeProvider([signedResponse(nativeTransaction(mismatch))], []);
     await assert.rejects(
       () =>
         wechat.queryPayment({
-          orderNumber: "BILL-ORDER-1",
-          providerTransactionId: "4200000000001",
+          ...NATIVE_REFERENCE,
         }),
       (error: unknown) =>
         error instanceof BillingError &&
@@ -1066,6 +1068,78 @@ test("rejects Native transaction identity, amount, and currency mismatches", asy
         error.status === 502,
     );
   }
+});
+
+test("rejects duplicate-key signed Native responses with the strict JSON parser", async () => {
+  const duplicateCreate = nativeProvider(
+    [signedRawResponse('{"code_url":"weixin://one","code_url":"weixin://two"}')],
+    [],
+  );
+  await assert.rejects(
+    () => duplicateCreate.createPayment(NATIVE_CREATE_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
+
+  const duplicateQuery = nativeProvider(
+    [signedRawResponse('{"appid":"wx-app-1","appid":"wx-other"}')],
+    [],
+  );
+  await assert.rejects(
+    () => duplicateQuery.queryPayment({ ...NATIVE_REFERENCE }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
+});
+
+test("rejects non-RFC3339 expiries and overlong path identifiers before HTTP", async () => {
+  for (const input of [
+    { ...NATIVE_CREATE_INPUT, expiresAt: "2026-08-19 10:30:00+08:00" },
+    { ...NATIVE_CREATE_INPUT, orderNumber: "O".repeat(65) },
+  ]) {
+    const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+    await assert.rejects(
+      () => nativeProvider([], recorded).createPayment(input),
+      (error: unknown) =>
+        error instanceof BillingError &&
+        error.code === "PAYMENT_PROVIDER_REQUEST_INVALID" &&
+        error.status === 400,
+    );
+    assert.equal(recorded.length, 0);
+  }
+
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  await assert.rejects(
+    () => nativeProvider([], recorded).closePayment({
+      ...NATIVE_REFERENCE,
+      providerTransactionId: "T".repeat(65),
+    }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_REQUEST_INVALID" &&
+      error.status === 400,
+  );
+  assert.equal(recorded.length, 0);
+});
+
+test("a Native close mismatch fails before any POST", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider([
+    signedResponse(nativeTransaction({ amount: { total: 7_901, currency: "CNY" } })),
+  ], recorded);
+
+  await assert.rejects(
+    () => wechat.closePayment({ ...NATIVE_REFERENCE }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
+  assert.deepEqual(recorded.map(({ method }) => method), ["GET"]);
 });
 
 test("legacy boolean construction cannot enable callback verification", async () => {

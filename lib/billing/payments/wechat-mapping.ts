@@ -58,7 +58,7 @@ function daysInMonth(year: number, month: number): number {
   return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
-function normalizedRfc3339(value: unknown): string | null {
+export function normalizeWechatRfc3339(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const match = RFC3339_PATTERN.exec(value);
   if (!match) return null;
@@ -93,13 +93,16 @@ function normalizedRfc3339(value: unknown): string | null {
   return new Date(milliseconds).toISOString();
 }
 
-function nativeStatus(value: unknown): PaymentStatus | null {
+function nativeStatus(
+  value: unknown,
+  hasVerifiedPaymentToken: boolean,
+): PaymentStatus | null {
   switch (value) {
     case "SUCCESS":
       return "PAID";
     case "NOTPAY":
     case "USERPAYING":
-      return "PENDING";
+      return hasVerifiedPaymentToken ? "PENDING" : "REQUIRES_NEW_PAYMENT";
     case "CLOSED":
       return "CLOSED";
     case "PAYERROR":
@@ -138,22 +141,22 @@ export function parseWechatNativeTransaction(input: {
   expectedAppId: string;
   orderNumber: string;
   providerTransactionId: string | null;
-  expectedAmountMinor?: number;
-  expectedCurrency?: "CNY";
-  expectedExpiresAt?: string;
-  paymentToken: string;
+  expectedAmountMinor: unknown;
+  expectedCurrency: unknown;
+  expectedExpiresAt: unknown;
+  paymentToken: unknown;
 }): PaymentResult {
   if (!isRecord(input.response)) throw invalidResponse();
   const response = input.response;
   const amount = response.amount;
-  const status = nativeStatus(response.trade_state);
-  const expiresAt = normalizedRfc3339(response.time_expire);
-  const expectedExpiresAt =
-    input.expectedExpiresAt === undefined
-      ? undefined
-      : normalizedRfc3339(input.expectedExpiresAt);
+  const paymentToken =
+    typeof input.paymentToken === "string" ? input.paymentToken : null;
+  const hasVerifiedPaymentToken = paymentToken !== null && paymentToken.length > 0;
+  const status = nativeStatus(response.trade_state, hasVerifiedPaymentToken);
+  const expiresAt = normalizeWechatRfc3339(response.time_expire);
+  const expectedExpiresAt = normalizeWechatRfc3339(input.expectedExpiresAt);
   const paidAt =
-    status === "PAID" ? normalizedRfc3339(response.success_time) : null;
+    status === "PAID" ? normalizeWechatRfc3339(response.success_time) : null;
 
   if (
     response.appid !== input.expectedAppId ||
@@ -170,12 +173,15 @@ export function parseWechatNativeTransaction(input: {
     amount.total <= 0 ||
     amount.currency !== "CNY" ||
     !validOptionalAmountFields(amount) ||
-    (input.expectedAmountMinor !== undefined &&
-      amount.total !== input.expectedAmountMinor) ||
-    (input.expectedCurrency !== undefined && amount.currency !== input.expectedCurrency) ||
+    typeof input.expectedAmountMinor !== "number" ||
+    !Number.isSafeInteger(input.expectedAmountMinor) ||
+    input.expectedAmountMinor <= 0 ||
+    amount.total !== input.expectedAmountMinor ||
+    input.expectedCurrency !== "CNY" ||
+    amount.currency !== input.expectedCurrency ||
     expiresAt === null ||
-    (expectedExpiresAt !== undefined &&
-      (expectedExpiresAt === null || expiresAt !== expectedExpiresAt)) ||
+    expectedExpiresAt === null ||
+    expiresAt !== expectedExpiresAt ||
     paidAt === null && status === "PAID" ||
     !hasValidOptionalStringFields(response, [
       "trade_state_desc",
@@ -183,8 +189,8 @@ export function parseWechatNativeTransaction(input: {
       "attach",
     ]) ||
     !validOptionalPayer(response) ||
-    typeof input.paymentToken !== "string" ||
-    input.paymentToken.length === 0
+    (paymentToken !== null &&
+      (!validNativeCreateResponse({ code_url: paymentToken })))
   ) {
     throw invalidResponse();
   }
@@ -195,7 +201,7 @@ export function parseWechatNativeTransaction(input: {
     status,
     amountMinor: amount.total,
     currency: "CNY",
-    paymentToken: input.paymentToken,
+    paymentToken: status === "PENDING" ? paymentToken : null,
     expiresAt,
     paidAt,
   };
@@ -243,7 +249,7 @@ export function parseWechatPaidNotification(input: {
   if (!isRecord(parsed)) throw invalidWebhook();
 
   const amount = parsed.amount;
-  const occurredAt = normalizedRfc3339(parsed.success_time);
+  const occurredAt = normalizeWechatRfc3339(parsed.success_time);
   if (
     !isSafeIdentifier(input.eventId, MAX_EVENT_ID_LENGTH) ||
     input.eventType !== "TRANSACTION.SUCCESS" ||
