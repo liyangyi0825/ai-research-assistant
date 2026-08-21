@@ -1,10 +1,11 @@
 import { BillingError } from "../errors";
 import type { PaymentWebhookEvent } from "./types";
+import { parseStrictWechatJson } from "./wechat-json";
 
 const MAX_EVENT_ID_LENGTH = 128;
 const MAX_TRANSACTION_ID_LENGTH = 64;
 const MAX_ORDER_NUMBER_LENGTH = 64;
-const ASCII_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
+const UNICODE_CATEGORY_C_PATTERN = /\p{C}/u;
 const RFC3339_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
 
@@ -23,10 +24,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isSafeIdentifier(value: unknown, maximumLength: number): value is string {
   return (
     typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= maximumLength &&
+    [...value].length > 0 &&
+    [...value].length <= maximumLength &&
+    Buffer.byteLength(value, "utf8") <= maximumLength * 4 &&
     value === value.trim() &&
-    !ASCII_CONTROL_PATTERN.test(value)
+    !UNICODE_CATEGORY_C_PATTERN.test(value)
   );
 }
 
@@ -118,7 +120,7 @@ export function parseWechatPaidNotification(input: {
 }): PaymentWebhookEvent {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(input.decryptedResource);
+    parsed = parseStrictWechatJson(input.decryptedResource);
   } catch {
     throw invalidWebhook();
   }

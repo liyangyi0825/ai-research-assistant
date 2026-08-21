@@ -78,6 +78,13 @@ function encryptResource(
   plaintext: string,
   associatedData: string,
 ): string {
+  return encryptResourceBytes(Buffer.from(plaintext, "utf8"), associatedData);
+}
+
+function encryptResourceBytes(
+  plaintext: Uint8Array,
+  associatedData: string,
+): string {
   const cipher = createCipheriv(
     "aes-256-gcm",
     API_V3_KEY,
@@ -85,7 +92,7 @@ function encryptResource(
   );
   cipher.setAAD(Buffer.from(associatedData, "utf8"));
   return Buffer.concat([
-    cipher.update(Buffer.from(plaintext, "utf8")),
+    cipher.update(plaintext),
     cipher.final(),
     cipher.getAuthTag(),
   ]).toString("base64");
@@ -97,6 +104,54 @@ function signature(rawBody: string, timestamp = TIMESTAMP): string {
     Buffer.from(`${timestamp}\ncallback-signing-nonce\n${rawBody}\n`, "utf8"),
     platformPrivateKey,
   ).toString("base64");
+}
+
+function signedCallback(rawBody: string): {
+  rawBody: string;
+  headers: Record<string, string>;
+} {
+  return {
+    rawBody,
+    headers: {
+      "WeChatPay-Timestamp": TIMESTAMP,
+      "wechatpay-NONCE": "callback-signing-nonce",
+      "WECHATPAY-SIGNATURE": signature(rawBody),
+      "Wechatpay-Serial": VERIFIER_ID,
+    },
+  };
+}
+
+function handwrittenResource(ciphertext: string, extra = ""): string {
+  return (
+    `{"original_type":"transaction",` +
+    `"algorithm":"AEAD_AES_256_GCM",` +
+    `"ciphertext":"${ciphertext}",` +
+    `"associated_data":"transaction",` +
+    `"nonce":"callback1234"${extra}}`
+  );
+}
+
+function handwrittenOuter(resource: string, eventEntries: string): string {
+  return (
+    `{"id":"EVT-1",` +
+    `"create_time":"2026-08-19T18:00:01+08:00",` +
+    `"resource_type":"encrypt-resource",` +
+    `${eventEntries},` +
+    `"summary":"支付成功",` +
+    `"resource":${resource}}`
+  );
+}
+
+function handwrittenTransaction(totalLiteral: string, extra = ""): string {
+  return (
+    `{"appid":"wx-app-1",` +
+    `"mchid":"1900000109",` +
+    `"out_trade_no":"BILL-ORDER-1",` +
+    `"transaction_id":"4200000000001",` +
+    `"trade_state":"SUCCESS",` +
+    `"success_time":"2026-08-19T18:00:00+08:00",` +
+    `"amount":{"total":${totalLiteral},"currency":"CNY"}${extra}}`
+  );
 }
 
 function fixture(options: FixtureOptions = {}): {
@@ -231,6 +286,198 @@ test("parseWebhook independently repeats verification without prior verify state
       rawBody: `${callback.rawBody} `,
     }),
     (error: unknown) => expectFixedError(error, INVALID_SIGNATURE),
+  );
+});
+
+test("parseWebhook never reuses a prior successful verification", async () => {
+  const wechat = provider();
+  const callback = fixture();
+  assert.equal(await wechat.verifyWebhook(callback), true);
+
+  await assert.rejects(
+    wechat.parseWebhook({
+      ...callback,
+      rawBody: `${callback.rawBody} `,
+    }),
+    (error: unknown) => expectFixedError(error, INVALID_SIGNATURE),
+  );
+});
+
+test("duplicate keys at every callback object layer are permanently rejected", async () => {
+  const encrypted = encryptResource(
+    JSON.stringify(BASE_TRANSACTION),
+    CALLBACK_AAD,
+  );
+  const standardResource = handwrittenResource(encrypted);
+  const outerDuplicate = signedCallback(
+    handwrittenOuter(
+      standardResource,
+      `"event_type":"TRANSACTION.SUCCESS","event_type":"TRANSACTION.SUCCESS"`,
+    ),
+  );
+  const escapedOuterDuplicate = signedCallback(
+    handwrittenOuter(
+      standardResource,
+      `"event_type":"TRANSACTION.SUCCESS","\\u0065vent_type":"TRANSACTION.SUCCESS"`,
+    ),
+  );
+  const resourceDuplicate = signedCallback(
+    handwrittenOuter(
+      handwrittenResource(encrypted, `,"nonce":"duplicate-resource-secret"`),
+      `"event_type":"TRANSACTION.SUCCESS"`,
+    ),
+  );
+  const decryptedDuplicates = [
+    `{"appid":"wx-app-1","mchid":"1900000109","out_trade_no":"BILL-ORDER-1","transaction_id":"4200000000001","transaction_id":"duplicate-transaction-secret","trade_state":"SUCCESS","success_time":"2026-08-19T18:00:00+08:00","amount":{"total":7900,"currency":"CNY"}}`,
+    `{"appid":"wx-app-1","mchid":"1900000109","out_trade_no":"BILL-ORDER-1","transaction_id":"4200000000001","trade_state":"SUCCESS","success_time":"2026-08-19T18:00:00+08:00","amount":{"total":7900,"total":7900,"currency":"CNY"}}`,
+    `{"appid":"wx-app-1","mchid":"1900000109","out_trade_no":"BILL-ORDER-1","transaction_id":"4200000000001","trade_state":"SUCCESS","success_time":"2026-08-19T18:00:00+08:00","payer":{"openid":"first","openid":"duplicate-payer-secret"},"amount":{"total":7900,"currency":"CNY"}}`,
+  ];
+  const callbacks = [
+    outerDuplicate,
+    escapedOuterDuplicate,
+    resourceDuplicate,
+    ...decryptedDuplicates.map((plaintext) => fixture({ plaintext })),
+  ];
+
+  for (const callback of callbacks) {
+    await assert.rejects(
+      provider().parseWebhook(callback),
+      (error: unknown) =>
+        expectFixedError(error, INVALID_WEBHOOK, [
+          callback.rawBody,
+          "duplicate-resource-secret",
+          "duplicate-transaction-secret",
+          "duplicate-payer-secret",
+        ]),
+    );
+  }
+});
+
+test("amount JSON numbers are accepted only as lossless plain safe integers", async () => {
+  const maximum = fixture({
+    plaintext: handwrittenTransaction("9007199254740991"),
+  });
+  assert.equal((await provider().parseWebhook(maximum)).amountMinor, 9_007_199_254_740_991);
+
+  for (const literal of [
+    "0",
+    "-1",
+    "9007199254740992",
+    "0.1",
+    "9007199254740991.1",
+    "1e3",
+  ]) {
+    const callback = fixture({ plaintext: handwrittenTransaction(literal) });
+    await assert.rejects(
+      provider().parseWebhook(callback),
+      (error: unknown) =>
+        expectFixedError(
+          error,
+          INVALID_WEBHOOK,
+          literal === "9007199254740991.1"
+            ? [callback.rawBody, literal]
+            : [callback.rawBody],
+        ),
+    );
+  }
+});
+
+test("payment identifiers reject every Unicode category C and non-scalar value", async () => {
+  const callbacks = [
+    fixture({ outerOverrides: { id: "EVT\u0085X" } }),
+    fixture({ outerOverrides: { id: "EVT\uE000X" } }),
+    fixture({ outerOverrides: { id: "EVT\u0378X" } }),
+    fixture({
+      transaction: { ...BASE_TRANSACTION, transaction_id: "TX\u202EX" },
+    }),
+    fixture({
+      transaction: { ...BASE_TRANSACTION, transaction_id: "TX\u200BX" },
+    }),
+    fixture({
+      plaintext: `{"appid":"wx-app-1","mchid":"1900000109","out_trade_no":"BILL-\\ud800-X","transaction_id":"4200000000001","trade_state":"SUCCESS","success_time":"2026-08-19T18:00:00+08:00","amount":{"total":7900,"currency":"CNY"}}`,
+    }),
+  ];
+
+  for (const callback of callbacks) {
+    await assert.rejects(
+      provider().parseWebhook(callback),
+      (error: unknown) =>
+        expectFixedError(error, INVALID_WEBHOOK, [callback.rawBody]),
+    );
+  }
+});
+
+test("strict callback JSON rejects excessive nesting", async () => {
+  const deepValue = `${"[".repeat(33)}0${"]".repeat(33)}`;
+  const callback = fixture({
+    plaintext: handwrittenTransaction("7900", `,"deep":${deepValue}`),
+  });
+
+  await assert.rejects(
+    provider().parseWebhook(callback),
+    (error: unknown) => expectFixedError(error, INVALID_WEBHOOK, [deepValue]),
+  );
+});
+
+test("strict callback JSON preserves standard nested JSON value types", async () => {
+  const callback = fixture({
+    plaintext: handwrittenTransaction(
+      "7900",
+      `,"extensions":[true,false,null,{"label":"ok","values":[1,2,3]}]`,
+    ),
+  });
+
+  assert.equal((await provider().parseWebhook(callback)).amountMinor, 7_900);
+});
+
+test("strict callback JSON bounds aggregate nodes and individual strings", async () => {
+  const nodeHeavy = fixture({
+    plaintext: handwrittenTransaction(
+      "7900",
+      `,"extensions":[${"null,".repeat(10_000)}null]`,
+    ),
+  });
+  const stringHeavy = fixture({
+    plaintext: handwrittenTransaction(
+      "7900",
+      `,"description":"${"x".repeat(256 * 1024 + 1)}"`,
+    ),
+  });
+
+  await assert.rejects(
+    provider().parseWebhook(nodeHeavy),
+    (error: unknown) => expectFixedError(error, INVALID_WEBHOOK),
+  );
+  await assert.rejects(
+    provider({ maxWebhookBytes: 512 * 1024 }).parseWebhook(stringHeavy),
+    (error: unknown) => expectFixedError(error, INVALID_WEBHOOK),
+  );
+});
+
+test("authenticated resources containing invalid UTF-8 plaintext are rejected", async () => {
+  const invalidPlaintext = Buffer.concat([
+    Buffer.from(
+      `{"appid":"wx-app-1","mchid":"1900000109","out_trade_no":"BILL-`,
+      "utf8",
+    ),
+    Buffer.from([0xff]),
+    Buffer.from(
+      `-ORDER-1","transaction_id":"4200000000001","trade_state":"SUCCESS","success_time":"2026-08-19T18:00:00+08:00","amount":{"total":7900,"currency":"CNY"}}`,
+      "utf8",
+    ),
+  ]);
+  const callback = fixture({
+    resourceOverrides: {
+      ciphertext: encryptResourceBytes(
+        invalidPlaintext,
+        CALLBACK_AAD,
+      ),
+    },
+  });
+
+  await assert.rejects(
+    provider().parseWebhook(callback),
+    (error: unknown) => expectFixedError(error, INVALID_WEBHOOK, [callback.rawBody]),
   );
 });
 

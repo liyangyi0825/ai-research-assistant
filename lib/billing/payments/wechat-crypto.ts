@@ -262,9 +262,11 @@ export function decryptWechatResource(input: {
     decipher.setAuthTag(authenticationTag);
     decipher.setAAD(Buffer.from(input.associatedData, "utf8"));
 
-    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString(
-      "utf8",
-    );
+    const plaintext = Buffer.concat([
+      decipher.update(ciphertext),
+      decipher.final(),
+    ]);
+    return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
   } catch {
     throw resourceInvalid();
   }

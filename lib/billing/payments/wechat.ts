@@ -7,6 +7,7 @@ import {
   verifyWechatTimestamp,
 } from "./wechat-crypto";
 import { parseWechatPaidNotification } from "./wechat-mapping";
+import { parseStrictWechatJson } from "./wechat-json";
 import type { WechatHttpClient } from "./wechat-transport";
 import type {
   CreatePaymentInput,
@@ -164,7 +165,7 @@ export class WechatPayProvider implements PaymentProvider {
     this.verifyCallback(input, dependencies);
 
     try {
-      const outer: unknown = JSON.parse(input.rawBody);
+      const outer = parseStrictWechatJson(input.rawBody);
       if (!isRecord(outer)) throw invalidWebhook();
       if (
         ("create_time" in outer && typeof outer.create_time !== "string") ||

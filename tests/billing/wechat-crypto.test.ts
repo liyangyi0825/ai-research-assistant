@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  createCipheriv,
   generateKeyPairSync,
   type KeyObject,
   sign as rsaSign,
@@ -601,6 +602,38 @@ test("decryptWechatResource decrypts a deterministic AES-256-GCM resource", () =
   });
 
   assert.equal(plaintext, "{\"mchid\":\"1900000001\"}");
+});
+
+test("decryptWechatResource rejects authenticated plaintext with invalid UTF-8", () => {
+  const apiV3Key = Buffer.from(
+    "0123456789abcdef0123456789abcdef",
+    "utf8",
+  );
+  const nonce = "0123456789ab";
+  const associatedData = "transaction";
+  const invalidPlaintext = Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x7d]);
+  const cipher = createCipheriv("aes-256-gcm", apiV3Key, nonce);
+  cipher.setAAD(Buffer.from(associatedData, "utf8"));
+  const ciphertextBase64 = Buffer.concat([
+    cipher.update(invalidPlaintext),
+    cipher.final(),
+    cipher.getAuthTag(),
+  ]).toString("base64");
+
+  assert.throws(
+    () =>
+      decryptWechatResource({
+        apiV3Key,
+        nonce,
+        associatedData,
+        ciphertextBase64,
+      }),
+    (error: unknown) =>
+      isBillingError(error, "WECHAT_RESOURCE_INVALID", [
+        ciphertextBase64,
+        apiV3Key.toString("utf8"),
+      ]),
+  );
 });
 
 test("decryptWechatResource rejects wrong key, nonce, AAD, tag, and ciphertext", () => {
