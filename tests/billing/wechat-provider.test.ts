@@ -233,7 +233,11 @@ function signedRawResponse(rawBody: string, status = 200): Response {
 function nativeProvider(
   responses: Response[],
   recorded: Array<{ url: string; method: string; body: unknown }>,
-  options: { timeoutMs?: number; hangRequestAt?: number } = {},
+  options: {
+    timeoutMs?: number;
+    hangRequestAt?: number;
+    connectionFailureAt?: number;
+  } = {},
 ): WechatPayProvider {
   const httpClient = new WechatHttpClient({
     config: config(),
@@ -248,6 +252,9 @@ function nativeProvider(
       });
       if (options.hangRequestAt === recorded.length) {
         return new Promise<Response>(() => undefined);
+      }
+      if (options.connectionFailureAt === recorded.length) {
+        throw new TypeError("test-connection-failure");
       }
       const response = responses.shift();
       if (!response) throw new Error("unexpected test request");
@@ -1120,7 +1127,7 @@ test("rejects non-RFC3339 expiries and overlong path identifiers before HTTP", a
     }),
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "PAYMENT_PROVIDER_REQUEST_INVALID" &&
+        error.code === "PAYMENT_PROVIDER_REQUEST_INVALID" &&
       error.status === 400,
   );
   assert.equal(recorded.length, 0);
@@ -1201,25 +1208,215 @@ test("legacy boolean construction cannot enable callback verification", async ()
   }
 });
 
-test("callback dependencies do not implement refunds", async () => {
-  const wechat = provider();
-  const operations = [
-    () =>
-      wechat.refundPayment({
-        providerTransactionId: "4200000000001",
-        amountMinor: 7_900,
-        currency: "CNY" as const,
-        idempotencyKey: "refund-order-1",
-      }),
-  ];
+const REFUND_INPUT = {
+  providerTransactionId: "4200000000001",
+  amountMinor: 7_900,
+  currency: "CNY" as const,
+  idempotencyKey: "billing-refund:request-1",
+};
 
-  for (const operation of operations) {
+function refundResponse(
+  overrides: Readonly<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    refund_id: "5030000000000000001",
+    out_refund_no: "a1a255e9c5297ead756ecb2f4117ffe0",
+    transaction_id: "4200000000001",
+    status: "SUCCESS",
+    amount: { refund: 7_900, total: 7_900, currency: "CNY" },
+    ...overrides,
+  };
+}
+
+test("creates an idempotent full refund with the exact backend-owned DTO", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider(
+    [signedResponse(refundResponse()), signedResponse(refundResponse())],
+    recorded,
+  );
+
+  const first = await wechat.refundPayment(REFUND_INPUT);
+  const retry = await wechat.refundPayment(REFUND_INPUT);
+
+  assert.deepEqual(first, {
+    providerRefundId: "5030000000000000001",
+    providerTransactionId: "4200000000001",
+    status: "SUCCEEDED",
+    refundedAmountMinor: 7_900,
+    currency: "CNY",
+  });
+  assert.deepEqual(retry, first);
+  assert.deepEqual(recorded, [
+    {
+      url: "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds",
+      method: "POST",
+      body: {
+        transaction_id: "4200000000001",
+        out_refund_no: "a1a255e9c5297ead756ecb2f4117ffe0",
+        reason: "USER_APPROVED_FULL_REFUND",
+        amount: { refund: 7_900, total: 7_900, currency: "CNY" },
+      },
+    },
+    {
+      url: "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds",
+      method: "POST",
+      body: {
+        transaction_id: "4200000000001",
+        out_refund_no: "a1a255e9c5297ead756ecb2f4117ffe0",
+        reason: "USER_APPROVED_FULL_REFUND",
+        amount: { refund: 7_900, total: 7_900, currency: "CNY" },
+      },
+    },
+  ]);
+});
+
+test("queries the deterministic refund after an uncertain response and preserves nonterminal uncertainty", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider(
+    [signedResponse({}, 500), signedResponse(refundResponse({ status: "PROCESSING" }))],
+    recorded,
+  );
+
+  await assert.rejects(
+    () => wechat.refundPayment(REFUND_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
+      error.status === 503,
+  );
+  assert.deepEqual(recorded.map(({ url, method, body }) => ({ url, method, body })), [
+    {
+      url: "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds",
+      method: "POST",
+      body: {
+        transaction_id: "4200000000001",
+        out_refund_no: "a1a255e9c5297ead756ecb2f4117ffe0",
+        reason: "USER_APPROVED_FULL_REFUND",
+        amount: { refund: 7_900, total: 7_900, currency: "CNY" },
+      },
+    },
+    {
+      url: "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds/a1a255e9c5297ead756ecb2f4117ffe0",
+      method: "GET",
+      body: undefined,
+    },
+  ]);
+});
+
+test("recovers a verified successful refund after a transport timeout", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider(
+    [signedResponse(refundResponse())],
+    recorded,
+    { timeoutMs: 0, hangRequestAt: 1 },
+  );
+
+  const refund = await wechat.refundPayment(REFUND_INPUT);
+
+  assert.equal(refund.status, "SUCCEEDED");
+  assert.equal(recorded.length, 2);
+  assert.equal(
+    recorded[1]!.url,
+    "https://api.mch.weixin.qq.com/v3/refund/domestic/refunds/a1a255e9c5297ead756ecb2f4117ffe0",
+  );
+});
+
+test("recovers a verified successful refund after a connection failure", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider(
+    [signedResponse(refundResponse())],
+    recorded,
+    { connectionFailureAt: 1 },
+  );
+
+  const refund = await wechat.refundPayment(REFUND_INPUT);
+
+  assert.equal(refund.status, "SUCCEEDED");
+  assert.deepEqual(recorded.map(({ method }) => method), ["POST", "GET"]);
+});
+
+test("keeps failed and not-found refund queries retryable", async () => {
+  const failed = nativeProvider([
+    signedResponse({}, 500),
+    signedResponse(refundResponse({ status: "CLOSED" })),
+  ], []);
+  await assert.rejects(
+    () => failed.refundPayment(REFUND_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
+      error.status === 503,
+  );
+
+  const missing = nativeProvider([
+    signedResponse({}, 500),
+    signedResponse({ code: "RESOURCE_NOT_EXISTS" }, 404),
+  ], []);
+  await assert.rejects(
+    () => missing.refundPayment(REFUND_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_REQUEST_REJECTED" &&
+      error.status === 400,
+  );
+});
+
+test("does not classify a verified remote refund PARAM_ERROR as local preflight", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider(
+    [signedResponse({ code: "PARAM_ERROR" }, 400)],
+    recorded,
+  );
+
+  await assert.rejects(
+    () => wechat.refundPayment(REFUND_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_REQUEST_INVALID" &&
+      error.status === 400,
+  );
+  assert.deepEqual(recorded.map(({ method }) => method), ["POST"]);
+});
+
+test("rejects malformed, duplicate, and mismatched verified refund responses", async () => {
+  for (const response of [
+    refundResponse({ transaction_id: "4200000000002" }),
+    refundResponse({ out_refund_no: "b".repeat(32) }),
+    refundResponse({ amount: { refund: 7_899, total: 7_900, currency: "CNY" } }),
+    refundResponse({ amount: { refund: 7_900, total: 7_900, currency: "USD" } }),
+    { status: "SUCCESS" },
+  ]) {
     await assert.rejects(
-      operation,
+      () => nativeProvider([signedResponse(response)], []).refundPayment(REFUND_INPUT),
       (error: unknown) =>
         error instanceof BillingError &&
-        error.code === "NOT_IMPLEMENTED" &&
-        error.status === 501,
+        error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+        error.status === 502,
     );
   }
+
+  await assert.rejects(
+    () => nativeProvider([
+      signedRawResponse('{"refund_id":"one","refund_id":"two"}'),
+    ], []).refundPayment(REFUND_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
+});
+
+test("rejects invalid full-refund inputs before provider invocation", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  await assert.rejects(
+    () => nativeProvider([], recorded).refundPayment({
+      ...REFUND_INPUT,
+      amountMinor: 0,
+    }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_REFUND_PRECHECK_FAILED" &&
+      error.status === 400,
+  );
+  assert.equal(recorded.length, 0);
 });

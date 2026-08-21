@@ -1,5 +1,10 @@
 import { BillingError } from "../errors";
-import type { PaymentResult, PaymentStatus, PaymentWebhookEvent } from "./types";
+import type {
+  PaymentResult,
+  PaymentStatus,
+  PaymentWebhookEvent,
+  RefundResult,
+} from "./types";
 import { parseStrictWechatJson } from "./wechat-json";
 
 const MAX_EVENT_ID_LENGTH = 128;
@@ -220,6 +225,57 @@ export function parseWechatNativeTransaction(input: {
     expiresAt,
     paidAt,
   };
+}
+
+export function parseWechatRefund(input: {
+  response: unknown;
+  expectedProviderTransactionId: string;
+  expectedRefundNumber: string;
+  expectedAmountMinor: number;
+  expectedCurrency: "CNY";
+}): RefundResult | { status: "PROCESSING" | "FAILED" } {
+  if (!isRecord(input.response)) throw invalidResponse();
+  const response = input.response;
+  const amount = response.amount;
+  const refundAmount = isRecord(amount) ? amount.refund : undefined;
+  const totalAmount = isRecord(amount) ? amount.total : undefined;
+  const status = response.status;
+  if (
+    !isSafePathIdentifier(response.refund_id, MAX_TRANSACTION_ID_LENGTH) ||
+    response.out_refund_no !== input.expectedRefundNumber ||
+    response.transaction_id !== input.expectedProviderTransactionId ||
+    !isRecord(amount) ||
+    typeof refundAmount !== "number" ||
+    !Number.isSafeInteger(refundAmount) ||
+    refundAmount <= 0 ||
+    refundAmount !== input.expectedAmountMinor ||
+    typeof totalAmount !== "number" ||
+    !Number.isSafeInteger(totalAmount) ||
+    totalAmount <= 0 ||
+    totalAmount !== input.expectedAmountMinor ||
+    amount.currency !== "CNY" ||
+    amount.currency !== input.expectedCurrency ||
+    !hasValidOptionalStringFields(response, [
+      "create_time",
+      "success_time",
+      "user_received_account",
+    ])
+  ) {
+    throw invalidResponse();
+  }
+
+  if (status === "SUCCESS") {
+    return {
+      providerRefundId: response.refund_id,
+      providerTransactionId: response.transaction_id,
+      status: "SUCCEEDED",
+      refundedAmountMinor: refundAmount,
+      currency: "CNY",
+    };
+  }
+  if (status === "PROCESSING") return { status: "PROCESSING" };
+  if (status === "CLOSED" || status === "ABNORMAL") return { status: "FAILED" };
+  throw invalidResponse();
 }
 
 function validOptionalPayer(value: Record<string, unknown>): boolean {

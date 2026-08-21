@@ -235,6 +235,13 @@ function validateProviderResult(
   }
 }
 
+function isDeterministicProviderPreflightFailure(error: unknown): boolean {
+  return (
+    error instanceof BillingError &&
+    error.code === "PAYMENT_PROVIDER_REFUND_PRECHECK_FAILED"
+  );
+}
+
 export function createRefundExecutionRepository(
   client: RefundExecutionAdminClient,
 ): RefundExecutionRepository {
@@ -358,7 +365,18 @@ export async function executeApprovedRefund(
       idempotencyKey: claim.idempotencyKey,
     });
     validateProviderResult(claim, refund);
-  } catch {
+  } catch (error) {
+    if (isDeterministicProviderPreflightFailure(error)) {
+      try {
+        await repository.failRefundClaim({
+          refundId: claim.refundId,
+          claimToken,
+          errorCode: "REFUND_PROVIDER_REFUND_PRECHECK_FAILED",
+        });
+      } catch {
+        // The bounded lease remains recoverable if deterministic cleanup fails.
+      }
+    }
     warnBillingSecurity(logger, {
       eventCode: "REFUND_PROVIDER_FAILED",
       provider: claim.provider,

@@ -376,6 +376,117 @@ test("provider errors preserve the claim for same-key recovery and emit only saf
   assert.equal(logs[0].includes(transactionSecret), false);
 });
 
+test("deterministic provider preflight failures release the refund claim", async () => {
+  const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
+  const executeApprovedRefund = refundModule.executeApprovedRefund!;
+  const provider = new MockPaymentProvider({ secret: "unused" });
+  provider.refundPayment = async () => {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_REFUND_PRECHECK_FAILED",
+      "The WeChat Pay request is invalid.",
+      400,
+    );
+  };
+  const failures: unknown[] = [];
+
+  await assert.rejects(
+    () => executeApprovedRefund("request-1", {
+      repository: {
+        async claimApprovedRefund() {
+          return {
+            status: "CLAIMED" as const,
+            refundId: "refund-1",
+            requestId: "request-1",
+            orderId: "order-1",
+            paymentId: "payment-1",
+            provider: "MOCK" as const,
+            providerTransactionId: "mock-tx-1",
+            amountMinor: 7_900,
+            currency: "CNY" as const,
+            idempotencyKey: "billing-refund:request-1",
+          };
+        },
+        async completeRefund() {
+          assert.fail("preflight failures cannot complete refunds");
+        },
+        async failRefundClaim(input: {
+          refundId: string;
+          claimToken: string;
+          errorCode: string;
+        }) {
+          failures.push(input);
+        },
+      },
+      getConfig: () => config,
+      getProvider: () => provider,
+      now: () => now,
+      createClaimToken: () => "claim-1",
+    }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "REFUND_PROVIDER_UNAVAILABLE" &&
+      error.status === 503,
+  );
+  assert.deepEqual(failures, [{
+    refundId: "refund-1",
+    claimToken: "claim-1",
+    errorCode: "REFUND_PROVIDER_REFUND_PRECHECK_FAILED",
+  }]);
+});
+
+test("verified remote provider rejections retain the refund claim", async () => {
+  const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
+  const executeApprovedRefund = refundModule.executeApprovedRefund!;
+  const provider = new MockPaymentProvider({ secret: "unused" });
+  let providerCalls = 0;
+  provider.refundPayment = async () => {
+    providerCalls += 1;
+    throw new BillingError(
+      "PAYMENT_PROVIDER_REQUEST_INVALID",
+      "The WeChat Pay request is invalid.",
+      400,
+    );
+  };
+  const failures: unknown[] = [];
+
+  await assert.rejects(
+    () => executeApprovedRefund("request-1", {
+      repository: {
+        async claimApprovedRefund() {
+          return {
+            status: "CLAIMED" as const,
+            refundId: "refund-1",
+            requestId: "request-1",
+            orderId: "order-1",
+            paymentId: "payment-1",
+            provider: "MOCK" as const,
+            providerTransactionId: "mock-tx-1",
+            amountMinor: 7_900,
+            currency: "CNY" as const,
+            idempotencyKey: "billing-refund:request-1",
+          };
+        },
+        async completeRefund() {
+          assert.fail("remote rejections cannot complete refunds");
+        },
+        async failRefundClaim(input: unknown) {
+          failures.push(input);
+        },
+      },
+      getConfig: () => config,
+      getProvider: () => provider,
+      now: () => now,
+      createClaimToken: () => "claim-1",
+    }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "REFUND_PROVIDER_UNAVAILABLE" &&
+      error.status === 503,
+  );
+  assert.equal(providerCalls, 1);
+  assert.deepEqual(failures, []);
+});
+
 test("credit-pack refunds require manual review before provider construction", async () => {
   const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
   const executeApprovedRefund = refundModule.executeApprovedRefund!;

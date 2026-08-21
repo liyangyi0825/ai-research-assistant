@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { BillingError } from "../errors";
 import type { PaymentProvider } from "./provider";
 import type { WechatPayConfig } from "./wechat-config";
@@ -10,6 +12,7 @@ import {
   parseWechatNativeCreateResponse,
   parseWechatNativeTransaction,
   parseWechatPaidNotification,
+  parseWechatRefund,
   normalizeWechatRfc3339,
 } from "./wechat-mapping";
 import { parseStrictWechatJson } from "./wechat-json";
@@ -49,6 +52,10 @@ type WechatCallbackHeaders = {
 
 const DEFAULT_WEBHOOK_TOLERANCE_SECONDS = 300;
 const DEFAULT_MAX_WEBHOOK_BYTES = 256 * 1024;
+
+export function stableWechatRefundNumber(idempotencyKey: string): string {
+  return createHash("sha256").update(idempotencyKey, "utf8").digest("hex").slice(0, 32);
+}
 
 function invalidSignature(): BillingError {
   return new BillingError(
@@ -212,9 +219,38 @@ export class WechatPayProvider implements PaymentProvider {
     return this.queryNativePayment(input);
   }
 
-  async refundPayment(_input: RefundPaymentInput): Promise<RefundResult> {
-    void _input;
-    return this.unavailable();
+  async refundPayment(input: RefundPaymentInput): Promise<RefundResult> {
+    const dependencies = this.callbackDependencies();
+    this.assertRefundInput(input);
+    const refundNumber = stableWechatRefundNumber(input.idempotencyKey);
+    try {
+      const response = await dependencies.httpClient.request<unknown>({
+        method: "POST",
+        pathWithQuery: "/v3/refund/domestic/refunds",
+        body: {
+          transaction_id: input.providerTransactionId,
+          out_refund_no: refundNumber,
+          reason: "USER_APPROVED_FULL_REFUND",
+          amount: {
+            refund: input.amountMinor,
+            total: input.amountMinor,
+            currency: "CNY",
+          },
+        },
+      });
+      const result = parseWechatRefund({
+        response: response.body,
+        expectedProviderTransactionId: input.providerTransactionId,
+        expectedRefundNumber: refundNumber,
+        expectedAmountMinor: input.amountMinor,
+        expectedCurrency: input.currency,
+      });
+      if (result.status === "SUCCEEDED") return result;
+      throw this.refundUncertain();
+    } catch (error) {
+      if (!this.isUncertain(error)) throw error;
+      return this.queryWechatRefund(input, refundNumber);
+    }
   }
 
   async verifyWebhook(input: PaymentWebhookInput): Promise<boolean> {
@@ -304,6 +340,26 @@ export class WechatPayProvider implements PaymentProvider {
     });
   }
 
+  private async queryWechatRefund(
+    input: RefundPaymentInput,
+    refundNumber: string,
+  ): Promise<RefundResult> {
+    const dependencies = this.callbackDependencies();
+    const response = await dependencies.httpClient.request<unknown>({
+      method: "GET",
+      pathWithQuery: `/v3/refund/domestic/refunds/${encodeURIComponent(refundNumber)}`,
+    });
+    const result = parseWechatRefund({
+      response: response.body,
+      expectedProviderTransactionId: input.providerTransactionId,
+      expectedRefundNumber: refundNumber,
+      expectedAmountMinor: input.amountMinor,
+      expectedCurrency: input.currency,
+    });
+    if (result.status === "SUCCEEDED") return result;
+    throw this.refundUncertain();
+  }
+
   private nativeDescription(value: string): string {
     if (typeof value !== "string") {
       throw new BillingError(
@@ -332,6 +388,22 @@ export class WechatPayProvider implements PaymentProvider {
     ) {
       throw new BillingError(
         "PAYMENT_PROVIDER_REQUEST_INVALID",
+        "The WeChat Pay request is invalid.",
+        400,
+      );
+    }
+  }
+
+  private assertRefundInput(input: RefundPaymentInput): void {
+    if (
+      !this.isNativeIdentifier(input.providerTransactionId) ||
+      !this.isNativeIdempotencyKey(input.idempotencyKey) ||
+      !Number.isSafeInteger(input.amountMinor) ||
+      input.amountMinor <= 0 ||
+      input.currency !== "CNY"
+    ) {
+      throw new BillingError(
+        "PAYMENT_PROVIDER_REFUND_PRECHECK_FAILED",
         "The WeChat Pay request is invalid.",
         400,
       );
@@ -391,7 +463,8 @@ export class WechatPayProvider implements PaymentProvider {
   private isUncertain(error: unknown): boolean {
     return (
       error instanceof BillingError &&
-      error.code === "PAYMENT_PROVIDER_UNAVAILABLE"
+      (error.code === "PAYMENT_PROVIDER_UNAVAILABLE" ||
+        error.code === "PAYMENT_PROVIDER_TRANSPORT_FAILED")
     );
   }
 
@@ -399,6 +472,14 @@ export class WechatPayProvider implements PaymentProvider {
     return (
       error instanceof BillingError &&
       error.code === "PAYMENT_PROVIDER_STATE_CONFLICT"
+    );
+  }
+
+  private refundUncertain(): BillingError {
+    return new BillingError(
+      "PAYMENT_PROVIDER_UNAVAILABLE",
+      "WeChat Pay refund status is not yet final.",
+      503,
     );
   }
 
