@@ -6,6 +6,7 @@ import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
 import type { RefundResult } from "../../lib/billing/payments/types";
+import { WechatPayProvider } from "../../lib/billing/payments/wechat";
 import { createBillingSecurityLogger } from "../../lib/billing/security-logger";
 import {
   createRefundExecutionRepository,
@@ -484,6 +485,128 @@ test("verified remote provider rejections retain the refund claim", async () => 
       error.status === 503,
   );
   assert.equal(providerCalls, 1);
+  assert.deepEqual(failures, []);
+});
+
+test("explicit unavailable provider outcomes retain the refund claim", async () => {
+  const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
+  const executeApprovedRefund = refundModule.executeApprovedRefund!;
+
+  for (const code of [
+    "PAYMENT_PROVIDER_UNAVAILABLE",
+    "PAYMENT_PROVIDER_TRANSPORT_FAILED",
+  ]) {
+    const provider = new MockPaymentProvider({ secret: "unused" });
+    provider.refundPayment = async () => {
+      throw new BillingError(code, "Provider result is uncertain.", 503);
+    };
+    const failures: unknown[] = [];
+
+    await assert.rejects(
+      () => executeApprovedRefund("request-1", {
+        repository: {
+          async claimApprovedRefund() {
+            return {
+              status: "CLAIMED" as const,
+              refundId: "refund-1",
+              requestId: "request-1",
+              orderId: "order-1",
+              paymentId: "payment-1",
+              provider: "MOCK" as const,
+              providerTransactionId: "mock-tx-1",
+              amountMinor: 7_900,
+              currency: "CNY" as const,
+              idempotencyKey: "billing-refund:request-1",
+            };
+          },
+          async completeRefund() {
+            assert.fail("uncertain provider outcomes cannot complete refunds");
+          },
+          async failRefundClaim(input: unknown) {
+            failures.push(input);
+          },
+        },
+        getConfig: () => config,
+        getProvider: () => provider,
+        now: () => now,
+        createClaimToken: () => "claim-1",
+      }),
+      (error: unknown) =>
+        error instanceof BillingError &&
+        error.code === "REFUND_PROVIDER_UNAVAILABLE" &&
+        error.status === 503,
+    );
+    assert.deepEqual(failures, [], code);
+  }
+});
+
+test("actual WeChat provider retains the lease when query recovery fails", async () => {
+  const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
+  const executeApprovedRefund = refundModule.executeApprovedRefund!;
+  const requests: string[] = [];
+  const provider = new WechatPayProvider({
+    config: {
+      mchId: "1900000109",
+      appId: "wx-app-1",
+      apiV3Key: Buffer.alloc(32),
+      merchantPrivateKeyPem: "test-only",
+      merchantCertificateSerialNumber: "serial-test-only",
+      notifyUrl: "https://billing.example.test/webhook",
+      verifier: { mode: "PUBLIC_KEY", keyId: "key-id", publicKeyPem: "test-only" },
+    },
+    httpClient: {
+      async request(input: { pathWithQuery: string }) {
+        requests.push(input.pathWithQuery);
+        throw new BillingError(
+          requests.length === 1
+            ? "PAYMENT_PROVIDER_UNAVAILABLE"
+            : "PAYMENT_PROVIDER_REQUEST_REJECTED",
+          "Provider result is unavailable.",
+          503,
+        );
+      },
+    } as never,
+  });
+  const failures: unknown[] = [];
+
+  await assert.rejects(
+    () => executeApprovedRefund("request-1", {
+      repository: {
+        async claimApprovedRefund() {
+          return {
+            status: "CLAIMED" as const,
+            refundId: "refund-1",
+            requestId: "request-1",
+            orderId: "order-1",
+            paymentId: "payment-1",
+            provider: "WECHAT" as const,
+            providerTransactionId: "4200000000001",
+            amountMinor: 7_900,
+            currency: "CNY" as const,
+            idempotencyKey: "billing-refund:request-1",
+          };
+        },
+        async completeRefund() {
+          assert.fail("query failure cannot complete refunds");
+        },
+        async failRefundClaim(input: unknown) {
+          failures.push(input);
+        },
+      },
+      getConfig: () => ({ ...config, paymentMode: "wechat", wechatConfigured: true }),
+      getProvider: () => provider,
+      now: () => now,
+      createClaimToken: () => "claim-1",
+    } as never),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "REFUND_PROVIDER_UNAVAILABLE" &&
+      error.status === 503,
+  );
+  assert.deepEqual(requests, [
+    "/v3/refund/domestic/refunds",
+    "/v3/refund/domestic/refunds/a1a255e9c5297ead756ecb2f4117ffe0",
+  ]);
   assert.deepEqual(failures, []);
 });
 

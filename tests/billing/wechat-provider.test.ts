@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   createCipheriv,
+  createHash,
   generateKeyPairSync,
   sign as rsaSign,
 } from "node:crypto";
@@ -9,7 +10,10 @@ import test from "node:test";
 import { BillingError } from "../../lib/billing/errors";
 import type { WechatPayConfig } from "../../lib/billing/payments/wechat-config";
 import { WechatHttpClient } from "../../lib/billing/payments/wechat-transport";
-import { WechatPayProvider } from "../../lib/billing/payments/wechat";
+import {
+  stableWechatRefundNumber,
+  WechatPayProvider,
+} from "../../lib/billing/payments/wechat";
 
 const NOW = new Date("2026-08-19T10:02:00.000Z");
 const TIMESTAMP = String(Math.floor(NOW.getTime() / 1_000));
@@ -1270,6 +1274,30 @@ test("creates an idempotent full refund with the exact backend-owned DTO", async
   ]);
 });
 
+test("derives distinct stable 32-character refund numbers from durable keys", () => {
+  const firstKey = "billing-refund:request-1";
+  const secondKey = "billing-refund:request-2";
+  const expectedFirst = createHash("sha256")
+    .update(firstKey, "utf8")
+    .digest("hex")
+    .slice(0, 32);
+  const expectedSecond = createHash("sha256")
+    .update(secondKey, "utf8")
+    .digest("hex")
+    .slice(0, 32);
+
+  const first = stableWechatRefundNumber(firstKey);
+  const replay = stableWechatRefundNumber(firstKey);
+  const second = stableWechatRefundNumber(secondKey);
+
+  assert.equal(first, expectedFirst);
+  assert.equal(second, expectedSecond);
+  assert.equal(replay, first);
+  assert.notEqual(first, second);
+  assert.match(first, /^[0-9a-f]{32}$/);
+  assert.match(second, /^[0-9a-f]{32}$/);
+});
+
 test("queries the deterministic refund after an uncertain response and preserves nonterminal uncertainty", async () => {
   const recorded: Array<{ url: string; method: string; body: unknown }> = [];
   const wechat = nativeProvider(
@@ -1301,6 +1329,54 @@ test("queries the deterministic refund after an uncertain response and preserves
       body: undefined,
     },
   ]);
+});
+
+test("does not query after a verified POST PROCESSING refund response", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider(
+    [signedResponse(refundResponse({ status: "PROCESSING" }))],
+    recorded,
+  );
+
+  await assert.rejects(
+    () => wechat.refundPayment(REFUND_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
+      error.status === 503,
+  );
+  assert.deepEqual(recorded.map(({ method }) => method), ["POST"]);
+});
+
+test("rejects a full refund whose total does not match the durable amount", async () => {
+  await assert.rejects(
+    () => nativeProvider([
+      signedResponse(refundResponse({
+        amount: { refund: 7_900, total: 7_899, currency: "CNY" },
+      })),
+    ], []).refundPayment(REFUND_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
+});
+
+test("keeps a verified POST ABNORMAL refund response retryable", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider(
+    [signedResponse(refundResponse({ status: "ABNORMAL" }))],
+    recorded,
+  );
+
+  await assert.rejects(
+    () => wechat.refundPayment(REFUND_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
+      error.status === 503,
+  );
+  assert.deepEqual(recorded.map(({ method }) => method), ["POST"]);
 });
 
 test("recovers a verified successful refund after a transport timeout", async () => {

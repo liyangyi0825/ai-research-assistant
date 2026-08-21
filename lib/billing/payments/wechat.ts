@@ -223,8 +223,9 @@ export class WechatPayProvider implements PaymentProvider {
     const dependencies = this.callbackDependencies();
     this.assertRefundInput(input);
     const refundNumber = stableWechatRefundNumber(input.idempotencyKey);
+    let response: { body: unknown };
     try {
-      const response = await dependencies.httpClient.request<unknown>({
+      response = await dependencies.httpClient.request<unknown>({
         method: "POST",
         pathWithQuery: "/v3/refund/domestic/refunds",
         body: {
@@ -238,19 +239,19 @@ export class WechatPayProvider implements PaymentProvider {
           },
         },
       });
-      const result = parseWechatRefund({
-        response: response.body,
-        expectedProviderTransactionId: input.providerTransactionId,
-        expectedRefundNumber: refundNumber,
-        expectedAmountMinor: input.amountMinor,
-        expectedCurrency: input.currency,
-      });
-      if (result.status === "SUCCEEDED") return result;
-      throw this.refundUncertain();
     } catch (error) {
       if (!this.isUncertain(error)) throw error;
       return this.queryWechatRefund(input, refundNumber);
     }
+    const result = parseWechatRefund({
+      response: response.body,
+      expectedProviderTransactionId: input.providerTransactionId,
+      expectedRefundNumber: refundNumber,
+      expectedAmountMinor: input.amountMinor,
+      expectedCurrency: input.currency,
+    });
+    if (result.status === "SUCCEEDED") return result;
+    throw this.refundUncertain();
   }
 
   async verifyWebhook(input: PaymentWebhookInput): Promise<boolean> {
