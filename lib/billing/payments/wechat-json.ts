@@ -2,6 +2,8 @@ const MAX_JSON_BYTES = 768 * 1024;
 const MAX_JSON_DEPTH = 32;
 const MAX_JSON_NODES = 10_000;
 const MAX_JSON_STRING_BYTES = 256 * 1024;
+const MAX_EXPONENT_DIGITS = 4;
+const MAX_ABSOLUTE_EXPONENT = 1_000;
 const MIN_SAFE_INTEGER = BigInt(Number.MIN_SAFE_INTEGER);
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
 const HEX_QUAD_PATTERN = /^[0-9A-Fa-f]{4}$/;
@@ -160,9 +162,10 @@ class StrictJsonParser {
   }
 
   private parseNumber(): number {
-    const start = this.position;
-    if (this.input[this.position] === "-") this.position += 1;
+    const negative = this.input[this.position] === "-";
+    if (negative) this.position += 1;
 
+    const integerStart = this.position;
     if (this.input[this.position] === "0") {
       this.position += 1;
       if (this.isDigit(this.input[this.position])) throw invalidJson();
@@ -170,37 +173,75 @@ class StrictJsonParser {
       if (!this.isNonzeroDigit(this.input[this.position])) throw invalidJson();
       while (this.isDigit(this.input[this.position])) this.position += 1;
     }
+    const integerDigits = this.input.slice(integerStart, this.position);
 
-    let hasFractionOrExponent = false;
+    let fractionDigits = "";
     if (this.input[this.position] === ".") {
-      hasFractionOrExponent = true;
       this.position += 1;
+      const fractionStart = this.position;
       if (!this.isDigit(this.input[this.position])) throw invalidJson();
       while (this.isDigit(this.input[this.position])) this.position += 1;
+      fractionDigits = this.input.slice(fractionStart, this.position);
     }
+
+    let exponent = 0;
     if (
       this.input[this.position] === "e" ||
       this.input[this.position] === "E"
     ) {
-      hasFractionOrExponent = true;
       this.position += 1;
-      if (
-        this.input[this.position] === "+" ||
-        this.input[this.position] === "-"
-      ) {
+      const exponentNegative = this.input[this.position] === "-";
+      if (this.input[this.position] === "+" || exponentNegative) {
         this.position += 1;
       }
+      const exponentStart = this.position;
       if (!this.isDigit(this.input[this.position])) throw invalidJson();
       while (this.isDigit(this.input[this.position])) this.position += 1;
+      const exponentDigits = this.input.slice(exponentStart, this.position);
+      if (exponentDigits.length > MAX_EXPONENT_DIGITS) throw invalidJson();
+      exponent = Number(exponentDigits);
+      if (exponent > MAX_ABSOLUTE_EXPONENT) throw invalidJson();
+      if (exponentNegative) exponent = -exponent;
     }
-    if (hasFractionOrExponent) throw invalidJson();
 
+    const rawCoefficient = `${integerDigits}${fractionDigits}`;
+    let firstSignificantDigit = 0;
+    while (
+      firstSignificantDigit < rawCoefficient.length &&
+      rawCoefficient[firstSignificantDigit] === "0"
+    ) {
+      firstSignificantDigit += 1;
+    }
+    if (firstSignificantDigit === rawCoefficient.length) {
+      return negative ? -0 : 0;
+    }
+
+    let coefficient = rawCoefficient.slice(firstSignificantDigit);
+    const scale = exponent - fractionDigits.length;
+    if (scale < 0) {
+      const requiredTrailingZeros = -scale;
+      if (requiredTrailingZeros > coefficient.length) throw invalidJson();
+      for (
+        let index = coefficient.length - requiredTrailingZeros;
+        index < coefficient.length;
+        index += 1
+      ) {
+        if (coefficient[index] !== "0") throw invalidJson();
+      }
+      coefficient = coefficient.slice(0, -requiredTrailingZeros) || "0";
+    } else {
+      if (coefficient.length + scale > 16) throw invalidJson();
+      coefficient += "0".repeat(scale);
+    }
+
+    if (coefficient.length > 16) throw invalidJson();
     let integer: bigint;
     try {
-      integer = BigInt(this.input.slice(start, this.position));
+      integer = BigInt(coefficient);
     } catch {
       throw invalidJson();
     }
+    if (negative) integer = -integer;
     if (integer < MIN_SAFE_INTEGER || integer > MAX_SAFE_INTEGER) {
       throw invalidJson();
     }

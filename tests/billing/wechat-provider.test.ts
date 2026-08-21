@@ -354,18 +354,29 @@ test("duplicate keys at every callback object layer are permanently rejected", a
 });
 
 test("amount JSON numbers are accepted only as lossless plain safe integers", async () => {
-  const maximum = fixture({
-    plaintext: handwrittenTransaction("9007199254740991"),
-  });
-  assert.equal((await provider().parseWebhook(maximum)).amountMinor, 9_007_199_254_740_991);
+  for (const [literal, expected] of [
+    ["9007199254740991", 9_007_199_254_740_991],
+    ["1e3", 1_000],
+    ["1.0", 1],
+    ["10e-1", 1],
+    ["90071992547409910e-1", 9_007_199_254_740_991],
+  ] as const) {
+    const callback = fixture({
+      plaintext: handwrittenTransaction(literal),
+    });
+    assert.equal((await provider().parseWebhook(callback)).amountMinor, expected);
+  }
 
   for (const literal of [
     "0",
     "-1",
     "9007199254740992",
     "0.1",
+    "1.5",
+    "1e-1",
     "9007199254740991.1",
-    "1e3",
+    "1e1000000",
+    "0e1000000",
   ]) {
     const callback = fixture({ plaintext: handwrittenTransaction(literal) });
     await assert.rejects(
@@ -423,7 +434,7 @@ test("strict callback JSON preserves standard nested JSON value types", async ()
   const callback = fixture({
     plaintext: handwrittenTransaction(
       "7900",
-      `,"extensions":[true,false,null,{"label":"ok","values":[1,2,3]}]`,
+      `,"extensions":[true,false,null,{"label":"ok","values":[1,2,3,0e999,1.0,10e-1]}]`,
     ),
   });
 
