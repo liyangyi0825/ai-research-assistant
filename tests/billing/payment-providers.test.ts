@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 
-import type { BillingConfig, PaymentMode } from "../../lib/billing/config";
+import { getBillingConfig, type BillingConfig, type PaymentMode } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 import { AlipayProvider } from "../../lib/billing/payments/alipay";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
@@ -53,6 +53,7 @@ function billingConfig(
     alipayConfigured: false,
     isProduction: false,
     ...overrides,
+    wechat: overrides.wechat ?? null,
   };
 }
 
@@ -443,10 +444,6 @@ test("registry selects only the server-configured payment mode", () => {
       MockPaymentProvider,
   );
   assert.ok(
-    getPaymentProvider("wechat", billingConfig("wechat")) instanceof
-      WechatPayProvider,
-  );
-  assert.ok(
     getPaymentProvider("alipay", billingConfig("alipay")) instanceof
       AlipayProvider,
   );
@@ -454,6 +451,29 @@ test("registry selects only the server-configured payment mode", () => {
     () => getPaymentProvider("mock", billingConfig("wechat")),
     (error: unknown) =>
       expectBillingError(error, "PAYMENT_PROVIDER_MISMATCH", 400),
+  );
+});
+
+test("registry injects validated WeChat configuration into an offline-capable provider", async () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const config = getBillingConfig({
+    BILLING_FEATURE_ENABLED: "true",
+    PAYMENT_MODE: "wechat",
+    WECHAT_PAY_MCH_ID: "merchant-from-config",
+    WECHAT_PAY_APP_ID: "app-from-config",
+    WECHAT_PAY_API_V3_KEY: "12345678901234567890123456789012",
+    WECHAT_PAY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    WECHAT_PAY_CERT_SERIAL_NO: "merchant-cert-from-config",
+    WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_FROM_CONFIG",
+    WECHAT_PAY_PUBLIC_KEY: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
+  });
+  const provider = getPaymentProvider("wechat", config);
+
+  await assert.rejects(
+    () => provider.createPayment(createInput({ description: "   " })),
+    (error: unknown) =>
+      expectBillingError(error, "PAYMENT_PROVIDER_REQUEST_INVALID", 400),
   );
 });
 

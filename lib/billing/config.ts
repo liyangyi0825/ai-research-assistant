@@ -1,5 +1,8 @@
 import { BillingError } from "./errors";
-import { loadWechatPayConfig } from "./payments/wechat-config";
+import {
+  loadWechatPayConfig,
+  type WechatPayConfig,
+} from "./payments/wechat-config";
 
 export type PaymentMode = "mock" | "wechat" | "alipay";
 
@@ -14,6 +17,7 @@ export type BillingConfig = {
     operatorCreditCode: string;
     contactEmail: string;
   };
+  wechat: WechatPayConfig | null;
   wechatConfigured: boolean;
   alipayConfigured: boolean;
   isProduction: boolean;
@@ -97,9 +101,10 @@ function parseTestUserIds(value: string | undefined): string[] {
 function assertProviderConfigured(
   mode: PaymentMode,
   env: BillingEnvironment,
+  wechat: WechatPayConfig | null,
 ): void {
   if (mode === "wechat") {
-    loadWechatPayConfig(env);
+    if (wechat === null) loadWechatPayConfig(env);
     return;
   }
   const requiredVariables =
@@ -118,7 +123,7 @@ function assertProviderConfigured(
 }
 
 function assertProviderImplemented(mode: PaymentMode): void {
-  if (mode === "mock") return;
+  if (mode === "mock" || mode === "wechat") return;
 
   // Remove this gate only after the selected provider has complete request,
   // signature-verification, and callback-settlement implementations.
@@ -135,15 +140,12 @@ export function getBillingConfig(
   const paymentEnv = normalizedPaymentEnvironment(env);
   const paymentMode = parsePaymentMode(paymentEnv.PAYMENT_MODE);
   const testUserIds = parseTestUserIds(paymentEnv.BILLING_TEST_USER_IDS);
-  const wechatConfigured =
-    (() => {
-      try {
-        loadWechatPayConfig(paymentEnv);
-        return true;
-      } catch {
-        return false;
-      }
-    })();
+  let wechat: WechatPayConfig | null = null;
+  try {
+    wechat = loadWechatPayConfig(paymentEnv);
+  } catch {
+    // Disabled billing may run without any WeChat credentials.
+  }
   const alipayConfigured =
     missingVariables(paymentEnv, ALIPAY_REQUIRED_VARIABLES).length === 0;
   const config: BillingConfig = {
@@ -155,7 +157,8 @@ export function getBillingConfig(
       operatorCreditCode: paymentEnv.LEGAL_OPERATOR_CREDIT_CODE?.trim() ?? "",
       contactEmail: paymentEnv.LEGAL_CONTACT_EMAIL?.trim() ?? "",
     },
-    wechatConfigured,
+    wechat,
+    wechatConfigured: wechat !== null,
     alipayConfigured,
     isProduction: paymentEnv.NODE_ENV === "production",
   };
@@ -174,9 +177,18 @@ export function getBillingConfig(
   }
 
   if (config.featureEnabled) {
-    assertProviderConfigured(config.paymentMode, paymentEnv);
+    assertProviderConfigured(config.paymentMode, paymentEnv, config.wechat);
     assertProviderImplemented(config.paymentMode);
   }
+
+  // The validated key material is deliberately non-enumerable so ordinary
+  // JSON serialization, object spreading, and structured logs cannot expose it.
+  Object.defineProperty(config, "wechat", {
+    value: wechat,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  });
 
   return config;
 }

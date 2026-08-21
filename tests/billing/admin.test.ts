@@ -77,6 +77,7 @@ const enabledBillingConfig: BillingConfig = {
     operatorCreditCode: "",
     contactEmail: "",
   },
+  wechat: null,
   wechatConfigured: false,
   alipayConfigured: false,
   isProduction: false,

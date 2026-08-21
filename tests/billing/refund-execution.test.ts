@@ -19,6 +19,7 @@ const config: BillingConfig = {
   paymentMode: "mock",
   testUserIds: ["user-1"],
   legal: { operatorName: "", operatorCreditCode: "", contactEmail: "" },
+  wechat: null,
   wechatConfigured: false,
   alipayConfigured: false,
   isProduction: false,

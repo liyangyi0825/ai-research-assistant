@@ -219,6 +219,22 @@ test("disabled billing reports only fully valid WeChat configuration as configur
   );
 });
 
+test("enabled WeChat billing retains the complete validated verifier configuration", () => {
+  const config = getBillingConfig({
+    ...validWechatEnvironment(),
+    BILLING_FEATURE_ENABLED: "true",
+    PAYMENT_MODE: "wechat",
+  });
+
+  assert.equal(config.featureEnabled, true);
+  assert.equal(config.paymentMode, "wechat");
+  assert.equal(config.wechatConfigured, true);
+  assert.ok(config.wechat);
+  assert.equal(config.wechat.mchId, "merchant-1");
+  assert.equal(config.wechat.verifier.mode, "PUBLIC_KEY");
+  assert.equal(config.wechat.verifier.keyId, "PUB_KEY_ID_1");
+});
+
 test("only the explicit true string enables billing", () => {
   assert.equal(
     getBillingConfig({ BILLING_FEATURE_ENABLED: "true" }).featureEnabled,
@@ -322,58 +338,43 @@ test("test user IDs are trimmed and de-duplicated", () => {
   ]);
 });
 
-test("fully configured formal providers remain unavailable until implemented without leaking values", () => {
-  for (const [paymentMode, providerConfig, secret] of [
-    [
-      "wechat",
-      validWechatEnvironment(),
-      "not-a-provider-secret",
-    ],
-    [
-      "alipay",
-      {
-        ALIPAY_APP_ID: "app",
-        ALIPAY_PRIVATE_KEY: "private-key",
-        ALIPAY_PUBLIC_KEY: "public-key",
-        ALIPAY_NOTIFY_URL: "https://example.test/alipay",
-        ALIPAY_RETURN_URL: "https://example.test/return",
-      },
-      "private-key",
-    ],
-  ] as const) {
-    assert.throws(
-      () =>
-        getBillingConfig({
-          BILLING_FEATURE_ENABLED: "true",
-          PAYMENT_MODE: paymentMode,
-          ...providerConfig,
-        }),
-      (error: unknown) => {
-        assert.ok(error instanceof BillingError);
-        assert.equal(error.code, "PROVIDER_NOT_IMPLEMENTED");
-        assert.match(error.message, /provider is not implemented/i);
-        assert.doesNotMatch(error.message, new RegExp(secret));
-        return true;
-      },
-    );
-  }
-});
+test("configured Alipay remains unavailable without leaking its secret", () => {
+  const secret = "private-key";
 
-test("legacy key aliases still normalize before formal providers fail closed without values", () => {
   assert.throws(
     () =>
       getBillingConfig({
-        ...validWechatEnvironment(),
         BILLING_FEATURE_ENABLED: "true",
-        PAYMENT_MODE: "wechat",
-        WECHAT_PAY_PRIVATE_KEY: undefined,
-        WECHAT_PAY_CERT_SERIAL_NO: undefined,
-        WECHAT_PAY_MCH_PRIVATE_KEY: testPrivateKey,
-        WECHAT_PAY_MCH_SERIAL_NO: "merchant-cert-1",
+        PAYMENT_MODE: "alipay",
+        ALIPAY_APP_ID: "app",
+        ALIPAY_PRIVATE_KEY: secret,
+        ALIPAY_PUBLIC_KEY: "public-key",
+        ALIPAY_NOTIFY_URL: "https://example.test/alipay",
+        ALIPAY_RETURN_URL: "https://example.test/return",
       }),
-    (error: unknown) =>
-      error instanceof BillingError && error.code === "PROVIDER_NOT_IMPLEMENTED",
+    (error: unknown) => {
+      assert.ok(error instanceof BillingError);
+      assert.equal(error.code, "PROVIDER_NOT_IMPLEMENTED");
+      assert.match(error.message, /provider is not implemented/i);
+      assert.doesNotMatch(error.message, new RegExp(secret));
+      return true;
+    },
   );
+});
+
+test("legacy key aliases normalize into the validated enabled WeChat configuration", () => {
+  const config = getBillingConfig({
+    ...validWechatEnvironment(),
+    BILLING_FEATURE_ENABLED: "true",
+    PAYMENT_MODE: "wechat",
+    WECHAT_PAY_PRIVATE_KEY: undefined,
+    WECHAT_PAY_CERT_SERIAL_NO: undefined,
+    WECHAT_PAY_MCH_PRIVATE_KEY: testPrivateKey,
+    WECHAT_PAY_MCH_SERIAL_NO: "merchant-cert-1",
+  });
+
+  assert.equal(config.wechat?.merchantPrivateKeyPem, testPrivateKey.trim());
+  assert.equal(config.wechat?.merchantCertificateSerialNumber, "merchant-cert-1");
 
   const secret = "must-not-leak";
   assert.throws(

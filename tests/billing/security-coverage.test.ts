@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, extname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 
 import { assertBillingAccess } from "../../lib/billing/auth";
@@ -33,11 +36,79 @@ import {
 } from "../../lib/billing/usage-quota";
 
 const root = new URL("../../", import.meta.url);
+const rootDirectory = fileURLToPath(root);
 
 function readProjectFile(path: string) {
   const file = new URL(path, root);
   assert.ok(existsSync(file), `missing required project file: ${path}`);
   return readFileSync(file, "utf8");
+}
+
+function parseExampleEnvironment(contents: string): Record<string, string> {
+  return Object.fromEntries(
+    contents
+      .split(/\r?\n/)
+      .filter((line) => !line.startsWith("#") && line.includes("="))
+      .map((line) => {
+        const separator = line.indexOf("=");
+        return [line.slice(0, separator), line.slice(separator + 1)];
+      }),
+  );
+}
+
+function collectEnumerableStrings(value: unknown, seen = new Set<unknown>()): string[] {
+  if (typeof value === "string") return [value];
+  if (value === null || typeof value !== "object" || seen.has(value)) return [];
+  seen.add(value);
+  return Object.keys(value).flatMap((key) => [
+    key,
+    ...collectEnumerableStrings((value as Record<string, unknown>)[key], seen),
+  ]);
+}
+
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory).flatMap((entry) => {
+    const path = join(directory, entry);
+    return statSync(path).isDirectory()
+      ? sourceFiles(path)
+      : [".ts", ".tsx"].includes(extname(path))
+        ? [path]
+        : [];
+  });
+}
+
+function resolveLocalImport(from: string, specifier: string): string | null {
+  const unresolved = specifier.startsWith("@/")
+    ? join(rootDirectory, specifier.slice(2))
+    : specifier.startsWith(".")
+      ? resolve(dirname(from), specifier)
+      : null;
+  if (unresolved === null) return null;
+
+  for (const candidate of [
+    unresolved,
+    `${unresolved}.ts`,
+    `${unresolved}.tsx`,
+    join(unresolved, "index.ts"),
+    join(unresolved, "index.tsx"),
+  ]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function clientImportGraph(start: string, seen = new Set<string>()): string[] {
+  if (seen.has(start)) return [];
+  seen.add(start);
+  const source = readFileSync(start, "utf8");
+  const imports = [
+    ...source.matchAll(/(?:import|export)\s+(type\s+)?(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/g),
+  ]
+    .filter((match) => match[1] === undefined)
+    .map((match) => resolveLocalImport(start, match[2]!))
+    .filter((path): path is string => path !== null);
+
+  return [start, ...imports.flatMap((path) => clientImportGraph(path, seen))];
 }
 
 function compactSql(path: string) {
@@ -465,6 +536,68 @@ test("disabled billing and production Mock both fail closed for unauthorized use
   const pricing = readProjectFile("components/billing/PricingProducts.tsx");
   assert.match(pricing, /availability\?\.available/);
   assert.match(pricing, /当前账号暂未开放购买/);
+});
+
+test("WeChat secrets are absent from enumerable configs, errors, logs, and API-like results", () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const sentinel = "S".repeat(32);
+  const environment = {
+    BILLING_FEATURE_ENABLED: "true",
+    PAYMENT_MODE: "wechat",
+    WECHAT_PAY_MCH_ID: "merchant-secret-sentinel",
+    WECHAT_PAY_APP_ID: "app-secret-sentinel",
+    WECHAT_PAY_API_V3_KEY: sentinel,
+    WECHAT_PAY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    WECHAT_PAY_CERT_SERIAL_NO: "merchant-cert-sentinel",
+    WECHAT_PAY_PUBLIC_KEY_ID: "public-key-id-sentinel",
+    WECHAT_PAY_PUBLIC_KEY: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
+  };
+  const config = getBillingConfig(environment);
+  const logged: unknown[] = [config];
+  let startupError: unknown;
+  try {
+    getBillingConfig({ ...environment, WECHAT_PAY_MCH_ID: undefined });
+  } catch (error) {
+    startupError = error;
+    logged.push(error);
+  }
+  assert.ok(startupError instanceof BillingError);
+
+  const apiLikeResults = [
+    { ok: true, data: config },
+    { ok: false, error: startupError },
+    JSON.parse(JSON.stringify({ config, startupError })),
+  ];
+  const visible = collectEnumerableStrings([config, startupError, logged, apiLikeResults]);
+
+  for (const secret of [sentinel, "merchant-secret-sentinel", "app-secret-sentinel"]) {
+    assert.equal(visible.some((value) => value.includes(secret)), false);
+  }
+});
+
+test("the safe environment example leaves billing disabled and declares empty exactly-one verifier inputs", () => {
+  const environment = parseExampleEnvironment(readProjectFile(".env.example"));
+
+  assert.equal(environment.BILLING_FEATURE_ENABLED, "false");
+  assert.equal(environment.PAYMENT_MODE, "mock");
+  assert.equal(environment.WECHAT_PAY_PUBLIC_KEY_ID, "");
+  assert.equal(environment.WECHAT_PAY_PUBLIC_KEY, "");
+});
+
+test("no client component import graph can reach the secret-bearing billing configuration", () => {
+  const serverConfig = resolve(rootDirectory, "lib/billing/config.ts");
+  const clientEntries = sourceFiles(join(rootDirectory, "app"))
+    .concat(sourceFiles(join(rootDirectory, "components")))
+    .filter((path) => /^\s*["']use client["'];?/m.test(readFileSync(path, "utf8")));
+
+  for (const entry of clientEntries) {
+    assert.equal(
+      clientImportGraph(entry).includes(serverConfig),
+      false,
+      `client import graph reached billing secrets from ${entry}`,
+    );
+  }
 });
 
 test("operator docs distinguish static SQL contracts from real PostgreSQL verification", () => {

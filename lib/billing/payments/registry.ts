@@ -4,6 +4,7 @@ import { AlipayProvider } from "./alipay";
 import { MockPaymentProvider } from "./mock";
 import type { PaymentProvider } from "./provider";
 import { WechatPayProvider } from "./wechat";
+import { WechatHttpClient } from "./wechat-transport";
 
 const mockPaymentProvider = new MockPaymentProvider();
 
@@ -38,8 +39,17 @@ export function getPaymentProvider(
   switch (config.paymentMode) {
     case "mock":
       return mockPaymentProvider;
-    case "wechat":
-      return new WechatPayProvider(config.wechatConfigured);
+    case "wechat": {
+      if (config.wechat === null) {
+        throw new BillingError(
+          "PROVIDER_NOT_CONFIGURED",
+          "WeChat Pay is not configured.",
+          503,
+        );
+      }
+      const httpClient = new WechatHttpClient({ config: config.wechat });
+      return new WechatPayProvider({ config: config.wechat, httpClient });
+    }
     case "alipay":
       return new AlipayProvider(config.alipayConfigured);
   }
