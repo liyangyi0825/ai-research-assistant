@@ -61,11 +61,11 @@ test("014 persists owned Native intent expectations and atomically binds only ve
   );
   assert.match(
     sql,
-    /merchant_order_number = case when last_error_code = 'payment_requires_new_payment' then p_merchant_order_number else v_intent\.merchant_order_number end/,
+    /merchant_order_number = case when status = 'created' or last_error_code = 'payment_requires_new_payment' then p_merchant_order_number else v_intent\.merchant_order_number end/,
   );
   assert.match(
     sql,
-    /request_idempotency_key = case when last_error_code = 'payment_requires_new_payment' then p_request_idempotency_key else v_intent\.request_idempotency_key end/,
+    /request_idempotency_key = case when status = 'created' or last_error_code = 'payment_requires_new_payment' then p_request_idempotency_key else v_intent\.request_idempotency_key end/,
   );
   assert.match(sql, /'merchant_order_number', v_intent\.merchant_order_number/);
   assert.match(sql, /'request_idempotency_key', v_intent\.request_idempotency_key/);
@@ -79,14 +79,25 @@ test("014 persists owned Native intent expectations and atomically binds only ve
   assert.match(sql, /v_intent\.provider = 'wechat'[\s\S]*p_payment_status = 'pending'[\s\S]*p_provider_transaction_id is not null/);
   assert.match(sql, /p_payment_status = 'paid'[\s\S]*p_provider_transaction_id is not null[\s\S]*p_paid_at is not null/);
 
-  const intentLock = sql.indexOf(
-    "from public.billing_payment_intents where provider = upper(p_provider) and merchant_order_number = p_order_number for update",
+  const settleStart = sql.indexOf(
+    "create or replace function public.billing_settle_paid_order",
   );
-  const orderLock = sql.indexOf(
-    "from public.billing_orders where id = v_intent.order_id for update",
-  );
-  assert.ok(intentLock >= 0, "settlement must lock the merchant-reference intent");
-  assert.ok(orderLock > intentLock, "settlement must resolve its owned order through the locked intent");
+  const settle = sql.slice(settleStart);
+  for (const branch of [
+    settle.slice(settle.indexOf("v_existing_event.status = 'processed'")),
+    settle.slice(settle.indexOf("v_existing_event.status = 'received'")),
+  ]) {
+    const orderLock = branch.indexOf("from public.billing_orders");
+    const intentLock = branch.indexOf(
+      "from public.billing_payment_intents",
+      orderLock,
+    );
+    assert.ok(orderLock >= 0, "settlement branch must lock the owned order");
+    assert.ok(
+      intentLock > orderLock,
+      "settlement must lock order before intent to match payment creation",
+    );
+  }
   assert.match(
     sql,
     /v_intent\.provider_transaction_id is not null and v_intent\.provider_transaction_id is distinct from p_provider_transaction_id/,
@@ -104,6 +115,7 @@ test("014 persists owned Native intent expectations and atomically binds only ve
     "public.billing_claim_payment_intent(uuid, uuid, text, text, text, uuid)",
     "public.billing_complete_payment_intent(uuid, uuid, text, text, text, text, timestamptz, timestamptz)",
     "public.billing_settle_paid_order(text, text, text, text, text, bigint, text, timestamptz, jsonb)",
+    "public.billing_bind_verified_payment_query(uuid, uuid, text, text, text, text, bigint, text, timestamptz, timestamptz)",
   ]) {
     const escaped = signature.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const flexible = escaped
@@ -114,6 +126,25 @@ test("014 persists owned Native intent expectations and atomically binds only ve
     assert.match(sql, new RegExp(`grant execute on function ${flexible} to service_role`));
   }
   assert.equal((sql.match(/security definer set search_path = pg_catalog, public/g) ?? []).length >= 4, true);
+  assert.match(
+    sql,
+    /create function public\.billing_bind_verified_payment_query\( p_user_id uuid, p_order_id uuid, p_provider text, p_merchant_order_number text, p_provider_transaction_id text, p_payment_status text, p_amount_minor bigint, p_currency text, p_expires_at timestamptz, p_paid_at timestamptz default null \)/,
+  );
+  const bind = sql.slice(
+    sql.indexOf("create function public.billing_bind_verified_payment_query"),
+    sql.indexOf("create or replace function public.billing_claim_mock_payment_confirmation"),
+  );
+  assert.ok(
+    bind.indexOf("from public.billing_orders") <
+      bind.indexOf("from public.billing_payment_intents"),
+    "verified query binding must use order-before-intent locking",
+  );
+  assert.match(bind, /v_order\.provider is distinct from upper\(p_provider\)/);
+  assert.match(bind, /v_intent\.merchant_order_number is distinct from p_merchant_order_number/);
+  assert.match(bind, /v_intent\.amount_minor is distinct from p_amount_minor/);
+  assert.match(bind, /v_intent\.currency is distinct from upper\(p_currency\)/);
+  assert.match(bind, /v_intent\.expires_at is distinct from p_expires_at/);
+  assert.match(bind, /provider_transaction_id = p_provider_transaction_id/);
 });
 
 const sqlFunction = (name: string, path = functionsPath) => {

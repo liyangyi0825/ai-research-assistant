@@ -781,6 +781,21 @@ export type Database = {
         };
         Returns: Json;
       };
+      billing_bind_verified_payment_query: {
+        Args: {
+          p_user_id: UUID;
+          p_order_id: UUID;
+          p_provider: string;
+          p_merchant_order_number: string;
+          p_provider_transaction_id: string;
+          p_payment_status: string;
+          p_amount_minor: number;
+          p_currency: string;
+          p_expires_at: Timestamp;
+          p_paid_at?: Timestamp | null;
+        };
+        Returns: Json;
+      };
       billing_fail_payment_intent: {
         Args: {
           p_intent_id: UUID;

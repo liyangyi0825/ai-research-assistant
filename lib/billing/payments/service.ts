@@ -53,6 +53,16 @@ export type PaymentServiceRepository = {
   }): Promise<StoredPaymentResult>;
 };
 
+export type PaymentQueryRepository = PaymentServiceRepository & {
+  findOwnedPaymentIntent(
+    userId: string,
+    orderId: string,
+  ): Promise<StoredPaymentResult | null>;
+  bindVerifiedPaymentQuery(
+    input: BindVerifiedPaymentQueryInput,
+  ): Promise<StoredPaymentResult>;
+};
+
 export type StoredPaymentResult = PaymentResult;
 
 export type ClaimPaymentIntentInput = {
@@ -77,6 +87,13 @@ export type PaymentIntentClaim =
 export type CompletePaymentIntentInput = {
   intentId: string;
   claimToken: string;
+  payment: PaymentResult;
+};
+
+export type BindVerifiedPaymentQueryInput = {
+  userId: string;
+  orderId: string;
+  provider: BillingProvider;
   payment: PaymentResult;
 };
 
@@ -112,6 +129,13 @@ export type CreateOrderPaymentDependencies = {
   ) => string;
 };
 
+export type QueryOrderPaymentDependencies = Omit<
+  CreateOrderPaymentDependencies,
+  "repository" | "createMerchantOrderNumber" | "logger"
+> & {
+  repository?: PaymentQueryRepository;
+};
+
 type PaymentRouteContext = {
   params: Promise<{ id: string }>;
 };
@@ -133,6 +157,17 @@ const PAYMENT_ORDER_COLUMNS = [
   "currency",
   "expires_at",
   "snapshot_product_name",
+].join(", ");
+
+const PAYMENT_INTENT_COLUMNS = [
+  "merchant_order_number",
+  "provider_transaction_id",
+  "payment_status",
+  "amount_minor",
+  "currency",
+  "payment_token",
+  "expires_at",
+  "paid_at",
 ].join(", ");
 
 function storageError(): BillingError {
@@ -256,7 +291,7 @@ function mapOrder(value: unknown): PaymentOrderSnapshot {
 
 export function createPaymentServiceRepository(
   client: PaymentServiceAdminClient,
-): PaymentServiceRepository {
+): PaymentQueryRepository {
   return {
     async findOwnedOrder(userId, orderId) {
       try {
@@ -269,6 +304,22 @@ export function createPaymentServiceRepository(
 
         if (result.error) throw storageError();
         return result.data === null ? null : mapOrder(result.data);
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
+    },
+    async findOwnedPaymentIntent(userId, orderId) {
+      try {
+        const result = await client
+          .from("billing_payment_intents")
+          .select(PAYMENT_INTENT_COLUMNS)
+          .eq("order_id", orderId)
+          .eq("user_id", userId)
+          .maybeSingle();
+
+        if (result.error) throw storageError();
+        return result.data === null ? null : mapStoredPayment(result.data);
       } catch (error) {
         if (error instanceof BillingError) throw error;
         throw storageError();
@@ -323,6 +374,31 @@ export function createPaymentServiceRepository(
         throw storageError();
       }
     },
+    async bindVerifiedPaymentQuery(input) {
+      try {
+        const result = await client.rpc(
+          "billing_bind_verified_payment_query",
+          {
+            p_user_id: input.userId,
+            p_order_id: input.orderId,
+            p_provider: input.provider,
+            p_merchant_order_number: input.payment.orderNumber,
+            p_provider_transaction_id:
+              input.payment.providerTransactionId,
+            p_payment_status: input.payment.status,
+            p_amount_minor: input.payment.amountMinor,
+            p_currency: input.payment.currency,
+            p_expires_at: input.payment.expiresAt,
+            p_paid_at: input.payment.paidAt,
+          },
+        );
+        if (result.error) throw storageError();
+        return mapStoredPayment(result.data);
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
+    },
     async claimMockPaymentConfirmation(input) {
       try {
         const result = await client.rpc(
@@ -344,7 +420,7 @@ export function createPaymentServiceRepository(
   };
 }
 
-function defaultRepository(): PaymentServiceRepository {
+function defaultRepository(): PaymentQueryRepository {
   const client = getSupabaseAdminClient();
   if (!client) throw storageError();
   return createPaymentServiceRepository(
@@ -384,6 +460,16 @@ function assertPayable(order: PaymentOrderSnapshot, now: Date): void {
     throw new BillingError(
       "ORDER_EXPIRED",
       "The billing order has expired.",
+      409,
+    );
+  }
+}
+
+function assertQueryable(order: PaymentOrderSnapshot): void {
+  if (order.status !== "PENDING" && order.status !== "PAID") {
+    throw new BillingError(
+      "ORDER_NOT_PAYABLE",
+      "The billing order cannot accept a payment in its current state.",
       409,
     );
   }
@@ -440,6 +526,44 @@ function paymentReference(payment: PaymentResult): PaymentReferenceInput {
     expiresAt: payment.expiresAt,
     paymentToken: payment.paymentToken,
   };
+}
+
+function assertVerifiedQueryPayment(
+  expected: StoredPaymentResult,
+  payment: PaymentResult,
+): PaymentResult {
+  const expiresAt = normalizedTimestamp(payment.expiresAt);
+  const paidAt =
+    payment.paidAt === null ? null : normalizedTimestamp(payment.paidAt);
+  const commonValid =
+    payment.orderNumber === expected.orderNumber &&
+    payment.amountMinor === expected.amountMinor &&
+    payment.currency === expected.currency &&
+    expiresAt === normalizedTimestamp(expected.expiresAt) &&
+    typeof payment.providerTransactionId === "string" &&
+    payment.providerTransactionId.trim().length > 0;
+  const stateValid =
+    (payment.status === "PENDING" &&
+      expected.paymentToken !== null &&
+      payment.paymentToken === expected.paymentToken &&
+      paidAt === null) ||
+    (payment.status === "PAID" &&
+      payment.paymentToken === null &&
+      paidAt !== null) ||
+    ((payment.status === "FAILED" || payment.status === "CLOSED") &&
+      payment.paymentToken === null &&
+      paidAt === null) ||
+    (payment.status === "REQUIRES_NEW_PAYMENT" &&
+      payment.paymentToken === null &&
+      paidAt === null);
+  if (!commonValid || !stateValid) {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "The payment provider returned an invalid response.",
+      503,
+    );
+  }
+  return { ...payment, expiresAt, paidAt };
 }
 
 function defaultMerchantOrderNumber(
@@ -665,6 +789,91 @@ export async function createOrderPayment(
     });
     if (error instanceof BillingError) throw error;
     throw storageError();
+  }
+  return paymentFromStored(persisted);
+}
+
+export async function queryAndBindOrderPayment(
+  userId: string,
+  orderId: string,
+  dependencies: QueryOrderPaymentDependencies = {},
+): Promise<PaymentResult> {
+  const repository = dependencies.repository ?? defaultRepository();
+  const order = await repository.findOwnedOrder(userId, orderId);
+  if (!order) {
+    throw new BillingError(
+      "ORDER_NOT_FOUND",
+      "The billing order was not found.",
+      404,
+    );
+  }
+  assertQueryable(order);
+  const intent = await repository.findOwnedPaymentIntent(userId, order.id);
+  if (!intent) {
+    throw new BillingError(
+      "PAYMENT_NOT_FOUND",
+      "The payment attempt was not found.",
+      404,
+    );
+  }
+
+  const config = (dependencies.getConfig ?? getBillingConfig)();
+  assertBillingAccess(
+    {
+      id: userId,
+      email: null,
+      isAdmin: dependencies.isAdmin ?? false,
+    },
+    config,
+  );
+  const mode = paymentMode(order.provider);
+  if (mode !== config.paymentMode) {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_MISMATCH",
+      "Requested payment provider does not match the server payment mode.",
+      400,
+    );
+  }
+  const provider = (dependencies.getProvider ?? getPaymentProvider)(mode, config);
+  const durableReference = paymentReference(intent);
+  let verified = assertVerifiedQueryPayment(
+    intent,
+    await provider.queryPayment(durableReference),
+  );
+
+  if (verified.status === "REQUIRES_NEW_PAYMENT") {
+    verified = assertVerifiedQueryPayment(
+      intent,
+      await provider.closePayment(durableReference),
+    );
+    if (verified.status !== "CLOSED" && verified.status !== "PAID") {
+      throw new BillingError(
+        "PAYMENT_PROVIDER_INVALID_RESPONSE",
+        "The payment provider returned an invalid response.",
+        503,
+      );
+    }
+  }
+
+  if (verified.status === "REFUNDED") {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "The payment provider returned an invalid response.",
+      503,
+    );
+  }
+  const persisted = await repository.bindVerifiedPaymentQuery({
+    userId,
+    orderId: order.id,
+    provider: order.provider,
+    payment: verified,
+  });
+  if (persisted.status === "CLOSED" || persisted.status === "FAILED") {
+    throw new BillingError(
+      "PAYMENT_REQUIRES_NEW_PAYMENT",
+      "The previous payment attempt cannot be paid. Please create a new payment.",
+      409,
+    );
   }
   return paymentFromStored(persisted);
 }

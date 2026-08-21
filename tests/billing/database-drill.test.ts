@@ -528,8 +528,8 @@ const wideConstraintSemantics = [
   {
     table: "billing_payment_intents",
     marker: "claim_expires_at IS NOT NULL",
-    migration: /billing_payment_intents_lifecycle_check[\s\S]*merchant_order_number[\s\S]*status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_status\s*=\s*'PENDING'[\s\S]*provider_transaction_id\s+is\s+null[\s\S]*payment_status\s*=\s*'PAID'[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
-    valid: "CHECK (((NULLIF(btrim(merchant_order_number), ''::text) IS NOT NULL) AND (char_length(merchant_order_number) <= 64) AND (((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (last_error_code IS NULL) AND (((payment_status = 'PENDING'::text) AND ((provider <> 'WECHAT'::text) OR (provider_transaction_id IS NULL)) AND (payment_token IS NOT NULL) AND (paid_at IS NULL)) OR ((payment_status = 'PAID'::text) AND (provider_transaction_id IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((payment_status = ANY (ARRAY['FAILED'::text, 'CLOSED'::text])) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NULL) AND (paid_at IS NULL)))) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL)))))",
+    migration: /billing_payment_intents_lifecycle_check[\s\S]*merchant_order_number[\s\S]*status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_status\s*=\s*'PENDING'[\s\S]*payment_token\s+is\s+not\s+null[\s\S]*payment_status\s*=\s*'PAID'[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
+    valid: "CHECK (((NULLIF(btrim(merchant_order_number), ''::text) IS NOT NULL) AND (char_length(merchant_order_number) <= 64) AND (((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (last_error_code IS NULL) AND (((payment_status = 'PENDING'::text) AND (payment_token IS NOT NULL) AND (paid_at IS NULL)) OR ((payment_status = 'PAID'::text) AND (provider_transaction_id IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((payment_status = ANY (ARRAY['FAILED'::text, 'CLOSED'::text])) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NULL) AND (paid_at IS NULL)))) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL)))))",
     mutationLeaf: "(claim_expires_at IS NOT NULL)",
   },
   {
@@ -1178,6 +1178,11 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /billing_finalize_usage\s*\(/i);
   assert.match(verify, /billing_release_usage\s*\(/i);
   assert.match(verify, /billing_settle_paid_order\s*\(/i);
+  assert.match(verify, /billing_bind_verified_payment_query\s*\(/i);
+  assert.match(
+    verify,
+    /verified query lock order contract[\s\S]*billing_orders[\s\S]*billing_payment_intents/i,
+  );
   assert.match(verify, /billing_request_refund\s*\(/i);
   assert.match(verify, /billing_admin_[a-z_]+\s*\(/i);
   assert.match(verify, /set\s+local\s+role\s+authenticated/i);

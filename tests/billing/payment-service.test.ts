@@ -636,6 +636,21 @@ test("payment repository durably carries the merchant reference and nullable ver
           error: null,
         };
       }
+      if (name === "billing_bind_verified_payment_query") {
+        return {
+          data: {
+            merchant_order_number: args.p_merchant_order_number,
+            provider_transaction_id: args.p_provider_transaction_id,
+            payment_status: args.p_payment_status,
+            amount_minor: args.p_amount_minor,
+            currency: args.p_currency,
+            payment_token: null,
+            expires_at: args.p_expires_at,
+            paid_at: args.p_paid_at,
+          },
+          error: null,
+        };
+      }
       return {
         data: {
           merchant_order_number: "WX-MERCHANT-ATTEMPT-1",
@@ -686,6 +701,22 @@ test("payment repository durably carries the merchant reference and nullable ver
     }),
     pending,
   );
+  const paid: PaymentResult = {
+    ...pending,
+    providerTransactionId: "4200000000099",
+    status: "PAID",
+    paymentToken: null,
+    paidAt: "2026-08-19T02:00:00.000Z",
+  };
+  assert.deepEqual(
+    await repository.bindVerifiedPaymentQuery({
+      userId: "user-1",
+      orderId: "order-id-1",
+      provider: "WECHAT",
+      payment: paid,
+    }),
+    paid,
+  );
   assert.deepEqual(calls, [
     {
       name: "billing_claim_payment_intent",
@@ -709,6 +740,21 @@ test("payment repository durably carries the merchant reference and nullable ver
         p_payment_status: "PENDING",
         p_expires_at: "2026-08-19T02:30:00.000Z",
         p_paid_at: null,
+      },
+    },
+    {
+      name: "billing_bind_verified_payment_query",
+      args: {
+        p_user_id: "user-1",
+        p_order_id: "order-id-1",
+        p_provider: "WECHAT",
+        p_merchant_order_number: "WX-MERCHANT-ATTEMPT-1",
+        p_provider_transaction_id: "4200000000099",
+        p_payment_status: "PAID",
+        p_amount_minor: 7_900,
+        p_currency: "CNY",
+        p_expires_at: "2026-08-19T02:30:00.000Z",
+        p_paid_at: "2026-08-19T02:00:00.000Z",
       },
     },
   ]);
@@ -833,4 +879,179 @@ test("createOrderPayment retires a verified closed uncertain attempt and explici
   );
   assert.equal(closeCalls, 1);
   assert.deepEqual(failures, ["PAYMENT_REQUIRES_NEW_PAYMENT"]);
+});
+
+test("verified provider query binds the complete durable payment through one service RPC", async () => {
+  const paymentService = (await import("../../lib/billing/payments/service")) as {
+    queryAndBindOrderPayment?: (
+      userId: string,
+      orderId: string,
+      dependencies: Record<string, unknown>,
+    ) => Promise<PaymentResult>;
+  };
+  assert.equal(typeof paymentService.queryAndBindOrderPayment, "function");
+
+  const durable: PaymentResult = {
+    orderNumber: "WX-MERCHANT-QUERY-1",
+    providerTransactionId: null,
+    status: "PENDING",
+    amountMinor: 7_900,
+    currency: "CNY",
+    paymentToken: "weixin://verified-query-token",
+    expiresAt: "2026-08-19T02:30:00.000Z",
+    paidAt: null,
+  };
+  const verified: PaymentResult = {
+    ...durable,
+    providerTransactionId: "4200000000099",
+    status: "PAID",
+    paymentToken: null,
+    paidAt: "2026-08-19T02:00:00.000Z",
+  };
+  const operations: string[] = [];
+  const repository = {
+    async findOwnedOrder() {
+      operations.push("order");
+      return order({
+        provider: "WECHAT",
+        amountMinor: 7_900,
+        expiresAt: durable.expiresAt,
+      });
+    },
+    async findOwnedPaymentIntent() {
+      operations.push("intent");
+      return durable;
+    },
+    async bindVerifiedPaymentQuery(input: Record<string, unknown>) {
+      operations.push("bind");
+      assert.deepEqual(input, {
+        userId: "user-1",
+        orderId: "order-id-1",
+        provider: "WECHAT",
+        payment: verified,
+      });
+      return verified;
+    },
+  };
+  const provider = {
+    async queryPayment(input: PaymentReferenceInput) {
+      operations.push("provider-query");
+      assert.deepEqual(input, {
+        orderNumber: durable.orderNumber,
+        providerTransactionId: null,
+        amountMinor: 7_900,
+        currency: "CNY",
+        expiresAt: durable.expiresAt,
+        paymentToken: durable.paymentToken,
+      });
+      return verified;
+    },
+  };
+
+  const result = await paymentService.queryAndBindOrderPayment!(
+    "user-1",
+    "order-id-1",
+    {
+      repository,
+      now: () => now,
+      getConfig: () => ({
+        ...config,
+        paymentMode: "wechat",
+        wechatConfigured: true,
+      }),
+      getProvider: () => provider,
+    },
+  );
+
+  assert.deepEqual(result, verified);
+  assert.deepEqual(operations, ["order", "intent", "provider-query", "bind"]);
+});
+
+test("verified unpaid query closes from durable context before retiring the attempt", async () => {
+  const paymentService = (await import("../../lib/billing/payments/service")) as {
+    queryAndBindOrderPayment: (
+      userId: string,
+      orderId: string,
+      dependencies: Record<string, unknown>,
+    ) => Promise<PaymentResult>;
+  };
+  const durable: PaymentResult = {
+    orderNumber: "WX-MERCHANT-QUERY-2",
+    providerTransactionId: null,
+    status: "PENDING",
+    amountMinor: 7_900,
+    currency: "CNY",
+    paymentToken: null,
+    expiresAt: "2026-08-19T02:30:00.000Z",
+    paidAt: null,
+  };
+  const requiresNewPayment: PaymentResult = {
+    ...durable,
+    providerTransactionId: "4200000000100",
+    status: "REQUIRES_NEW_PAYMENT",
+  };
+  const closed: PaymentResult = {
+    ...requiresNewPayment,
+    status: "CLOSED",
+  };
+  const references: PaymentReferenceInput[] = [];
+  const bound: PaymentResult[] = [];
+  const repository = {
+    async findOwnedOrder() {
+      return order({
+        provider: "WECHAT",
+        amountMinor: durable.amountMinor,
+        expiresAt: durable.expiresAt,
+      });
+    },
+    async findOwnedPaymentIntent() { return durable; },
+    async bindVerifiedPaymentQuery(input: { payment: PaymentResult }) {
+      bound.push(input.payment);
+      return input.payment;
+    },
+  };
+  const provider = {
+    async queryPayment(input: PaymentReferenceInput) {
+      references.push(input);
+      return requiresNewPayment;
+    },
+    async closePayment(input: PaymentReferenceInput) {
+      references.push(input);
+      return closed;
+    },
+  };
+
+  await assert.rejects(
+    () => paymentService.queryAndBindOrderPayment("user-1", "order-id-1", {
+      repository,
+      now: () => now,
+      getConfig: () => ({
+        ...config,
+        paymentMode: "wechat",
+        wechatConfigured: true,
+      }),
+      getProvider: () => provider,
+    }),
+    (error: unknown) =>
+      expectBillingError(error, "PAYMENT_REQUIRES_NEW_PAYMENT", 409),
+  );
+  assert.deepEqual(references, [
+    {
+      orderNumber: durable.orderNumber,
+      providerTransactionId: null,
+      amountMinor: durable.amountMinor,
+      currency: durable.currency,
+      expiresAt: durable.expiresAt,
+      paymentToken: null,
+    },
+    {
+      orderNumber: durable.orderNumber,
+      providerTransactionId: null,
+      amountMinor: durable.amountMinor,
+      currency: durable.currency,
+      expiresAt: durable.expiresAt,
+      paymentToken: null,
+    },
+  ]);
+  assert.deepEqual(bound, [closed]);
 });

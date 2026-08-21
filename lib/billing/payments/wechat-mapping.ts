@@ -40,6 +40,20 @@ function isSafeIdentifier(value: unknown, maximumLength: number): value is strin
   );
 }
 
+function isSafePathIdentifier(
+  value: unknown,
+  maximumLength: number,
+): value is string {
+  return (
+    isSafeIdentifier(value, maximumLength) &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("%") &&
+    !value.includes("/") &&
+    !value.includes("\\")
+  );
+}
+
 function hasValidOptionalStringFields(
   value: Record<string, unknown>,
   fields: readonly string[],
@@ -163,7 +177,7 @@ export function parseWechatNativeTransaction(input: {
     response.mchid !== input.expectedMchId ||
     response.out_trade_no !== input.orderNumber ||
     response.trade_type !== "NATIVE" ||
-    !isSafeIdentifier(response.transaction_id, MAX_TRANSACTION_ID_LENGTH) ||
+    !isSafePathIdentifier(response.transaction_id, MAX_TRANSACTION_ID_LENGTH) ||
     (input.providerTransactionId !== null &&
       response.transaction_id !== input.providerTransactionId) ||
     status === null ||
@@ -182,7 +196,8 @@ export function parseWechatNativeTransaction(input: {
     expiresAt === null ||
     expectedExpiresAt === null ||
     expiresAt !== expectedExpiresAt ||
-    paidAt === null && status === "PAID" ||
+    (paidAt === null || Date.parse(paidAt) >= Date.parse(expiresAt)) &&
+      status === "PAID" ||
     !hasValidOptionalStringFields(response, [
       "trade_state_desc",
       "bank_type",
@@ -256,8 +271,8 @@ export function parseWechatPaidNotification(input: {
     parsed.trade_state !== "SUCCESS" ||
     parsed.mchid !== input.expectedMchId ||
     parsed.appid !== input.expectedAppId ||
-    !isSafeIdentifier(parsed.transaction_id, MAX_TRANSACTION_ID_LENGTH) ||
-    !isSafeIdentifier(parsed.out_trade_no, MAX_ORDER_NUMBER_LENGTH) ||
+    !isSafePathIdentifier(parsed.transaction_id, MAX_TRANSACTION_ID_LENGTH) ||
+    !isSafePathIdentifier(parsed.out_trade_no, MAX_ORDER_NUMBER_LENGTH) ||
     !isRecord(amount) ||
     typeof amount.total !== "number" ||
     !Number.isSafeInteger(amount.total) ||

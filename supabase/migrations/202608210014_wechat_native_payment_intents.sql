@@ -46,7 +46,6 @@ ALTER TABLE public.billing_payment_intents
         AND last_error_code IS NULL
         AND (
           (payment_status = 'PENDING'
-            AND (provider <> 'WECHAT' OR provider_transaction_id IS NULL)
             AND payment_token IS NOT NULL
             AND paid_at IS NULL)
           OR
@@ -145,7 +144,8 @@ BEGIN
       USING ERRCODE = 'data_exception';
   END IF;
 
-  IF v_intent.status = 'CREATED' THEN
+  IF v_intent.status = 'CREATED'
+    AND v_intent.payment_status NOT IN ('FAILED', 'CLOSED') THEN
     RETURN jsonb_build_object(
       'status', 'REUSE',
       'intent_id', v_intent.id,
@@ -171,18 +171,22 @@ BEGIN
     );
   END IF;
 
-  IF v_intent.status IN ('FAILED', 'CREATING') THEN
+  IF v_intent.status IN ('FAILED', 'CREATING')
+    OR (v_intent.status = 'CREATED'
+      AND v_intent.payment_status IN ('FAILED', 'CLOSED')) THEN
     UPDATE public.billing_payment_intents
     SET status = 'CREATING',
         claim_token = p_claim_token,
         claim_expires_at = v_now + interval '30 seconds',
         merchant_order_number = CASE
-          WHEN last_error_code = 'PAYMENT_REQUIRES_NEW_PAYMENT'
+          WHEN status = 'CREATED'
+            OR last_error_code = 'PAYMENT_REQUIRES_NEW_PAYMENT'
           THEN p_merchant_order_number
           ELSE v_intent.merchant_order_number
         END,
         request_idempotency_key = CASE
-          WHEN last_error_code = 'PAYMENT_REQUIRES_NEW_PAYMENT'
+          WHEN status = 'CREATED'
+            OR last_error_code = 'PAYMENT_REQUIRES_NEW_PAYMENT'
           THEN p_request_idempotency_key
           ELSE v_intent.request_idempotency_key
         END,
@@ -320,6 +324,125 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION public.billing_bind_verified_payment_query(
+  p_user_id UUID,
+  p_order_id UUID,
+  p_provider TEXT,
+  p_merchant_order_number TEXT,
+  p_provider_transaction_id TEXT,
+  p_payment_status TEXT,
+  p_amount_minor BIGINT,
+  p_currency TEXT,
+  p_expires_at TIMESTAMPTZ,
+  p_paid_at TIMESTAMPTZ DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_order public.billing_orders%ROWTYPE;
+  v_intent public.billing_payment_intents%ROWTYPE;
+BEGIN
+  IF p_user_id IS NULL
+    OR p_order_id IS NULL
+    OR upper(p_provider) NOT IN ('MOCK', 'WECHAT', 'ALIPAY')
+    OR p_merchant_order_number !~ '^[A-Za-z0-9_-]{1,64}$'
+    OR NULLIF(btrim(p_provider_transaction_id), '') IS NULL
+    OR char_length(p_provider_transaction_id) > 64
+    OR octet_length(p_provider_transaction_id) > 256
+    OR p_payment_status NOT IN ('PENDING', 'PAID', 'FAILED', 'CLOSED')
+    OR p_amount_minor IS NULL
+    OR p_amount_minor <= 0
+    OR upper(p_currency) IS DISTINCT FROM 'CNY'
+    OR p_expires_at IS NULL
+    OR NOT (
+      (p_payment_status = 'PENDING' AND p_paid_at IS NULL)
+      OR (p_payment_status = 'PAID'
+        AND p_paid_at IS NOT NULL
+        AND p_paid_at < p_expires_at)
+      OR (p_payment_status IN ('FAILED', 'CLOSED') AND p_paid_at IS NULL)
+    ) THEN
+    RAISE EXCEPTION 'invalid verified payment query'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  SELECT * INTO v_order
+  FROM public.billing_orders
+  WHERE id = p_order_id
+  FOR UPDATE;
+  IF NOT FOUND OR v_order.user_id IS DISTINCT FROM p_user_id THEN
+    RAISE EXCEPTION 'billing order not found' USING ERRCODE = 'no_data_found';
+  END IF;
+
+  SELECT * INTO v_intent
+  FROM public.billing_payment_intents
+  WHERE order_id = v_order.id
+  FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'payment intent not found' USING ERRCODE = 'no_data_found';
+  END IF;
+  IF v_order.provider IS DISTINCT FROM upper(p_provider)
+    OR v_intent.order_id IS DISTINCT FROM v_order.id
+    OR v_intent.user_id IS DISTINCT FROM p_user_id
+    OR v_intent.provider IS DISTINCT FROM upper(p_provider)
+    OR v_intent.merchant_order_number IS DISTINCT FROM p_merchant_order_number
+    OR v_intent.amount_minor IS DISTINCT FROM p_amount_minor
+    OR v_intent.amount_minor IS DISTINCT FROM v_order.amount_minor
+    OR v_intent.currency IS DISTINCT FROM upper(p_currency)
+    OR v_intent.currency IS DISTINCT FROM v_order.currency
+    OR v_intent.expires_at IS DISTINCT FROM p_expires_at
+    OR v_intent.expires_at IS DISTINCT FROM v_order.expires_at THEN
+    RAISE EXCEPTION 'verified payment query payload mismatch'
+      USING ERRCODE = 'data_exception';
+  END IF;
+  IF v_intent.status IS DISTINCT FROM 'CREATED'
+    OR (v_order.status IS DISTINCT FROM 'PENDING'
+      AND NOT (v_order.status = 'PAID' AND p_payment_status = 'PAID'))
+    OR (v_intent.provider_transaction_id IS NOT NULL
+      AND v_intent.provider_transaction_id IS DISTINCT FROM p_provider_transaction_id)
+    OR (v_intent.payment_status = 'PAID' AND (
+      p_payment_status IS DISTINCT FROM 'PAID'
+      OR v_intent.paid_at IS DISTINCT FROM p_paid_at
+    ))
+    OR (v_intent.payment_status IN ('FAILED', 'CLOSED') AND (
+      v_intent.payment_status IS DISTINCT FROM p_payment_status
+      OR v_intent.paid_at IS DISTINCT FROM p_paid_at
+    ))
+    OR (p_payment_status = 'PENDING' AND v_intent.payment_token IS NULL) THEN
+    RAISE EXCEPTION 'verified payment query state mismatch'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+
+  UPDATE public.billing_payment_intents
+  SET provider_transaction_id = p_provider_transaction_id,
+      payment_token = CASE
+        WHEN p_payment_status = 'PENDING' THEN v_intent.payment_token
+        ELSE NULL
+      END,
+      payment_status = p_payment_status,
+      paid_at = p_paid_at,
+      updated_at = now()
+  WHERE id = v_intent.id
+  RETURNING * INTO v_intent;
+
+  RETURN jsonb_build_object(
+    'status', 'CREATED',
+    'intent_id', v_intent.id,
+    'merchant_order_number', v_intent.merchant_order_number,
+    'request_idempotency_key', v_intent.request_idempotency_key,
+    'provider_transaction_id', v_intent.provider_transaction_id,
+    'payment_token', v_intent.payment_token,
+    'payment_status', v_intent.payment_status,
+    'amount_minor', v_intent.amount_minor,
+    'currency', v_intent.currency,
+    'expires_at', v_intent.expires_at,
+    'paid_at', v_intent.paid_at
+  );
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.billing_claim_mock_payment_confirmation(
   p_user_id UUID,
   p_order_id UUID,
@@ -401,6 +524,7 @@ DECLARE
   v_credit_grant BIGINT := 0;
   v_account public.billing_credit_accounts%ROWTYPE;
   v_intent public.billing_payment_intents%ROWTYPE;
+  v_intent_order_id UUID;
 BEGIN
   IF NULLIF(btrim(p_order_number), '') IS NULL
     OR NULLIF(btrim(p_provider_transaction_id), '') IS NULL
@@ -445,15 +569,19 @@ BEGIN
   END IF;
 
   IF v_existing_event.status = 'PROCESSED' THEN
-    SELECT * INTO v_intent
+    SELECT order_id INTO v_intent_order_id
     FROM public.billing_payment_intents
     WHERE provider = upper(p_provider)
-      AND merchant_order_number = p_order_number
-    FOR UPDATE;
+      AND merchant_order_number = p_order_number;
     IF FOUND THEN
       SELECT * INTO v_order
       FROM public.billing_orders
-      WHERE id = v_intent.order_id
+      WHERE id = v_intent_order_id
+      FOR UPDATE;
+      SELECT * INTO v_intent
+      FROM public.billing_payment_intents
+      WHERE provider = upper(p_provider)
+        AND merchant_order_number = p_order_number
       FOR UPDATE;
     ELSE
       -- Pre-intent processed events remain replayable, but never enter the
@@ -464,13 +592,20 @@ BEGIN
         AND order_number = p_order_number
       FOR UPDATE;
     END IF;
-    IF NOT FOUND
+    IF v_order.id IS NULL
       OR v_order.provider IS DISTINCT FROM upper(p_provider)
       OR v_order.amount_minor IS DISTINCT FROM p_amount_minor
       OR v_order.currency IS DISTINCT FROM upper(p_currency)
       OR v_order.expires_at <= p_paid_at
       OR (v_intent.id IS NOT NULL AND (
-        v_intent.provider_transaction_id IS DISTINCT FROM p_provider_transaction_id
+        v_intent.order_id IS DISTINCT FROM v_order.id
+        OR v_intent.user_id IS DISTINCT FROM v_order.user_id
+        OR v_intent.provider IS DISTINCT FROM upper(p_provider)
+        OR v_intent.merchant_order_number IS DISTINCT FROM p_order_number
+        OR v_intent.amount_minor IS DISTINCT FROM p_amount_minor
+        OR v_intent.currency IS DISTINCT FROM upper(p_currency)
+        OR v_intent.expires_at IS DISTINCT FROM v_order.expires_at
+        OR v_intent.provider_transaction_id IS DISTINCT FROM p_provider_transaction_id
         OR v_intent.request_idempotency_key IS DISTINCT FROM p_request_idempotency_key
       ))
       OR NOT EXISTS (
@@ -514,12 +649,31 @@ BEGIN
     );
   END IF;
 
+  SELECT order_id INTO v_intent_order_id
+  FROM public.billing_payment_intents
+  WHERE provider = upper(p_provider)
+    AND merchant_order_number = p_order_number;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'payment intent payload mismatch'
+      USING ERRCODE = 'data_exception';
+  END IF;
+
+  SELECT * INTO v_order
+  FROM public.billing_orders
+  WHERE id = v_intent_order_id
+  FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'billing order not found' USING ERRCODE = 'no_data_found';
+  END IF;
+
   SELECT * INTO v_intent
   FROM public.billing_payment_intents
   WHERE provider = upper(p_provider)
     AND merchant_order_number = p_order_number
   FOR UPDATE;
   IF NOT FOUND
+    OR v_intent.order_id IS DISTINCT FROM v_order.id
+    OR v_intent.user_id IS DISTINCT FROM v_order.user_id
     OR v_intent.status IS DISTINCT FROM 'CREATED'
     OR v_intent.request_idempotency_key IS DISTINCT FROM p_request_idempotency_key
     OR v_intent.amount_minor IS DISTINCT FROM p_amount_minor
@@ -534,13 +688,6 @@ BEGIN
       USING ERRCODE = 'data_exception';
   END IF;
 
-  SELECT * INTO v_order
-  FROM public.billing_orders
-  WHERE id = v_intent.order_id
-  FOR UPDATE;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'billing order not found' USING ERRCODE = 'no_data_found';
-  END IF;
   IF v_order.provider IS DISTINCT FROM upper(p_provider)
     OR v_order.amount_minor IS DISTINCT FROM p_amount_minor
     OR v_order.currency IS DISTINCT FROM upper(p_currency) THEN
@@ -701,6 +848,13 @@ REVOKE ALL ON FUNCTION public.billing_complete_payment_intent(
 ) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.billing_complete_payment_intent(
   UUID, UUID, TEXT, TEXT, TEXT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ
+) TO service_role;
+
+REVOKE ALL ON FUNCTION public.billing_bind_verified_payment_query(
+  UUID, UUID, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ
+) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.billing_bind_verified_payment_query(
+  UUID, UUID, TEXT, TEXT, TEXT, TEXT, BIGINT, TEXT, TIMESTAMPTZ, TIMESTAMPTZ
 ) TO service_role;
 
 REVOKE ALL ON FUNCTION public.billing_claim_mock_payment_confirmation(

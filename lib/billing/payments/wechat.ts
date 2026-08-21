@@ -322,7 +322,7 @@ export class WechatPayProvider implements PaymentProvider {
   ): void {
     if (
       !this.isNativeIdentifier(input.orderNumber) ||
-      !this.isNativeIdentifier(input.idempotencyKey) ||
+      !this.isNativeIdempotencyKey(input.idempotencyKey) ||
       description.length === 0 ||
       !Number.isSafeInteger(input.amountMinor) ||
       input.amountMinor <= 0 ||
@@ -362,6 +362,22 @@ export class WechatPayProvider implements PaymentProvider {
   }
 
   private isNativeIdentifier(value: unknown): value is string {
+    return (
+      typeof value === "string" &&
+      value.length > 0 &&
+      [...value].length <= 64 &&
+      Buffer.byteLength(value, "utf8") <= 64 * 4 &&
+      value === value.trim() &&
+      value !== "." &&
+      value !== ".." &&
+      !value.includes("%") &&
+      !value.includes("/") &&
+      !value.includes("\\") &&
+      !/\p{C}/u.test(value)
+    );
+  }
+
+  private isNativeIdempotencyKey(value: unknown): value is string {
     return (
       typeof value === "string" &&
       value.length > 0 &&

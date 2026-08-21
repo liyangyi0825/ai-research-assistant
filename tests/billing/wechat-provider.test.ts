@@ -1126,6 +1126,41 @@ test("rejects non-RFC3339 expiries and overlong path identifiers before HTTP", a
   assert.equal(recorded.length, 0);
 });
 
+test("Native entry identifiers match transport-safe path segments", async () => {
+  const unsafe = ["%", ".", "..", "order%2fescape", "line\nbreak"];
+  for (const identifier of unsafe) {
+    const createCalls: Array<{ url: string; method: string; body: unknown }> = [];
+    const create = nativeProvider([], createCalls);
+    await assert.rejects(
+      () =>
+        create.createPayment({
+          ...NATIVE_CREATE_INPUT,
+          orderNumber: identifier,
+        }),
+      (error: unknown) =>
+        error instanceof BillingError &&
+        error.code === "PAYMENT_PROVIDER_REQUEST_INVALID" &&
+        error.status === 400,
+    );
+    assert.equal(createCalls.length, 0);
+
+    const queryCalls: Array<{ url: string; method: string; body: unknown }> = [];
+    const query = nativeProvider([], queryCalls);
+    await assert.rejects(
+      () =>
+        query.queryPayment({
+          ...NATIVE_REFERENCE,
+          providerTransactionId: identifier,
+        }),
+      (error: unknown) =>
+        error instanceof BillingError &&
+        error.code === "PAYMENT_PROVIDER_REQUEST_INVALID" &&
+        error.status === 400,
+    );
+    assert.equal(queryCalls.length, 0);
+  }
+});
+
 test("a Native close mismatch fails before any POST", async () => {
   const recorded: Array<{ url: string; method: string; body: unknown }> = [];
   const wechat = nativeProvider([

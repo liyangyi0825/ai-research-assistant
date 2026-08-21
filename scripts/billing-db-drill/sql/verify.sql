@@ -185,7 +185,7 @@ begin
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(amount_minor >= 0\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(currency = ''CNY''::text\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(attempt_count > 0\)\)$'),
-      ('public', 'billing_payment_intents', 'billing_payment_intents_lifecycle_check', 'c', '^CHECK \(\(\(NULLIF\(btrim\(merchant_order_number\), ''''::text\) IS NOT NULL\) AND \(char_length\(merchant_order_number\) <= 64\) AND \(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\).*\(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\).*\(payment_status = ''PENDING''::text\).*\(provider <> ''WECHAT''::text\).*\(provider_transaction_id IS NULL\).*\(payment_token IS NOT NULL\).*\(paid_at IS NULL\).*\(payment_status = ''PAID''::text\).*\(provider_transaction_id IS NOT NULL\).*\(paid_at IS NOT NULL\).*\(payment_status = ANY \(ARRAY\[''FAILED''::text, ''CLOSED''::text\]\)\).*\(payment_token IS NULL\).*\(paid_at IS NULL\).*\(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)\)$'),
+      ('public', 'billing_payment_intents', 'billing_payment_intents_lifecycle_check', 'c', '^CHECK \(\(\(NULLIF\(btrim\(merchant_order_number\), ''''::text\) IS NOT NULL\) AND \(char_length\(merchant_order_number\) <= 64\) AND \(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\).*\(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\).*\(payment_status = ''PENDING''::text\).*\(payment_token IS NOT NULL\).*\(paid_at IS NULL\).*\(payment_status = ''PAID''::text\).*\(provider_transaction_id IS NOT NULL\).*\(paid_at IS NOT NULL\).*\(payment_status = ANY \(ARRAY\[''FAILED''::text, ''CLOSED''::text\]\)\).*\(payment_token IS NULL\).*\(paid_at IS NULL\).*\(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)\)$'),
 
       ('public', 'billing_payments', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_payments', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -652,6 +652,7 @@ declare
   expected_functions constant text[] := array[
     'public.billing_claim_payment_intent(uuid,uuid,text,text,text,uuid)',
     'public.billing_complete_payment_intent(uuid,uuid,text,text,text,text,timestamptz,timestamptz)',
+    'public.billing_bind_verified_payment_query(uuid,uuid,text,text,text,text,bigint,text,timestamptz,timestamptz)',
     'public.billing_fail_payment_intent(uuid,uuid,text)',
     'public.billing_claim_mock_payment_confirmation(uuid,uuid,text,timestamptz)',
     'public.billing_mark_webhook_retryable(text,text,text)',
@@ -685,6 +686,9 @@ declare
   ];
   missing_functions text[];
   unsafe_functions text[];
+  settlement_definition text;
+  verified_query_definition text;
+  settlement_lock_order_count bigint;
 begin
   select array_agg(signature order by signature)
   into missing_functions
@@ -703,6 +707,33 @@ begin
      or replace(proc.proconfig[1], ' ', '') is distinct from 'search_path=pg_catalog,public';
   if unsafe_functions is not null then
     raise exception 'unsafe billing function attributes or search paths: %', unsafe_functions;
+  end if;
+
+  -- Verified query lock order contract: billing_orders must precede
+  -- billing_payment_intents in every related mutation.
+  settlement_definition := lower(pg_catalog.pg_get_functiondef(to_regprocedure(
+    'public.billing_settle_paid_order(text,text,text,text,text,bigint,text,timestamptz,jsonb)'
+  )));
+  select count(*) into settlement_lock_order_count
+  from regexp_matches(
+    settlement_definition,
+    'from\s+public\.billing_orders\s+where\s+id\s*=\s*v_intent_order_id\s+for\s+update;\s+select\s+\*\s+into\s+v_intent\s+from\s+public\.billing_payment_intents[^;]+for\s+update;',
+    'g'
+  );
+  if settlement_lock_order_count is distinct from 2::bigint then
+    raise exception 'settlement order-before-intent lock contract mismatch';
+  end if;
+  verified_query_definition := regexp_replace(
+    lower(pg_catalog.pg_get_functiondef(to_regprocedure(
+      'public.billing_bind_verified_payment_query(uuid,uuid,text,text,text,text,bigint,text,timestamptz,timestamptz)'
+    ))),
+    '\s+', ' ', 'g'
+  );
+  if position('from public.billing_orders' in verified_query_definition) = 0
+    or position('from public.billing_payment_intents' in verified_query_definition) = 0
+    or position('from public.billing_orders' in verified_query_definition)
+      > position('from public.billing_payment_intents' in verified_query_definition) then
+    raise exception 'verified query order-before-intent lock contract mismatch';
   end if;
 
   if position(
@@ -736,6 +767,7 @@ declare
   expected_writer_functions constant text[] := array[
     'public.billing_claim_payment_intent(uuid,uuid,text,text,text,uuid)',
     'public.billing_complete_payment_intent(uuid,uuid,text,text,text,text,timestamptz,timestamptz)',
+    'public.billing_bind_verified_payment_query(uuid,uuid,text,text,text,text,bigint,text,timestamptz,timestamptz)',
     'public.billing_fail_payment_intent(uuid,uuid,text)',
     'public.billing_claim_mock_payment_confirmation(uuid,uuid,text,timestamptz)',
     'public.billing_mark_webhook_retryable(text,text,text)',
@@ -1560,6 +1592,27 @@ begin
       and provider_transaction_id is not null
   ) then
     raise exception 'unverified create transaction identity was persisted';
+  end if;
+
+  result := public.billing_bind_verified_payment_query(
+    '00000000-0000-4000-8000-00000000b001',
+    '00000000-0000-4000-8000-00000000b090',
+    'WECHAT', 'DRILL-WECHAT-MERCHANT-014', 'DRILL-WECHAT-TXN-014',
+    'PAID', 990, 'CNY', timestamptz '2099-01-01 00:00:00+00',
+    timestamptz '2026-01-06 00:00:00+00'
+  );
+  if result ->> 'payment_status' is distinct from 'PAID'
+    or result ->> 'provider_transaction_id' is distinct from 'DRILL-WECHAT-TXN-014'
+    or exists (
+      select 1 from public.billing_payment_intents
+      where merchant_order_number = 'DRILL-WECHAT-MERCHANT-014'
+        and (
+          provider_transaction_id is distinct from 'DRILL-WECHAT-TXN-014'
+          or payment_status is distinct from 'PAID'
+          or payment_token is not null
+        )
+    ) then
+    raise exception 'verified query transaction identity was not atomically bound';
   end if;
 
   insert into public.billing_webhook_events (
