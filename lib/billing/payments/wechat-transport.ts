@@ -11,16 +11,12 @@ export type WechatFetch = (
   init: RequestInit,
 ) => Promise<Response>;
 
-const WECHAT_CONNECTION_ERROR_BRAND = Symbol("WechatConnectionError");
+const TRUSTED_WECHAT_FETCH_ADAPTERS = new WeakSet<WechatFetch>();
 
-export class WechatConnectionError extends Error {
-  readonly [WECHAT_CONNECTION_ERROR_BRAND] = true;
-
-  constructor() {
-    super("WeChat connection failed.");
-    this.name = "WechatConnectionError";
-    Object.setPrototypeOf(this, WechatConnectionError.prototype);
-  }
+export function createWechatFetchAdapter(rawFetch: WechatFetch): WechatFetch {
+  const adapter: WechatFetch = (input, init) => rawFetch(input, init);
+  TRUSTED_WECHAT_FETCH_ADAPTERS.add(adapter);
+  return adapter;
 }
 
 const WECHAT_ORIGIN = "https://api.mch.weixin.qq.com";
@@ -75,11 +71,8 @@ function unavailable(): BillingError {
   );
 }
 
-function isConnectionError(error: unknown): error is WechatConnectionError {
-  return (
-    error instanceof WechatConnectionError &&
-    error[WECHAT_CONNECTION_ERROR_BRAND]
-  );
+function isConnectionError(error: unknown, trusted: boolean): boolean {
+  return trusted && error instanceof TypeError;
 }
 
 function transportFailed(): BillingError {
@@ -117,6 +110,7 @@ function validatedPath(pathWithQuery: string): string {
     if (
       decoded === "." ||
       decoded === ".." ||
+      decoded.includes("%") ||
       decoded.includes("/") ||
       decoded.includes("\\") ||
       ASCII_CONTROL_PATTERN.test(decoded)
@@ -187,9 +181,52 @@ function mappedClientError(body: unknown): BillingError {
   }
 }
 
+function bestEffortCancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): void {
+  try {
+    void reader.cancel().catch(() => undefined);
+  } catch {
+    // Cleanup never replaces the already-determined transport result.
+  }
+}
+
+function readResponseChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+  timeoutError: Error,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const claimSettlement = (): boolean => {
+      if (settled) return false;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      return true;
+    };
+    const onAbort = () => {
+      if (claimSettlement()) reject(timeoutError);
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+    reader.read().then(
+      (result) => {
+        if (claimSettlement()) resolve(result);
+      },
+      (error: unknown) => {
+        if (claimSettlement()) reject(error);
+      },
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
 async function boundedResponseBody(
   response: Response,
   maximumBytes: number,
+  trustedConnectionErrors: boolean,
+  signal: AbortSignal,
+  timeoutError: Error,
 ): Promise<string> {
   if (response.body === null) return "";
 
@@ -200,24 +237,19 @@ async function boundedResponseBody(
     while (true) {
       let result: ReadableStreamReadResult<Uint8Array>;
       try {
-        result = await reader.read();
+        result = await readResponseChunk(reader, signal, timeoutError);
       } catch (error) {
-        try {
-          await reader.cancel();
-        } catch {
-          // Preserve the classified read failure when cancellation also fails.
+        bestEffortCancelReader(reader);
+        if (error === timeoutError) throw unavailable();
+        if (isConnectionError(error, trustedConnectionErrors)) {
+          throw unavailable();
         }
-        if (isConnectionError(error)) throw unavailable();
         throw transportFailed();
       }
       if (result.done) break;
       totalBytes += result.value.byteLength;
       if (totalBytes > maximumBytes) {
-        try {
-          await reader.cancel();
-        } catch {
-          // The bounded failure is authoritative even if cancellation fails.
-        }
+        bestEffortCancelReader(reader);
         throw invalidResponse();
       }
       chunks.push(result.value);
@@ -242,10 +274,10 @@ async function boundedResponseBody(
   }
 }
 
-async function cancelUnreadResponseBody(response: Response): Promise<void> {
+function cancelUnreadResponseBody(response: Response): void {
   if (response.body === null) return;
   try {
-    await response.body.cancel();
+    void response.body.cancel().catch(() => undefined);
   } catch {
     // Missing authentication headers remain the authoritative failure.
   }
@@ -254,6 +286,7 @@ async function cancelUnreadResponseBody(response: Response): Promise<void> {
 export class WechatHttpClient {
   private readonly config: WechatPayConfig;
   private readonly fetchImpl: WechatFetch;
+  private readonly trustedFetchAdapter: boolean;
   private readonly now: () => Date;
   private readonly nonce: () => string;
   private readonly timeoutMs: number;
@@ -270,7 +303,10 @@ export class WechatHttpClient {
     this.config = input.config;
     this.fetchImpl =
       input.fetchImpl ??
-      ((requestInput, init) => globalThis.fetch(requestInput, init));
+      createWechatFetchAdapter((requestInput, init) =>
+        globalThis.fetch(requestInput, init),
+      );
+    this.trustedFetchAdapter = TRUSTED_WECHAT_FETCH_ADAPTERS.has(this.fetchImpl);
     this.now = input.now ?? (() => new Date());
     this.nonce = input.nonce ?? (() => crypto.randomUUID().replaceAll("-", ""));
     this.timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -318,8 +354,8 @@ export class WechatHttpClient {
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timeoutHandle = setTimeout(() => {
-        abortController.abort();
-        reject(timeoutError);
+        abortController.abort(timeoutError);
+        queueMicrotask(() => reject(timeoutError));
       }, this.timeoutMs);
     });
 
@@ -331,6 +367,7 @@ export class WechatHttpClient {
           body,
           headers,
           signal: abortController.signal,
+          timeoutError,
         }),
         timeout,
       ]);
@@ -348,6 +385,7 @@ export class WechatHttpClient {
     body: string;
     headers: Headers;
     signal: AbortSignal;
+    timeoutError: Error;
   }): Promise<{ status: number; body: T }> {
     let response: Response;
     try {
@@ -360,9 +398,12 @@ export class WechatHttpClient {
       });
     } catch (error) {
       if (
-        error instanceof WechatConnectionError &&
-        error[WECHAT_CONNECTION_ERROR_BRAND]
+        input.signal.aborted &&
+        input.signal.reason === input.timeoutError
       ) {
+        throw unavailable();
+      }
+      if (isConnectionError(error, this.trustedFetchAdapter)) {
         throw unavailable();
       }
       throw transportFailed();
@@ -384,13 +425,16 @@ export class WechatHttpClient {
         responseVerifierId,
       ].some((value) => value.includes(","))
     ) {
-      await cancelUnreadResponseBody(response);
+      cancelUnreadResponseBody(response);
       throw invalidResponse();
     }
 
     const responseBody = await boundedResponseBody(
       response,
       this.maxResponseBytes,
+      this.trustedFetchAdapter,
+      input.signal,
+      input.timeoutError,
     );
     verifyWechatTimestamp({
       timestamp: responseTimestamp,
@@ -421,6 +465,13 @@ export class WechatHttpClient {
       throw mappedClientError(parsedBody);
     }
     if (response.status < 200 || response.status > 299) {
+      throw invalidResponse();
+    }
+    if (
+      typeof parsedBody !== "object" ||
+      parsedBody === null ||
+      Array.isArray(parsedBody)
+    ) {
       throw invalidResponse();
     }
     return { status: response.status, body: parsedBody as T };

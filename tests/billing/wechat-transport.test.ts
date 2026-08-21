@@ -9,7 +9,7 @@ import test from "node:test";
 import { BillingError } from "../../lib/billing/errors";
 import type { WechatPayConfig } from "../../lib/billing/payments/wechat-config";
 import {
-  WechatConnectionError,
+  createWechatFetchAdapter,
   WechatHttpClient,
   type WechatFetch,
 } from "../../lib/billing/payments/wechat-transport";
@@ -670,20 +670,26 @@ test("unbranded fetch exceptions are fixed permanent transport failures", async 
   }
 });
 
-test("only a branded WeChat connection failure is retryable", async () => {
+test("only a trusted fetch adapter can classify a fetch TypeError as retryable", async () => {
+  const secret = "trusted-connection-secret";
+  const rawFetch: WechatFetch = async () => {
+    throw new TypeError(secret);
+  };
   await assert.rejects(
-    client(async () => {
-      throw new WechatConnectionError();
-    }).request({
+    client(createWechatFetchAdapter(rawFetch)).request({
       method: "GET",
       pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
     }),
     (error: unknown) =>
-      expectFixedError(error, {
-        code: "PAYMENT_PROVIDER_UNAVAILABLE",
-        status: 503,
-        message: "WeChat Pay is temporarily unavailable.",
-      }),
+      expectFixedError(
+        error,
+        {
+          code: "PAYMENT_PROVIDER_UNAVAILABLE",
+          status: 503,
+          message: "WeChat Pay is temporarily unavailable.",
+        },
+        [secret],
+      ),
   );
 });
 
@@ -1070,4 +1076,286 @@ test("Content-Length cannot override streamed response byte accounting", async (
     pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
   });
   assert.equal(result.body.state === "SUCCESS", true);
+});
+
+test("path validation rejects every segment that remains percent-encoded after one decode", async () => {
+  let fetchCalls = 0;
+  const fetchImpl: WechatFetch = async () => {
+    fetchCalls += 1;
+    throw new Error("fetch must not run");
+  };
+  const invalidPaths = [
+    "/v3/%252e%252e/merchant-secrets",
+    "/v3/%252E%252E/merchant-secrets",
+    "/v3/pay/%252Ftransactions",
+    "/v3/pay/%252ftransactions",
+    "/v3/pay/%255Ctransactions",
+    "/v3/pay/%255ctransactions",
+    "/v3/pay/%25252e%25252e",
+    "/v3/pay/%2525252Ftransactions",
+  ];
+
+  for (const pathWithQuery of invalidPaths) {
+    await assert.rejects(
+      client(fetchImpl).request({ method: "GET", pathWithQuery }),
+      (error: unknown) =>
+        expectFixedError(error, {
+          code: "PAYMENT_PROVIDER_REQUEST_INVALID",
+          status: 400,
+          message: "The WeChat Pay request is invalid.",
+        }),
+    );
+  }
+  assert.equal(fetchCalls, 0);
+});
+
+test("the default global fetch uses the trusted adapter boundary", async () => {
+  const originalFetch = globalThis.fetch;
+  const secret = "default-global-connection-secret";
+  globalThis.fetch = (async () => {
+    throw new TypeError(secret);
+  }) as typeof fetch;
+  try {
+    const httpClient = new WechatHttpClient({
+      config: config(),
+      now: () => new Date(NOW),
+      nonce: () => "request-nonce",
+    });
+    await assert.rejects(
+      httpClient.request({
+        method: "GET",
+        pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+      }),
+      (error: unknown) =>
+        expectFixedError(
+          error,
+          {
+            code: "PAYMENT_PROVIDER_UNAVAILABLE",
+            status: 503,
+            message: "WeChat Pay is temporarily unavailable.",
+          },
+          [secret],
+        ),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("trusted adapter response reader TypeError is retryable and releases its lock", async () => {
+  const secret = "trusted-reader-connection-secret";
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        controller.error(new TypeError(secret));
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const response = new Response(stream, {
+    status: 200,
+    headers: {
+      "Wechatpay-Timestamp": TIMESTAMP,
+      "Wechatpay-Nonce": RESPONSE_NONCE,
+      "Wechatpay-Signature": responseSignature("{}"),
+      "Wechatpay-Serial": VERIFIER_ID,
+    },
+  });
+  const trustedFetch = createWechatFetchAdapter(async () => response);
+
+  await assert.rejects(
+    client(trustedFetch).request({
+      method: "GET",
+      pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+    }),
+    (error: unknown) =>
+      expectFixedError(
+        error,
+        {
+          code: "PAYMENT_PROVIDER_UNAVAILABLE",
+          status: 503,
+          message: "WeChat Pay is temporarily unavailable.",
+        },
+        [secret],
+      ),
+  );
+  assert.equal(response.body?.locked, false);
+});
+
+test("ordinary injected TypeErrors cannot spoof the private connection trust marker", async () => {
+  const secret = "spoofed-private-marker-secret";
+  const spoofed = Object.assign(new TypeError(secret), {
+    name: "WechatConnectionError",
+    connection: true,
+    [Symbol.for("WechatConnectionError")]: true,
+  });
+
+  await assert.rejects(
+    client(async () => {
+      throw spoofed;
+    }).request({
+      method: "GET",
+      pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+    }),
+    (error: unknown) =>
+      expectFixedError(
+        error,
+        {
+          code: "PAYMENT_PROVIDER_TRANSPORT_FAILED",
+          status: 502,
+          message: "WeChat Pay transport failed.",
+        },
+        [secret, "WechatConnectionError"],
+      ),
+  );
+});
+
+test("missing signature headers stay permanent when unread-body cancellation hangs", async () => {
+  let cancelCalls = 0;
+  let pulls = 0;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull() {
+        pulls += 1;
+      },
+      cancel() {
+        cancelCalls += 1;
+        return new Promise<void>(() => undefined);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const response = new Response(stream, {
+    status: 400,
+    headers: { "Wechatpay-Timestamp": TIMESTAMP },
+  });
+
+  await assert.rejects(
+    client(async () => response, { timeoutMs: 0 }).request({
+      method: "GET",
+      pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+    }),
+    (error: unknown) =>
+      expectFixedError(error, {
+        code: "PAYMENT_PROVIDER_INVALID_RESPONSE",
+        status: 502,
+        message: "WeChat Pay returned an invalid response.",
+      }),
+  );
+  assert.equal(cancelCalls, 1);
+  assert.equal(pulls, 0);
+  assert.equal(response.body?.locked, false);
+});
+
+test("oversized responses stay permanent when reader cancellation hangs", async () => {
+  let cancelCalls = 0;
+  const oversizedChunk = Buffer.alloc(MAX_RESPONSE_BYTES + 1, 0x20);
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        controller.enqueue(oversizedChunk);
+      },
+      cancel() {
+        cancelCalls += 1;
+        return new Promise<void>(() => undefined);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const response = new Response(stream, {
+    status: 200,
+    headers: {
+      "Wechatpay-Timestamp": TIMESTAMP,
+      "Wechatpay-Nonce": RESPONSE_NONCE,
+      "Wechatpay-Signature": responseSignature("not-consumed"),
+      "Wechatpay-Serial": VERIFIER_ID,
+    },
+  });
+
+  await assert.rejects(
+    client(async () => response, { timeoutMs: 0 }).request({
+      method: "GET",
+      pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+    }),
+    (error: unknown) =>
+      expectFixedError(error, {
+        code: "PAYMENT_PROVIDER_INVALID_RESPONSE",
+        status: 502,
+        message: "WeChat Pay returned an invalid response.",
+      }),
+  );
+  assert.equal(cancelCalls, 1);
+  assert.equal(response.body?.locked, false);
+});
+
+test("a hanging response read times out, cancels best-effort, unlocks, and has no unhandled rejection", async () => {
+  let cancelCalls = 0;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      pull() {
+        return new Promise<void>(() => undefined);
+      },
+      cancel() {
+        cancelCalls += 1;
+        return new Promise<void>(() => undefined);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const response = new Response(stream, {
+    status: 200,
+    headers: {
+      "Wechatpay-Timestamp": TIMESTAMP,
+      "Wechatpay-Nonce": RESPONSE_NONCE,
+      "Wechatpay-Signature": responseSignature("{}"),
+      "Wechatpay-Serial": VERIFIER_ID,
+    },
+  });
+
+  try {
+    await assert.rejects(
+      client(async () => response, { timeoutMs: 0 }).request({
+        method: "GET",
+        pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+      }),
+      (error: unknown) =>
+        expectFixedError(error, {
+          code: "PAYMENT_PROVIDER_UNAVAILABLE",
+          status: 503,
+          message: "WeChat Pay is temporarily unavailable.",
+        }),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(cancelCalls, 1);
+    assert.equal(response.body?.locked, false);
+    assert.equal(unhandled.length, 0);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("successful JSON responses must be non-null non-array records", async () => {
+  const invalidBodies = ["null", "[]", '"string-secret"', "7", "true", "false"];
+
+  for (const body of invalidBodies) {
+    await assert.rejects(
+      client(async () => signedResponse({ status: 200, body })).request({
+        method: "GET",
+        pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+      }),
+      (error: unknown) =>
+        expectFixedError(
+          error,
+          {
+            code: "PAYMENT_PROVIDER_INVALID_RESPONSE",
+            status: 502,
+            message: "WeChat Pay returned an invalid response.",
+          },
+          [body, "string-secret"],
+        ),
+    );
+  }
 });
