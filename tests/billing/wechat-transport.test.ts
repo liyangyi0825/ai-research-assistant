@@ -8,8 +8,8 @@ import test from "node:test";
 
 import { BillingError } from "../../lib/billing/errors";
 import type { WechatPayConfig } from "../../lib/billing/payments/wechat-config";
+import * as wechatTransport from "../../lib/billing/payments/wechat-transport";
 import {
-  createWechatFetchAdapter,
   WechatHttpClient,
   type WechatFetch,
 } from "../../lib/billing/payments/wechat-transport";
@@ -670,13 +670,12 @@ test("unbranded fetch exceptions are fixed permanent transport failures", async 
   }
 });
 
-test("only a trusted fetch adapter can classify a fetch TypeError as retryable", async () => {
-  const secret = "trusted-connection-secret";
-  const rawFetch: WechatFetch = async () => {
-    throw new TypeError(secret);
-  };
+test("explicitly injected fetch TypeErrors are permanent", async () => {
+  const secret = "explicit-connection-secret";
   await assert.rejects(
-    client(createWechatFetchAdapter(rawFetch)).request({
+    client(async () => {
+      throw new TypeError(secret);
+    }).request({
       method: "GET",
       pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
     }),
@@ -684,9 +683,9 @@ test("only a trusted fetch adapter can classify a fetch TypeError as retryable",
       expectFixedError(
         error,
         {
-          code: "PAYMENT_PROVIDER_UNAVAILABLE",
-          status: 503,
-          message: "WeChat Pay is temporarily unavailable.",
+          code: "PAYMENT_PROVIDER_TRANSPORT_FAILED",
+          status: 502,
+          message: "WeChat Pay transport failed.",
         },
         [secret],
       ),
@@ -1109,7 +1108,17 @@ test("path validation rejects every segment that remains percent-encoded after o
   assert.equal(fetchCalls, 0);
 });
 
-test("the default global fetch uses the trusted adapter boundary", async () => {
+test("transport exports no factory that can mint network trust", () => {
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(
+      wechatTransport,
+      "createWechatFetchAdapter",
+    ),
+    false,
+  );
+});
+
+test("the default global fetch uses the internal trusted boundary", async () => {
   const originalFetch = globalThis.fetch;
   const secret = "default-global-connection-secret";
   globalThis.fetch = (async () => {
@@ -1142,29 +1151,61 @@ test("the default global fetch uses the trusted adapter boundary", async () => {
   }
 });
 
-test("trusted adapter response reader TypeError is retryable and releases its lock", async () => {
+test("only a default-fetch response reader TypeError is retryable", async () => {
   const secret = "trusted-reader-connection-secret";
-  const stream = new ReadableStream<Uint8Array>(
-    {
-      pull(controller) {
-        controller.error(new TypeError(secret));
+  const makeResponse = (): Response => {
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          controller.error(new TypeError(secret));
+        },
       },
-    },
-    { highWaterMark: 0 },
-  );
-  const response = new Response(stream, {
-    status: 200,
-    headers: {
-      "Wechatpay-Timestamp": TIMESTAMP,
-      "Wechatpay-Nonce": RESPONSE_NONCE,
-      "Wechatpay-Signature": responseSignature("{}"),
-      "Wechatpay-Serial": VERIFIER_ID,
-    },
-  });
-  const trustedFetch = createWechatFetchAdapter(async () => response);
+      { highWaterMark: 0 },
+    );
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        "Wechatpay-Timestamp": TIMESTAMP,
+        "Wechatpay-Nonce": RESPONSE_NONCE,
+        "Wechatpay-Signature": responseSignature("{}"),
+        "Wechatpay-Serial": VERIFIER_ID,
+      },
+    });
+  };
+  const originalFetch = globalThis.fetch;
+  const trustedResponse = makeResponse();
 
+  globalThis.fetch = (async () => trustedResponse) as typeof fetch;
+  try {
+    const httpClient = new WechatHttpClient({
+      config: config(),
+      now: () => new Date(NOW),
+      nonce: () => "request-nonce",
+    });
+    await assert.rejects(
+      httpClient.request({
+        method: "GET",
+        pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+      }),
+      (error: unknown) =>
+        expectFixedError(
+          error,
+          {
+            code: "PAYMENT_PROVIDER_UNAVAILABLE",
+            status: 503,
+            message: "WeChat Pay is temporarily unavailable.",
+          },
+          [secret],
+        ),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(trustedResponse.body?.locked, false);
+
+  const explicitResponse = makeResponse();
   await assert.rejects(
-    client(trustedFetch).request({
+    client(async () => explicitResponse).request({
       method: "GET",
       pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
     }),
@@ -1172,14 +1213,14 @@ test("trusted adapter response reader TypeError is retryable and releases its lo
       expectFixedError(
         error,
         {
-          code: "PAYMENT_PROVIDER_UNAVAILABLE",
-          status: 503,
-          message: "WeChat Pay is temporarily unavailable.",
+          code: "PAYMENT_PROVIDER_TRANSPORT_FAILED",
+          status: 502,
+          message: "WeChat Pay transport failed.",
         },
         [secret],
       ),
   );
-  assert.equal(response.body?.locked, false);
+  assert.equal(explicitResponse.body?.locked, false);
 });
 
 test("ordinary injected TypeErrors cannot spoof the private connection trust marker", async () => {

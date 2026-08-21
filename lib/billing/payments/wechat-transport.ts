@@ -11,14 +11,6 @@ export type WechatFetch = (
   init: RequestInit,
 ) => Promise<Response>;
 
-const TRUSTED_WECHAT_FETCH_ADAPTERS = new WeakSet<WechatFetch>();
-
-export function createWechatFetchAdapter(rawFetch: WechatFetch): WechatFetch {
-  const adapter: WechatFetch = (input, init) => rawFetch(input, init);
-  TRUSTED_WECHAT_FETCH_ADAPTERS.add(adapter);
-  return adapter;
-}
-
 const WECHAT_ORIGIN = "https://api.mch.weixin.qq.com";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1_024;
@@ -301,12 +293,10 @@ export class WechatHttpClient {
     maxResponseBytes?: number;
   }) {
     this.config = input.config;
+    this.trustedFetchAdapter = input.fetchImpl === undefined;
     this.fetchImpl =
       input.fetchImpl ??
-      createWechatFetchAdapter((requestInput, init) =>
-        globalThis.fetch(requestInput, init),
-      );
-    this.trustedFetchAdapter = TRUSTED_WECHAT_FETCH_ADAPTERS.has(this.fetchImpl);
+      ((requestInput, init) => globalThis.fetch(requestInput, init));
     this.now = input.now ?? (() => new Date());
     this.nonce = input.nonce ?? (() => crypto.randomUUID().replaceAll("-", ""));
     this.timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
