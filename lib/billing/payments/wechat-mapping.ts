@@ -1,5 +1,5 @@
 import { BillingError } from "../errors";
-import type { PaymentWebhookEvent } from "./types";
+import type { PaymentResult, PaymentStatus, PaymentWebhookEvent } from "./types";
 import { parseStrictWechatJson } from "./wechat-json";
 
 const MAX_EVENT_ID_LENGTH = 128;
@@ -14,6 +14,14 @@ function invalidWebhook(): BillingError {
     "INVALID_WEBHOOK",
     "The WeChat Pay webhook payload is invalid.",
     400,
+  );
+}
+
+function invalidResponse(): BillingError {
+  return new BillingError(
+    "PAYMENT_PROVIDER_INVALID_RESPONSE",
+    "WeChat Pay returned an invalid response.",
+    502,
   );
 }
 
@@ -83,6 +91,114 @@ function normalizedRfc3339(value: unknown): string | null {
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds)) return null;
   return new Date(milliseconds).toISOString();
+}
+
+function nativeStatus(value: unknown): PaymentStatus | null {
+  switch (value) {
+    case "SUCCESS":
+      return "PAID";
+    case "NOTPAY":
+    case "USERPAYING":
+      return "PENDING";
+    case "CLOSED":
+      return "CLOSED";
+    case "PAYERROR":
+      return "FAILED";
+    case "REFUND":
+      return "REFUNDED";
+    default:
+      return null;
+  }
+}
+
+function validNativeCreateResponse(value: unknown): value is {
+  code_url: string;
+} {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 1 &&
+    typeof value.code_url === "string" &&
+    value.code_url.length > 0 &&
+    value.code_url === value.code_url.trim() &&
+    value.code_url.length <= 2_048 &&
+    !UNICODE_CATEGORY_C_PATTERN.test(value.code_url)
+  );
+}
+
+export function parseWechatNativeCreateResponse(value: unknown): {
+  paymentToken: string;
+} {
+  if (!validNativeCreateResponse(value)) throw invalidResponse();
+  return { paymentToken: value.code_url };
+}
+
+export function parseWechatNativeTransaction(input: {
+  response: unknown;
+  expectedMchId: string;
+  expectedAppId: string;
+  orderNumber: string;
+  providerTransactionId: string | null;
+  expectedAmountMinor?: number;
+  expectedCurrency?: "CNY";
+  expectedExpiresAt?: string;
+  paymentToken: string;
+}): PaymentResult {
+  if (!isRecord(input.response)) throw invalidResponse();
+  const response = input.response;
+  const amount = response.amount;
+  const status = nativeStatus(response.trade_state);
+  const expiresAt = normalizedRfc3339(response.time_expire);
+  const expectedExpiresAt =
+    input.expectedExpiresAt === undefined
+      ? undefined
+      : normalizedRfc3339(input.expectedExpiresAt);
+  const paidAt =
+    status === "PAID" ? normalizedRfc3339(response.success_time) : null;
+
+  if (
+    response.appid !== input.expectedAppId ||
+    response.mchid !== input.expectedMchId ||
+    response.out_trade_no !== input.orderNumber ||
+    response.trade_type !== "NATIVE" ||
+    !isSafeIdentifier(response.transaction_id, MAX_TRANSACTION_ID_LENGTH) ||
+    (input.providerTransactionId !== null &&
+      response.transaction_id !== input.providerTransactionId) ||
+    status === null ||
+    !isRecord(amount) ||
+    typeof amount.total !== "number" ||
+    !Number.isSafeInteger(amount.total) ||
+    amount.total <= 0 ||
+    amount.currency !== "CNY" ||
+    !validOptionalAmountFields(amount) ||
+    (input.expectedAmountMinor !== undefined &&
+      amount.total !== input.expectedAmountMinor) ||
+    (input.expectedCurrency !== undefined && amount.currency !== input.expectedCurrency) ||
+    expiresAt === null ||
+    (expectedExpiresAt !== undefined &&
+      (expectedExpiresAt === null || expiresAt !== expectedExpiresAt)) ||
+    paidAt === null && status === "PAID" ||
+    !hasValidOptionalStringFields(response, [
+      "trade_state_desc",
+      "bank_type",
+      "attach",
+    ]) ||
+    !validOptionalPayer(response) ||
+    typeof input.paymentToken !== "string" ||
+    input.paymentToken.length === 0
+  ) {
+    throw invalidResponse();
+  }
+
+  return {
+    providerTransactionId: response.transaction_id,
+    orderNumber: response.out_trade_no,
+    status,
+    amountMinor: amount.total,
+    currency: "CNY",
+    paymentToken: input.paymentToken,
+    expiresAt,
+    paidAt,
+  };
 }
 
 function validOptionalPayer(value: Record<string, unknown>): boolean {

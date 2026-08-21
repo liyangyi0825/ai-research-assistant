@@ -6,7 +6,11 @@ import {
   verifyWechatSignature,
   verifyWechatTimestamp,
 } from "./wechat-crypto";
-import { parseWechatPaidNotification } from "./wechat-mapping";
+import {
+  parseWechatNativeCreateResponse,
+  parseWechatNativeTransaction,
+  parseWechatPaidNotification,
+} from "./wechat-mapping";
 import { parseStrictWechatJson } from "./wechat-json";
 import type { WechatHttpClient } from "./wechat-transport";
 import type {
@@ -40,6 +44,13 @@ type WechatCallbackHeaders = {
   nonce: string;
   signature: string;
   verifierId: string;
+};
+
+type NativePaymentExpectation = {
+  amountMinor: number;
+  currency: "CNY";
+  expiresAt: string;
+  paymentToken: string;
 };
 
 const DEFAULT_WEBHOOK_TOLERANCE_SECONDS = 300;
@@ -113,6 +124,7 @@ function normalizedCallbackHeaders(
 export class WechatPayProvider implements PaymentProvider {
   private readonly dependencies: CallbackDependencies | null;
   private readonly legacyConfigured: boolean;
+  private readonly nativePayments = new Map<string, NativePaymentExpectation>();
 
   constructor(configured: boolean);
   constructor(dependencies: WechatPayProviderDependencies);
@@ -134,19 +146,79 @@ export class WechatPayProvider implements PaymentProvider {
     };
   }
 
-  async createPayment(_input: CreatePaymentInput): Promise<PaymentResult> {
-    void _input;
-    return this.unavailable();
+  async createPayment(input: CreatePaymentInput): Promise<PaymentResult> {
+    const dependencies = this.callbackDependencies();
+    const description = this.nativeDescription(input.description);
+    this.assertNativeCreateInput(input, description, dependencies);
+
+    let response: { body: unknown };
+    try {
+      response = await dependencies.httpClient.request<unknown>({
+        method: "POST",
+        pathWithQuery: "/v3/pay/transactions/native",
+        body: {
+          appid: dependencies.config.appId,
+          mchid: dependencies.config.mchId,
+          description,
+          out_trade_no: input.orderNumber,
+          time_expire: input.expiresAt,
+          notify_url: dependencies.config.notifyUrl,
+          amount: { total: input.amountMinor, currency: "CNY" },
+        },
+      });
+    } catch (error) {
+      if (!this.isUncertain(error)) throw error;
+      return this.queryNativePayment(
+        { orderNumber: input.orderNumber, providerTransactionId: null },
+        {
+          amountMinor: input.amountMinor,
+          currency: "CNY",
+          expiresAt: input.expiresAt,
+          paymentToken: `wechat-native:${input.orderNumber}`,
+        },
+      );
+    }
+
+    const { paymentToken } = parseWechatNativeCreateResponse(response.body);
+    this.nativePayments.set(input.orderNumber, {
+      amountMinor: input.amountMinor,
+      currency: "CNY",
+      expiresAt: input.expiresAt,
+      paymentToken,
+    });
+    return {
+      providerTransactionId: input.orderNumber,
+      orderNumber: input.orderNumber,
+      status: "PENDING",
+      amountMinor: input.amountMinor,
+      currency: "CNY",
+      paymentToken,
+      expiresAt: input.expiresAt,
+      paidAt: null,
+    };
   }
 
-  async queryPayment(_input: PaymentReferenceInput): Promise<PaymentResult> {
-    void _input;
-    return this.unavailable();
+  async queryPayment(input: PaymentReferenceInput): Promise<PaymentResult> {
+    return this.queryNativePayment(input);
   }
 
-  async closePayment(_input: PaymentReferenceInput): Promise<PaymentResult> {
-    void _input;
-    return this.unavailable();
+  async closePayment(input: PaymentReferenceInput): Promise<PaymentResult> {
+    const dependencies = this.callbackDependencies();
+    const orderNumber = this.nativeOrderNumber(input.orderNumber);
+    this.optionalNativeTransactionId(input.providerTransactionId);
+    try {
+      await dependencies.httpClient.request<unknown>({
+        method: "POST",
+        pathWithQuery: `/v3/pay/transactions/out-trade-no/${encodeURIComponent(orderNumber)}/close`,
+        body: { mchid: dependencies.config.mchId },
+      });
+    } catch (error) {
+      if (!this.isUncertain(error) && !this.isStateConflict(error)) throw error;
+    }
+    return this.queryNativePayment({
+      orderNumber,
+      providerTransactionId: input.providerTransactionId,
+    });
   }
 
   async refundPayment(_input: RefundPaymentInput): Promise<RefundResult> {
@@ -210,6 +282,127 @@ export class WechatPayProvider implements PaymentProvider {
   private callbackDependencies(): CallbackDependencies {
     if (this.dependencies === null) return this.unavailable();
     return this.dependencies;
+  }
+
+  private async queryNativePayment(
+    input: PaymentReferenceInput,
+    suppliedExpectation?: NativePaymentExpectation,
+  ): Promise<PaymentResult> {
+    const dependencies = this.callbackDependencies();
+    const orderNumber = this.nativeOrderNumber(input.orderNumber);
+    const transactionId = this.optionalNativeTransactionId(
+      input.providerTransactionId,
+    );
+    const expected = suppliedExpectation ?? this.nativePayments.get(orderNumber);
+    if (!expected) throw this.invalidNativeResponse();
+    const queryByOrder = transactionId === null || transactionId === orderNumber;
+    const pathWithQuery = queryByOrder
+      ? `/v3/pay/transactions/out-trade-no/${encodeURIComponent(orderNumber)}?mchid=${encodeURIComponent(dependencies.config.mchId)}`
+      : `/v3/pay/transactions/id/${encodeURIComponent(transactionId)}?mchid=${encodeURIComponent(dependencies.config.mchId)}`;
+    const response = await dependencies.httpClient.request<unknown>({
+      method: "GET",
+      pathWithQuery,
+    });
+    return parseWechatNativeTransaction({
+      response: response.body,
+      expectedMchId: dependencies.config.mchId,
+      expectedAppId: dependencies.config.appId,
+      orderNumber,
+      providerTransactionId: queryByOrder ? null : transactionId,
+      expectedAmountMinor: expected?.amountMinor,
+      expectedCurrency: expected?.currency,
+      expectedExpiresAt: expected?.expiresAt,
+      paymentToken: expected?.paymentToken ?? `wechat-native:${orderNumber}`,
+    });
+  }
+
+  private nativeDescription(value: string): string {
+    if (typeof value !== "string") {
+      throw new BillingError(
+        "PAYMENT_PROVIDER_REQUEST_INVALID",
+        "The WeChat Pay request is invalid.",
+        400,
+      );
+    }
+    return Array.from(value).slice(0, 127).join("").trim();
+  }
+
+  private assertNativeCreateInput(
+    input: CreatePaymentInput,
+    description: string,
+    dependencies: CallbackDependencies,
+  ): void {
+    if (
+      !this.isNativeIdentifier(input.orderNumber) ||
+      !this.isNativeIdentifier(input.idempotencyKey) ||
+      description.length === 0 ||
+      !Number.isSafeInteger(input.amountMinor) ||
+      input.amountMinor <= 0 ||
+      input.currency !== "CNY" ||
+      !Number.isFinite(Date.parse(input.expiresAt)) ||
+      Date.parse(input.expiresAt) <= dependencies.now().getTime()
+    ) {
+      throw new BillingError(
+        "PAYMENT_PROVIDER_REQUEST_INVALID",
+        "The WeChat Pay request is invalid.",
+        400,
+      );
+    }
+  }
+
+  private nativeOrderNumber(value: string): string {
+    if (!this.isNativeIdentifier(value)) {
+      throw new BillingError(
+        "PAYMENT_PROVIDER_REQUEST_INVALID",
+        "The WeChat Pay request is invalid.",
+        400,
+      );
+    }
+    return value;
+  }
+
+  private optionalNativeTransactionId(value: string | null): string | null {
+    if (value === null) return null;
+    if (!this.isNativeIdentifier(value)) {
+      throw new BillingError(
+        "PAYMENT_PROVIDER_REQUEST_INVALID",
+        "The WeChat Pay request is invalid.",
+        400,
+      );
+    }
+    return value;
+  }
+
+  private isNativeIdentifier(value: unknown): value is string {
+    return (
+      typeof value === "string" &&
+      value.length > 0 &&
+      [...value].length <= 64 &&
+      value === value.trim() &&
+      !/\p{C}/u.test(value)
+    );
+  }
+
+  private isUncertain(error: unknown): boolean {
+    return (
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_UNAVAILABLE"
+    );
+  }
+
+  private isStateConflict(error: unknown): boolean {
+    return (
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_STATE_CONFLICT"
+    );
+  }
+
+  private invalidNativeResponse(): BillingError {
+    return new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "WeChat Pay returned an invalid response.",
+      502,
+    );
   }
 
   private verifyCallback(
