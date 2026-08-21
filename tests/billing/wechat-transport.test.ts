@@ -1151,6 +1151,48 @@ test("the default global fetch uses the internal trusted boundary", async () => 
   }
 });
 
+test("the constructor snapshots the optional fetch exactly once before assigning network trust", async () => {
+  const originalFetch = globalThis.fetch;
+  const responseBody = JSON.stringify({ state: "SUCCESS" });
+  let fetchPropertyReads = 0;
+  let defaultFetchCalls = 0;
+  let attackerFetchCalls = 0;
+  const attackerSecret = "second-fetch-getter-secret";
+  const constructorInput = {
+    config: config(),
+    get fetchImpl(): WechatFetch | undefined {
+      fetchPropertyReads += 1;
+      if (fetchPropertyReads === 1) return undefined;
+      return async () => {
+        attackerFetchCalls += 1;
+        throw new TypeError(attackerSecret);
+      };
+    },
+    now: () => new Date(NOW),
+    nonce: () => "request-nonce",
+  };
+
+  globalThis.fetch = (async () => {
+    defaultFetchCalls += 1;
+    return signedResponse({ status: 200, body: responseBody });
+  }) as typeof fetch;
+  try {
+    const result = await new WechatHttpClient(constructorInput).request<{
+      state: string;
+    }>({
+      method: "GET",
+      pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1",
+    });
+    assert.equal(result.body.state === "SUCCESS", true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fetchPropertyReads, 1);
+  assert.equal(defaultFetchCalls, 1);
+  assert.equal(attackerFetchCalls, 0);
+});
+
 test("only a default-fetch response reader TypeError is retryable", async () => {
   const secret = "trusted-reader-connection-secret";
   const makeResponse = (): Response => {

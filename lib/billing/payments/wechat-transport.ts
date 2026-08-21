@@ -292,10 +292,11 @@ export class WechatHttpClient {
     timeoutMs?: number;
     maxResponseBytes?: number;
   }) {
+    const fetchImpl = input.fetchImpl;
     this.config = input.config;
-    this.trustedFetchAdapter = input.fetchImpl === undefined;
+    this.trustedFetchAdapter = fetchImpl === undefined;
     this.fetchImpl =
-      input.fetchImpl ??
+      fetchImpl ??
       ((requestInput, init) => globalThis.fetch(requestInput, init));
     this.now = input.now ?? (() => new Date());
     this.nonce = input.nonce ?? (() => crypto.randomUUID().replaceAll("-", ""));
