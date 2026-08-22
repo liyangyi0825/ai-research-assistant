@@ -4,6 +4,7 @@ import {
   createHash,
   generateKeyPairSync,
   sign as rsaSign,
+  verify as rsaVerify,
 } from "node:crypto";
 import test from "node:test";
 
@@ -30,6 +31,7 @@ import type {
   RefundResult,
 } from "../../lib/billing/payments/types";
 import {
+  createPaymentWebhookPostHandler,
   processPaymentWebhook,
   type WebhookEventRecord,
   type WebhookRepository,
@@ -57,9 +59,10 @@ const CALLBACK_NONCE = "callback1234";
 const CALLBACK_AAD = "transaction";
 const { privateKey: platformPrivateKey, publicKey: platformPublicKey } =
   generateKeyPairSync("rsa", { modulusLength: 2048 });
-const { privateKey: merchantPrivateKey } = generateKeyPairSync("rsa", {
-  modulusLength: 2048,
-});
+const {
+  privateKey: merchantPrivateKey,
+  publicKey: merchantPublicKey,
+} = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const platformPublicKeyPem = platformPublicKey.export({
   type: "spki",
   format: "pem",
@@ -1541,17 +1544,37 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
   const creditRefundRequestId = "refund-request-credit-pack";
   const refundId = "refund-stage-d1";
   const refundIdempotencyKey = "billing-refund:stage-d1-semester";
+  const subscriptionId = "subscription-stage-d1";
+  const decoyUserId = "user-stage-d1-decoy";
+  const decoyOrderId = "order-stage-d1-decoy";
+  const decoySubscriptionId = "subscription-stage-d1-decoy";
+  const decoySourceOrder = "BILL-ORDER-STAGE-D1-DECOY";
   const paymentCodeUrl = "weixin://wxpay/bizpayurl?pr=SENTINEL_CODE_URL";
   const decryptedResourceSentinel = "SENTINEL_DECRYPTED_RESOURCE";
   const expiresAt = "2026-08-19T20:30:00+08:00";
   const recordedTransport: Array<{
     method: string;
     pathWithQuery: string;
+    rawBody: string;
     body: unknown;
   }> = [];
   const capturedLogs: string[] = [];
   const capturedAuthorizations: string[] = [];
   const capturedResponseSignatures: string[] = [];
+  const capturedResponses: Array<{
+    status: number;
+    headers: Record<string, string>;
+    bodyText: string;
+  }> = [];
+  const captureJsonResponse = async <T>(response: Response): Promise<T> => {
+    const rawBody = await response.text();
+    capturedResponses.push({
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+      bodyText: rawBody,
+    });
+    return JSON.parse(rawBody) as T;
+  };
   const wechatConfig = config();
 
   const enabledConfig: BillingConfig = {
@@ -1600,12 +1623,14 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
       capturedAuthorizations.push(
         requestHeaders.get("Authorization") ?? "",
       );
+      const rawBody = init.body === undefined ? "" : String(init.body);
       const body = init.body === undefined
         ? undefined
-        : JSON.parse(String(init.body));
+        : JSON.parse(rawBody);
       recordedTransport.push({
         method: init.method ?? "GET",
         pathWithQuery,
+        rawBody,
         body,
       });
 
@@ -1735,7 +1760,9 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     { params: Promise.resolve({ id: orderId }) },
   );
   assert.equal(createPaymentResponse.status, 201);
-  const createPaymentBody = await createPaymentResponse.json();
+  const createPaymentBody = await captureJsonResponse<{
+    payment: { status: string; expiresAt: string };
+  }>(createPaymentResponse);
   assert.deepEqual(createPaymentBody, {
     payment: { status: "PENDING", expiresAt: "2026-08-19T12:30:00.000Z" },
   });
@@ -1754,37 +1781,83 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
   assert.equal(queriedPayment.status, "PAID");
   assert.equal(queriedPayment.providerTransactionId, providerTransactionId);
 
-  let webhookRecord: WebhookEventRecord | null = null;
-  let subscriptionGrantCount = 0;
-  let subscriptionRevokeCount = 0;
-  let semesterEntitlementActive = false;
-  const semesterUsageCount = 0;
+  type EntitlementState = {
+    userId: string;
+    orderId: string;
+    subscriptionId: string;
+    sourceOrder: string;
+    active: boolean;
+    grantCount: number;
+    revokeCount: number;
+    usageCount: number;
+  };
+  const entitlementKey = (state: Pick<
+    EntitlementState,
+    "userId" | "orderId" | "subscriptionId" | "sourceOrder"
+  >) =>
+    `${state.userId}:${state.orderId}:${state.subscriptionId}:${state.sourceOrder}`;
+  const targetEntitlement: EntitlementState = {
+    userId,
+    orderId,
+    subscriptionId,
+    sourceOrder: merchantOrderNumber,
+    active: false,
+    grantCount: 0,
+    revokeCount: 0,
+    usageCount: 0,
+  };
+  const decoyEntitlement: EntitlementState = {
+    userId: decoyUserId,
+    orderId: decoyOrderId,
+    subscriptionId: decoySubscriptionId,
+    sourceOrder: decoySourceOrder,
+    active: true,
+    grantCount: 1,
+    revokeCount: 0,
+    usageCount: 0,
+  };
+  const decoyInitialState = { ...decoyEntitlement };
+  const targetEntitlementKey = entitlementKey(targetEntitlement);
+  const decoyEntitlementKey = entitlementKey(decoyEntitlement);
+  const entitlements = new Map<string, EntitlementState>([
+    [targetEntitlementKey, targetEntitlement],
+    [decoyEntitlementKey, decoyEntitlement],
+  ]);
+  const webhookRecords = new Map<string, WebhookEventRecord>();
   const webhookRepository: WebhookRepository = {
     async persistEvent(input) {
-      if (webhookRecord !== null) return webhookRecord;
-      webhookRecord = {
+      const existing = webhookRecords.get(input.providerEventId);
+      if (existing) return existing;
+      const record: WebhookEventRecord = {
         ...input,
-        id: "webhook-stage-d1",
+        id: `webhook-stage-d1-${webhookRecords.size + 1}`,
         orderId: null,
         userId: null,
       };
-      return webhookRecord;
+      webhookRecords.set(input.providerEventId, record);
+      return record;
     },
-    async markEventFailed(_provider, _providerEventId, errorCode) {
-      assert.ok(webhookRecord);
-      webhookRecord = { ...webhookRecord, status: "FAILED", errorCode };
-      return webhookRecord;
+    async markEventFailed(_provider, providerEventId, errorCode) {
+      const record = webhookRecords.get(providerEventId);
+      assert.ok(record);
+      const failed = { ...record, status: "FAILED" as const, errorCode };
+      webhookRecords.set(providerEventId, failed);
+      return failed;
     },
-    async markEventRetryable(_provider, _providerEventId, errorCode) {
-      assert.ok(webhookRecord);
-      webhookRecord = { ...webhookRecord, status: "RETRYABLE", errorCode };
-      return webhookRecord;
+    async markEventRetryable(_provider, providerEventId, errorCode) {
+      const record = webhookRecords.get(providerEventId);
+      assert.ok(record);
+      const retryable = { ...record, status: "RETRYABLE" as const, errorCode };
+      webhookRecords.set(providerEventId, retryable);
+      return retryable;
     },
-    async prepareEventForSettlement() {
-      assert.ok(webhookRecord);
-      return webhookRecord;
+    async prepareEventForSettlement(_provider, providerEventId) {
+      const record = webhookRecords.get(providerEventId);
+      assert.ok(record);
+      return record;
     },
     async settlePaidOrder(args) {
+      const webhookRecord = webhookRecords.get(args.p_provider_event_id);
       assert.ok(webhookRecord);
       assert.deepEqual(args, {
         p_order_number: merchantOrderNumber,
@@ -1805,14 +1878,17 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
           orderId,
         };
       }
-      subscriptionGrantCount += 1;
-      semesterEntitlementActive = true;
-      webhookRecord = {
+      const entitlement = entitlements.get(targetEntitlementKey);
+      assert.ok(entitlement);
+      entitlement.grantCount += 1;
+      entitlement.active = true;
+      const processed: WebhookEventRecord = {
         ...webhookRecord,
         status: "PROCESSED",
         orderId,
         userId,
       };
+      webhookRecords.set(args.p_provider_event_id, processed);
       return { status: "PROCESSED", eventStatus: "PROCESSED", orderId };
     },
   };
@@ -1849,8 +1925,9 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
   );
   assert.equal(firstWebhook.status, "PROCESSED");
   assert.equal(duplicateWebhook.status, "ALREADY_PROCESSED");
-  assert.equal(subscriptionGrantCount, 1);
-  assert.equal(semesterEntitlementActive, true);
+  assert.equal(targetEntitlement.grantCount, 1);
+  assert.equal(targetEntitlement.active, true);
+  assert.deepEqual(decoyEntitlement, decoyInitialState);
 
   const approvedRefunds = new Set<string>();
   const unused = async (): Promise<never> => {
@@ -1871,8 +1948,9 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
         input.decision === "APPROVED" &&
         input.requestId === semesterRefundRequestId
       ) {
-        assert.equal(semesterEntitlementActive, true);
-        assert.equal(semesterUsageCount, 0);
+        assert.equal(targetEntitlement.active, true);
+        assert.equal(targetEntitlement.usageCount, 0);
+        assert.deepEqual(decoyEntitlement, decoyInitialState);
       }
       approvedRefunds.add(input.requestId);
       return {
@@ -1886,6 +1964,7 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     upsertProduct: unused,
   };
   let completedRefund: RefundResult | null = null;
+  const claimedRefundEntitlements = new Map<string, string>();
   const refundRepository: RefundExecutionRepository = {
     async claimApprovedRefund(input) {
       assert.equal(approvedRefunds.has(input.requestId), true);
@@ -1895,6 +1974,7 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
       if (completedRefund !== null) {
         return { status: "SUCCEEDED", refund: completedRefund };
       }
+      claimedRefundEntitlements.set(refundId, targetEntitlementKey);
       return {
         status: "CLAIMED",
         refundId,
@@ -1919,8 +1999,12 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
         currency: "CNY",
       });
       completedRefund = { ...input.result };
-      subscriptionRevokeCount += 1;
-      semesterEntitlementActive = false;
+      const claimedEntitlementKey = claimedRefundEntitlements.get(input.refundId);
+      assert.equal(claimedEntitlementKey, targetEntitlementKey);
+      const entitlement = entitlements.get(claimedEntitlementKey);
+      assert.ok(entitlement);
+      entitlement.revokeCount += 1;
+      entitlement.active = false;
       return { status: "SUCCEEDED", refund: completedRefund };
     },
     async failRefundClaim() {
@@ -1956,10 +2040,13 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     },
   ));
   assert.equal(refundResponseValue.status, 200);
-  const refundResponseBody = await refundResponseValue.json();
+  const refundResponseBody = await captureJsonResponse<{
+    refundCompleted: boolean;
+  }>(refundResponseValue);
   assert.equal(refundResponseBody.refundCompleted, true);
-  assert.equal(subscriptionRevokeCount, 1);
-  assert.equal(semesterEntitlementActive, false);
+  assert.equal(targetEntitlement.revokeCount, 1);
+  assert.equal(targetEntitlement.active, false);
+  assert.deepEqual(decoyEntitlement, decoyInitialState);
 
   const providerCallsBeforeManualRefund = recordedTransport.length;
   const manualRefundResponse = await refundHandler(new Request(
@@ -1976,7 +2063,9 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     },
   ));
   assert.equal(manualRefundResponse.status, 202);
-  const manualRefundBody = await manualRefundResponse.json();
+  const manualRefundBody = await captureJsonResponse<{
+    requiresManualAction: boolean;
+  }>(manualRefundResponse);
   assert.equal(manualRefundBody.requiresManualAction, true);
   assert.equal(recordedTransport.length, providerCallsBeforeManualRefund);
 
@@ -1997,35 +2086,159 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     { params: Promise.resolve({ id: orderId }) },
   );
   assert.equal(disabledResponse.status, 403);
-  const disabledResponseBody = await disabledResponse.json();
+  const disabledResponseBody = await captureJsonResponse<{
+    error: { code: string };
+  }>(disabledResponse);
   assert.equal(disabledResponseBody.error.code, "BILLING_FEATURE_DISABLED");
   assert.equal(disabledCreateCalls, 0);
 
-  assert.deepEqual(
-    recordedTransport.map(({ method, pathWithQuery }) => ({
-      method,
-      pathWithQuery,
-    })),
-    [
-      { method: "POST", pathWithQuery: "/v3/pay/transactions/native" },
-      {
-        method: "GET",
-        pathWithQuery:
-          `/v3/pay/transactions/out-trade-no/${merchantOrderNumber}?mchid=1900000109`,
+  const negativeWebhookHandler = createPaymentWebhookPostHandler({
+    getConfig: () => enabledConfig,
+    processWebhook: (provider, rawBody, headers) =>
+      processPaymentWebhook(provider, rawBody, headers, {
+        repository: webhookRepository,
+        getConfig: () => enabledConfig,
+        getProvider: () => wechat,
+        logger: securityLogger,
+      }),
+  });
+  const callbackSignature = callback.headers["WECHATPAY-SIGNATURE"];
+  const tamperedCallbackSignature =
+    `${callbackSignature.startsWith("A") ? "B" : "A"}${callbackSignature.slice(1)}`;
+  const negativeWebhookResponse = await negativeWebhookHandler(
+    new Request("http://localhost/api/billing/webhooks/wechat", {
+      method: "POST",
+      headers: {
+        ...callback.headers,
+        "WECHATPAY-SIGNATURE": tamperedCallbackSignature,
       },
-      { method: "POST", pathWithQuery: "/v3/refund/domestic/refunds" },
-    ],
+      body: callback.rawBody,
+    }),
+    { params: Promise.resolve({ provider: "wechat" }) },
   );
+  const negativeWebhookBody = await captureJsonResponse<{
+    error: { code: string; message: string };
+  }>(negativeWebhookResponse);
+  assert.equal(negativeWebhookResponse.status, 401);
+  assert.deepEqual(negativeWebhookBody, {
+    error: {
+      code: "INVALID_WEBHOOK_SIGNATURE",
+      message: "The WeChat Pay webhook signature is invalid.",
+    },
+  });
+
+  const expectedCreateBody = {
+    appid: "wx-app-1",
+    mchid: "1900000109",
+    description: "Pro Semester",
+    out_trade_no: merchantOrderNumber,
+    time_expire: "2026-08-19T12:30:00.000Z",
+    notify_url: "https://billing.example.test/api/billing/webhooks/wechat",
+    amount: { total: 7_900, currency: "CNY" },
+  };
+  const expectedRefundBody = {
+    transaction_id: providerTransactionId,
+    out_refund_no: stableWechatRefundNumber(refundIdempotencyKey),
+    reason: "USER_APPROVED_FULL_REFUND",
+    amount: { refund: 7_900, total: 7_900, currency: "CNY" },
+  };
+  assert.deepEqual(recordedTransport, [
+    {
+      method: "POST",
+      pathWithQuery: "/v3/pay/transactions/native",
+      rawBody: JSON.stringify(expectedCreateBody),
+      body: expectedCreateBody,
+    },
+    {
+      method: "GET",
+      pathWithQuery:
+        `/v3/pay/transactions/out-trade-no/${merchantOrderNumber}?mchid=1900000109`,
+      rawBody: "",
+      body: undefined,
+    },
+    {
+      method: "POST",
+      pathWithQuery: "/v3/refund/domestic/refunds",
+      rawBody: JSON.stringify(expectedRefundBody),
+      body: expectedRefundBody,
+    },
+  ]);
   assert.equal(capturedAuthorizations.length, 3);
-  for (const authorization of capturedAuthorizations) {
-    assert.match(authorization, /^WECHATPAY2-SHA256-RSA2048 /);
+  const capturedRequestSignatures: string[] = [];
+  for (const [index, authorization] of capturedAuthorizations.entries()) {
+    const parsed = /^WECHATPAY2-SHA256-RSA2048 mchid="([^"]+)",nonce_str="([^"]+)",timestamp="([^"]+)",serial_no="([^"]+)",signature="([^"]+)"$/.exec(
+      authorization,
+    );
+    assert.ok(parsed, "Authorization must contain the complete WeChat signing tuple");
+    const [, mchId, nonce, timestamp, serial, requestSignature] = parsed;
+    assert.equal(mchId, wechatConfig.mchId);
+    assert.equal(nonce, "SENTINEL_NATIVE_REQUEST_NONCE");
+    assert.equal(timestamp, TIMESTAMP);
+    assert.equal(serial, wechatConfig.merchantCertificateSerialNumber);
+    capturedRequestSignatures.push(requestSignature);
+    const outboundRequest: (typeof recordedTransport)[number] | undefined =
+      recordedTransport[index];
+    assert.ok(outboundRequest);
+    const canonical: string =
+      `${outboundRequest.method}\n${outboundRequest.pathWithQuery}\n${timestamp}\n` +
+      `${nonce}\n${outboundRequest.rawBody}\n`;
+    assert.equal(
+      rsaVerify(
+        "RSA-SHA256",
+        Buffer.from(canonical, "utf8"),
+        merchantPublicKey,
+        Buffer.from(requestSignature, "base64"),
+      ),
+      true,
+      `request ${index} must sign its exact method/path/body`,
+    );
   }
   assert.equal(capturedResponseSignatures.length, 3);
   for (const responseSignature of capturedResponseSignatures) {
     assert.notEqual(responseSignature, "");
   }
 
+  assert.deepEqual(
+    capturedResponses.map(({ status }) => status),
+    [201, 200, 202, 403, 401],
+  );
+  for (const response of capturedResponses) {
+    assert.ok(
+      Object.keys(response.headers).length > 0,
+      "all response headers must be captured",
+    );
+    assert.notEqual(response.bodyText, "", "the raw response body must be captured");
+  }
+  assert.equal(capturedLogs.length, 1);
+  assert.match(capturedLogs[0] ?? "", /^billing_security_event /);
+  const capturedLogEvents = capturedLogs.map((line) =>
+    JSON.parse(line.slice("billing_security_event ".length)) as Record<
+      string,
+      unknown
+    >);
+  const capturedLogEvent = capturedLogEvents[0];
+  assert.ok(capturedLogEvent);
+  assert.deepEqual(
+    {
+      eventCode: capturedLogEvent.eventCode,
+      provider: capturedLogEvent.provider,
+      errorCode: capturedLogEvent.errorCode,
+      status: capturedLogEvent.status,
+    },
+    {
+      eventCode: "WEBHOOK_SIGNATURE_REJECTED",
+      provider: "WECHAT",
+      errorCode: "INVALID_WEBHOOK_SIGNATURE",
+      status: "FAILED",
+    },
+  );
+  assert.match(
+    String(capturedLogEvent.providerEventId),
+    /^rejected:[a-f0-9]{64}$/,
+  );
+
   const capturedOutputs = [
+    capturedResponses,
     createPaymentBody,
     queriedPayment,
     firstWebhook,
@@ -2033,28 +2246,119 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     refundResponseBody,
     manualRefundBody,
     disabledResponseBody,
+    negativeWebhookBody,
     capturedLogs,
+    capturedLogEvents,
   ];
   const collectSurface = (
     value: unknown,
     seen = new Set<unknown>(),
+    propertyKeys: string[] = [],
   ): string[] => {
     if (typeof value === "string") return [value];
-    if (value === null || typeof value !== "object" || seen.has(value)) {
-      return [];
+    if (typeof value === "function") {
+      return [Function.prototype.toString.call(value)];
     }
+    if (value === null || value === undefined) return [];
+    if (typeof value !== "object") return [String(value)];
+    if (seen.has(value)) return [];
     seen.add(value);
+
+    if (Buffer.isBuffer(value)) {
+      return [value.toString("utf8"), value.toString("hex"), value.toString("base64")];
+    }
+    if (ArrayBuffer.isView(value)) {
+      const view = value as ArrayBufferView;
+      const bytes = Buffer.from(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      );
+      return [bytes.toString("utf8"), bytes.toString("hex"), bytes.toString("base64")];
+    }
+    if (value instanceof ArrayBuffer) {
+      const bytes = Buffer.from(new Uint8Array(value));
+      return [bytes.toString("utf8"), bytes.toString("hex"), bytes.toString("base64")];
+    }
+    if (value instanceof Map) {
+      return [...value.entries()].flatMap(([key, entryValue]) => {
+        if (typeof key === "string") propertyKeys.push(key);
+        return [
+          ...collectSurface(key, seen, propertyKeys),
+          ...collectSurface(entryValue, seen, propertyKeys),
+        ];
+      });
+    }
+    if (value instanceof Set) {
+      return [...value.values()].flatMap((entryValue) =>
+        collectSurface(entryValue, seen, propertyKeys));
+    }
     return Reflect.ownKeys(value).flatMap((key) => {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      propertyKeys.push(String(key));
+      if (!descriptor) return [String(key)];
       return [
         String(key),
-        ...(descriptor && "value" in descriptor
-          ? collectSurface(descriptor.value, seen)
+        ...("value" in descriptor
+          ? collectSurface(descriptor.value, seen, propertyKeys)
+          : []),
+        ...(descriptor.get
+          ? collectSurface(descriptor.get, seen, propertyKeys)
+          : []),
+        ...(descriptor.set
+          ? collectSurface(descriptor.set, seen, propertyKeys)
           : []),
       ];
     });
   };
-  const outputSurface = collectSurface(capturedOutputs);
+  const descriptorProof = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(descriptorProof, "hidden", {
+    value: "DESCRIPTOR_MARKER",
+    enumerable: false,
+  });
+  const typedArrayMarker = Buffer.from("TYPED_ARRAY_MARKER", "utf8");
+  const traversalProof = collectSurface({
+    buffer: Buffer.from("BUFFER_MARKER", "utf8"),
+    typedArray: new Uint8Array(
+      typedArrayMarker.buffer,
+      typedArrayMarker.byteOffset,
+      typedArrayMarker.byteLength,
+    ),
+    arrayBuffer: Uint8Array.from(
+      Buffer.from("ARRAY_BUFFER_MARKER", "utf8"),
+    ).buffer,
+    map: new Map([["MAP_KEY_MARKER", "MAP_VALUE_MARKER"]]),
+    set: new Set(["SET_MARKER"]),
+    descriptorProof,
+  });
+  for (const marker of [
+    "BUFFER_MARKER",
+    "TYPED_ARRAY_MARKER",
+    "ARRAY_BUFFER_MARKER",
+    "MAP_KEY_MARKER",
+    "MAP_VALUE_MARKER",
+    "SET_MARKER",
+    "DESCRIPTOR_MARKER",
+  ]) {
+    assert.equal(
+      traversalProof.some((value) => value.includes(marker)),
+      true,
+      `recursive surface traversal missed ${marker}`,
+    );
+  }
+  const outputPropertyKeys: string[] = [];
+  const outputSurface = collectSurface(
+    capturedOutputs,
+    new Set<unknown>(),
+    outputPropertyKeys,
+  );
+  assert.ok(outputSurface.length > 0, "captured response/log surface must be non-empty");
+  assert.ok(
+    outputPropertyKeys.includes("content-type"),
+    "response header names must be scanned as property keys",
+  );
+  assert.ok(
+    outputPropertyKeys.includes("eventCode"),
+    "parsed security-log fields must be scanned as property keys",
+  );
   const forbiddenValues = [
     API_V3_KEY.toString("utf8"),
     wechatConfig.merchantPrivateKeyPem,
@@ -2076,8 +2380,10 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     }),
     decryptedResourceSentinel,
     ...capturedAuthorizations,
+    ...capturedRequestSignatures,
     ...capturedResponseSignatures,
     callback.headers["WECHATPAY-SIGNATURE"],
+    tamperedCallbackSignature,
     "SENTINEL_NATIVE_REQUEST_NONCE",
     "callback-signing-nonce",
     CALLBACK_NONCE,
@@ -2099,7 +2405,7 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     "nonce",
   ]) {
     assert.equal(
-      outputSurface.some((value) =>
+      outputPropertyKeys.some((value) =>
         value.toLowerCase().includes(forbiddenKeyFragment)),
       false,
       `captured output exposed forbidden field: ${forbiddenKeyFragment}`,

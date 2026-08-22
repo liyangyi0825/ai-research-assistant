@@ -226,6 +226,22 @@ test("reconciliation route returns the exact report DTO to an administrator", as
   assert.deepEqual(await response.json(), reconciliationReport);
 });
 
+test("reconciliation route exposes only GET and delegates to the guarded server factory", async () => {
+  const route = await import("../../app/api/admin/billing/reconciliation/route");
+  assert.deepEqual(Object.keys(route).sort(), ["GET"]);
+
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile("app/api/admin/billing/reconciliation/route.ts", "utf8"));
+  assert.match(
+    source,
+    /import \{ createReconciliationGetHandler \} from "\.\/server";/,
+  );
+  assert.match(
+    source,
+    /export async function GET\(request: Request\) \{\s*return createReconciliationGetHandler\(\)\(request\);\s*\}/,
+  );
+});
+
 test("reconciliation report view renders safe report fields and read-only scope", () => {
   const markup = renderToStaticMarkup(createElement(ReconciliationReportView, { report: reconciliationReport }));
 

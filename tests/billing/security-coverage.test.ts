@@ -740,6 +740,61 @@ test("the safe environment example leaves billing disabled and declares empty ex
   assert.equal(environment.WECHAT_PAY_PUBLIC_KEY, "");
 });
 
+test("the offline font build wrapper restores both present and absent caller environments", () => {
+  const script = resolve(
+    rootDirectory,
+    "tests/fixtures/run-next-build-offline.ps1",
+  );
+  assert.ok(existsSync(script), "missing isolated offline build wrapper");
+  const variable = "NEXT_FONT_GOOGLE_MOCKED_RESPONSES";
+  const original = process.env[variable];
+  const presentSentinel = "SENTINEL_PARENT_FONT_ENV";
+  const presentOutput = execFileSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-VerifyEnvironmentIsolation",
+    ],
+    {
+      cwd: rootDirectory,
+      encoding: "utf8",
+      env: { ...process.env, [variable]: presentSentinel },
+    },
+  ).trim();
+  assert.equal(presentOutput, `restored:${presentSentinel}`);
+
+  const absentEnvironment = { ...process.env };
+  delete absentEnvironment[variable];
+  const absentOutput = execFileSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      script,
+      "-VerifyEnvironmentIsolation",
+    ],
+    { cwd: rootDirectory, encoding: "utf8", env: absentEnvironment },
+  ).trim();
+  assert.equal(absentOutput, "restored:<absent>");
+  assert.equal(process.env[variable], original);
+
+  const operatorDocs = readProjectFile("docs/billing-fast-launch.md");
+  assert.match(
+    operatorDocs,
+    /powershell\.exe -NoProfile -ExecutionPolicy Bypass -File tests\/fixtures\/run-next-build-offline\.ps1/,
+  );
+  assert.doesNotMatch(
+    operatorDocs,
+    /\$env:NEXT_FONT_GOOGLE_MOCKED_RESPONSES\s*=/,
+  );
+});
+
 test("client graph classification permits type-only imports but follows static, dynamic, and require edges", () => {
   assert.deepEqual(
     runtimeModuleSpecifiers(

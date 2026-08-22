@@ -49,6 +49,22 @@ function success() {
   };
 }
 
+test("refund route exposes only GET/PATCH and delegates both guarded operations", async () => {
+  const route = await import("../../app/api/admin/billing/refunds/route");
+  assert.deepEqual(Object.keys(route).sort(), ["GET", "PATCH"]);
+
+  const source = await import("node:fs/promises").then((fs) =>
+    fs.readFile("app/api/admin/billing/refunds/route.ts", "utf8"));
+  assert.match(
+    source,
+    /export async function GET\(request: Request\)[\s\S]*createAdminBillingHandler\([\s\S]*\)\(request\);/,
+  );
+  assert.match(
+    source,
+    /export const PATCH = createRefundReviewHandler\(\);/,
+  );
+});
+
 test("approved refund review executes and returns the persisted review plus settlement", async () => {
   let executions = 0;
   const handler = createRefundReviewHandler({

@@ -69,11 +69,10 @@ npm.cmd exec -- tsx --test tests/billing/wechat-crypto.test.ts tests/billing/wec
 离线生产构建使用 Next 提供的 `NEXT_FONT_GOOGLE_MOCKED_RESPONSES` 测试钩子，避免构建机访问 Google Fonts：
 
 ```powershell
-$env:NEXT_FONT_GOOGLE_MOCKED_RESPONSES = (Resolve-Path "tests/fixtures/next-font-google-responses.cjs").Path
-npm.cmd run build
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/fixtures/run-next-build-offline.ps1
 ```
 
-该变量和 fixture 仅用于离线构建门禁：它以本地字体 CSS 响应验证编译、类型生成和路由契约，不修改 `app/layout.tsx`，也不替代生产构建对 Geist 字体下载/缓存及最终页面字体的验证。部署流程不得设置这个测试变量，除非另有独立审核批准。
+wrapper 在隔离子进程内用 `try/finally` 保存并恢复已有的 `NEXT_FONT_GOOGLE_MOCKED_RESPONSES`，若调用前不存在则在结束时删除；成功、失败或异常都不得把测试变量留在调用 shell。该变量和 fixture 仅用于离线构建门禁：它以本地字体 CSS 响应验证编译、类型生成和路由契约，不修改 `app/layout.tsx`，也不替代生产构建对 Geist 字体下载/缓存及最终页面字体的验证。部署流程不得设置这个测试变量，除非另有独立审核批准。
 
 ## 后续独立批准
 
