@@ -7,13 +7,47 @@ import {
 } from "node:crypto";
 import test from "node:test";
 
+import { createRefundReviewHandler } from "../../app/api/admin/billing/refunds/server";
+import {
+  reviewRefundRequest,
+  type BillingAdminRepository,
+} from "../../lib/billing/admin";
+import {
+  assertBillingAccess,
+  type BillingActor,
+  type BillingAdmin,
+} from "../../lib/billing/auth";
+import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
+import {
+  createOrderPayment,
+  createOrderPaymentPostHandler,
+  queryAndBindOrderPayment,
+  type PaymentQueryRepository,
+} from "../../lib/billing/payments/service";
+import type {
+  PaymentResult,
+  RefundResult,
+} from "../../lib/billing/payments/types";
+import {
+  processPaymentWebhook,
+  type WebhookEventRecord,
+  type WebhookRepository,
+} from "../../lib/billing/payments/webhooks";
 import type { WechatPayConfig } from "../../lib/billing/payments/wechat-config";
 import { WechatHttpClient } from "../../lib/billing/payments/wechat-transport";
 import {
   stableWechatRefundNumber,
   WechatPayProvider,
 } from "../../lib/billing/payments/wechat";
+import {
+  executeApprovedRefund,
+  type RefundExecutionRepository,
+} from "../../lib/billing/refunds";
+import {
+  createBillingSecurityLogger,
+  type BillingSecurityLogger,
+} from "../../lib/billing/security-logger";
 
 const NOW = new Date("2026-08-19T10:02:00.000Z");
 const TIMESTAMP = String(Math.floor(NOW.getTime() / 1_000));
@@ -1495,4 +1529,580 @@ test("rejects invalid full-refund inputs before provider invocation", async () =
       error.status === 400,
   );
   assert.equal(recorded.length, 0);
+});
+
+test("Stage D1 signed WeChat flow grants one unused semester then revokes it without leaking sensitive surfaces", async () => {
+  const userId = "user-stage-d1";
+  const orderId = "order-stage-d1";
+  const merchantOrderNumber = "BILL-ORDER-STAGE-D1";
+  const providerTransactionId = "4200000000099";
+  const paymentIntentId = "intent-stage-d1";
+  const semesterRefundRequestId = "refund-request-semester";
+  const creditRefundRequestId = "refund-request-credit-pack";
+  const refundId = "refund-stage-d1";
+  const refundIdempotencyKey = "billing-refund:stage-d1-semester";
+  const paymentCodeUrl = "weixin://wxpay/bizpayurl?pr=SENTINEL_CODE_URL";
+  const decryptedResourceSentinel = "SENTINEL_DECRYPTED_RESOURCE";
+  const expiresAt = "2026-08-19T20:30:00+08:00";
+  const recordedTransport: Array<{
+    method: string;
+    pathWithQuery: string;
+    body: unknown;
+  }> = [];
+  const capturedLogs: string[] = [];
+  const capturedAuthorizations: string[] = [];
+  const capturedResponseSignatures: string[] = [];
+  const wechatConfig = config();
+
+  const enabledConfig: BillingConfig = {
+    featureEnabled: true,
+    paymentMode: "wechat",
+    testUserIds: [],
+    legal: { operatorName: "", operatorCreditCode: "", contactEmail: "" },
+    wechatConfigured: true,
+    alipayConfigured: false,
+    isProduction: false,
+  };
+  const disabledConfig: BillingConfig = {
+    ...enabledConfig,
+    featureEnabled: false,
+  };
+  const billingActor: BillingActor = {
+    id: userId,
+    email: "stage-d1@example.test",
+    isAdmin: false,
+  };
+  const billingAdmin: BillingAdmin = {
+    id: "admin-stage-d1",
+    email: "admin-stage-d1@example.test",
+    isAdmin: true,
+    role: "BILLING_ADMIN",
+  };
+  const securityLogger: BillingSecurityLogger = createBillingSecurityLogger(
+    (line) => capturedLogs.push(line),
+  );
+
+  const respond = (body: unknown): Response => {
+    const response = signedResponse(body);
+    capturedResponseSignatures.push(
+      response.headers.get("Wechatpay-Signature") ?? "",
+    );
+    return response;
+  };
+  const httpClient = new WechatHttpClient({
+    config: wechatConfig,
+    now: () => new Date(NOW),
+    nonce: () => "SENTINEL_NATIVE_REQUEST_NONCE",
+    fetchImpl: async (url, init) => {
+      const parsedUrl = new URL(url);
+      const pathWithQuery = `${parsedUrl.pathname}${parsedUrl.search}`;
+      const requestHeaders = new Headers(init.headers);
+      capturedAuthorizations.push(
+        requestHeaders.get("Authorization") ?? "",
+      );
+      const body = init.body === undefined
+        ? undefined
+        : JSON.parse(String(init.body));
+      recordedTransport.push({
+        method: init.method ?? "GET",
+        pathWithQuery,
+        body,
+      });
+
+      if (
+        init.method === "POST" &&
+        pathWithQuery === "/v3/pay/transactions/native"
+      ) {
+        return respond({ code_url: paymentCodeUrl });
+      }
+      if (
+        init.method === "GET" &&
+        pathWithQuery.startsWith(
+          `/v3/pay/transactions/out-trade-no/${merchantOrderNumber}?`,
+        )
+      ) {
+        return respond(nativeTransaction({
+          out_trade_no: merchantOrderNumber,
+          transaction_id: providerTransactionId,
+          trade_state: "SUCCESS",
+          time_expire: expiresAt,
+          success_time: "2026-08-19T18:00:00+08:00",
+        }));
+      }
+      if (
+        init.method === "POST" &&
+        pathWithQuery === "/v3/refund/domestic/refunds"
+      ) {
+        return respond(refundResponse({
+          refund_id: "5030000000000000099",
+          out_refund_no: stableWechatRefundNumber(refundIdempotencyKey),
+          transaction_id: providerTransactionId,
+        }));
+      }
+      throw new Error(`unexpected signed fake transport request: ${pathWithQuery}`);
+    },
+  });
+  const wechat = new WechatPayProvider({
+    config: wechatConfig,
+    httpClient,
+    now: () => new Date(NOW),
+  });
+
+  let storedPayment: PaymentResult | null = null;
+  let paymentClaimed = false;
+  const paymentRepository: PaymentQueryRepository = {
+    async findOwnedOrder(requestUserId, requestOrderId) {
+      if (requestUserId !== userId || requestOrderId !== orderId) return null;
+      return {
+        id: orderId,
+        userId,
+        orderNumber: "ORDER-SNAPSHOT-STAGE-D1",
+        provider: "WECHAT",
+        status: "PENDING",
+        amountMinor: 7_900,
+        currency: "CNY",
+        expiresAt,
+        snapshotProductName: "Pro Semester",
+      };
+    },
+    async claimPaymentIntent(input) {
+      if (storedPayment !== null) {
+        return { status: "REUSE", payment: storedPayment };
+      }
+      if (paymentClaimed) return { status: "IN_PROGRESS" };
+      paymentClaimed = true;
+      return {
+        status: "CLAIMED",
+        intentId: paymentIntentId,
+        merchantOrderNumber: input.merchantOrderNumber,
+        requestIdempotencyKey: input.requestIdempotencyKey,
+      };
+    },
+    async completePaymentIntent(input) {
+      assert.equal(input.intentId, paymentIntentId);
+      storedPayment = { ...input.payment };
+      paymentClaimed = false;
+      return storedPayment;
+    },
+    async failPaymentIntent() {
+      paymentClaimed = false;
+    },
+    async findOwnedPaymentIntent(requestUserId, requestOrderId) {
+      return requestUserId === userId && requestOrderId === orderId
+        ? storedPayment
+        : null;
+    },
+    async bindVerifiedPaymentQuery(input) {
+      assert.equal(input.userId, userId);
+      assert.equal(input.orderId, orderId);
+      assert.equal(input.provider, "WECHAT");
+      assert.deepEqual(input.payment, {
+        providerTransactionId,
+        orderNumber: merchantOrderNumber,
+        status: "PAID",
+        amountMinor: 7_900,
+        currency: "CNY",
+        paymentToken: null,
+        expiresAt: "2026-08-19T12:30:00.000Z",
+        paidAt: "2026-08-19T10:00:00.000Z",
+      });
+      storedPayment = { ...input.payment };
+      return storedPayment;
+    },
+    async claimMockPaymentConfirmation() {
+      throw new Error("Mock confirmation is outside the signed WeChat fixture");
+    },
+  };
+
+  const createPaymentHandler = createOrderPaymentPostHandler({
+    requireActor: async () => billingActor,
+    getConfig: () => enabledConfig,
+    assertAccess: assertBillingAccess,
+    createPayment: (requestUserId, requestOrderId) =>
+      createOrderPayment(requestUserId, requestOrderId, {
+        repository: paymentRepository,
+        now: () => new Date(NOW),
+        getConfig: () => enabledConfig,
+        getProvider: () => wechat,
+        logger: securityLogger,
+        createMerchantOrderNumber: () => merchantOrderNumber,
+      }),
+  });
+  const createPaymentResponse = await createPaymentHandler(
+    new Request(`http://localhost/api/billing/orders/${orderId}/payment`, {
+      method: "POST",
+    }),
+    { params: Promise.resolve({ id: orderId }) },
+  );
+  assert.equal(createPaymentResponse.status, 201);
+  const createPaymentBody = await createPaymentResponse.json();
+  assert.deepEqual(createPaymentBody, {
+    payment: { status: "PENDING", expiresAt: "2026-08-19T12:30:00.000Z" },
+  });
+  const persistedAfterCreate = await paymentRepository.findOwnedPaymentIntent(
+    userId,
+    orderId,
+  );
+  assert.ok(persistedAfterCreate);
+  assert.equal(persistedAfterCreate.paymentToken, paymentCodeUrl);
+
+  const queriedPayment = await queryAndBindOrderPayment(userId, orderId, {
+    repository: paymentRepository,
+    getConfig: () => enabledConfig,
+    getProvider: () => wechat,
+  });
+  assert.equal(queriedPayment.status, "PAID");
+  assert.equal(queriedPayment.providerTransactionId, providerTransactionId);
+
+  let webhookRecord: WebhookEventRecord | null = null;
+  let subscriptionGrantCount = 0;
+  let subscriptionRevokeCount = 0;
+  let semesterEntitlementActive = false;
+  const semesterUsageCount = 0;
+  const webhookRepository: WebhookRepository = {
+    async persistEvent(input) {
+      if (webhookRecord !== null) return webhookRecord;
+      webhookRecord = {
+        ...input,
+        id: "webhook-stage-d1",
+        orderId: null,
+        userId: null,
+      };
+      return webhookRecord;
+    },
+    async markEventFailed(_provider, _providerEventId, errorCode) {
+      assert.ok(webhookRecord);
+      webhookRecord = { ...webhookRecord, status: "FAILED", errorCode };
+      return webhookRecord;
+    },
+    async markEventRetryable(_provider, _providerEventId, errorCode) {
+      assert.ok(webhookRecord);
+      webhookRecord = { ...webhookRecord, status: "RETRYABLE", errorCode };
+      return webhookRecord;
+    },
+    async prepareEventForSettlement() {
+      assert.ok(webhookRecord);
+      return webhookRecord;
+    },
+    async settlePaidOrder(args) {
+      assert.ok(webhookRecord);
+      assert.deepEqual(args, {
+        p_order_number: merchantOrderNumber,
+        p_provider: "WECHAT",
+        p_provider_transaction_id: providerTransactionId,
+        p_provider_event_id: "EVT-STAGE-D1",
+        p_request_idempotency_key:
+          `billing-payment:WECHAT:${merchantOrderNumber}`,
+        p_amount_minor: 7_900,
+        p_currency: "CNY",
+        p_paid_at: "2026-08-19T10:00:00.000Z",
+        p_response_summary: { event_type: "PAYMENT.PAID" },
+      });
+      if (webhookRecord.status === "PROCESSED") {
+        return {
+          status: "ALREADY_PROCESSED",
+          eventStatus: "PROCESSED",
+          orderId,
+        };
+      }
+      subscriptionGrantCount += 1;
+      semesterEntitlementActive = true;
+      webhookRecord = {
+        ...webhookRecord,
+        status: "PROCESSED",
+        orderId,
+        userId,
+      };
+      return { status: "PROCESSED", eventStatus: "PROCESSED", orderId };
+    },
+  };
+  const callback = fixture({
+    transaction: {
+      ...BASE_TRANSACTION,
+      out_trade_no: merchantOrderNumber,
+      transaction_id: providerTransactionId,
+      payer: { openid: decryptedResourceSentinel },
+    },
+    outerOverrides: { id: "EVT-STAGE-D1" },
+  });
+  const firstWebhook = await processPaymentWebhook(
+    "wechat",
+    callback.rawBody,
+    callback.headers,
+    {
+      repository: webhookRepository,
+      getConfig: () => enabledConfig,
+      getProvider: () => wechat,
+      logger: securityLogger,
+    },
+  );
+  const duplicateWebhook = await processPaymentWebhook(
+    "wechat",
+    callback.rawBody,
+    callback.headers,
+    {
+      repository: webhookRepository,
+      getConfig: () => enabledConfig,
+      getProvider: () => wechat,
+      logger: securityLogger,
+    },
+  );
+  assert.equal(firstWebhook.status, "PROCESSED");
+  assert.equal(duplicateWebhook.status, "ALREADY_PROCESSED");
+  assert.equal(subscriptionGrantCount, 1);
+  assert.equal(semesterEntitlementActive, true);
+
+  const approvedRefunds = new Set<string>();
+  const unused = async (): Promise<never> => {
+    throw new Error("unused admin repository method");
+  };
+  const adminRepository: BillingAdminRepository = {
+    getOverview: unused,
+    listOrders: unused,
+    getUser: unused,
+    listRefunds: unused,
+    listInvoices: unused,
+    listWebhookEvents: unused,
+    listCatalog: unused,
+    adjustCredit: unused,
+    grantSubscription: unused,
+    async reviewRefund(input) {
+      if (
+        input.decision === "APPROVED" &&
+        input.requestId === semesterRefundRequestId
+      ) {
+        assert.equal(semesterEntitlementActive, true);
+        assert.equal(semesterUsageCount, 0);
+      }
+      approvedRefunds.add(input.requestId);
+      return {
+        status: "APPLIED",
+        auditId: `audit-${input.requestId}`,
+        resourceId: input.requestId,
+      };
+    },
+    reviewInvoice: unused,
+    upsertPlan: unused,
+    upsertProduct: unused,
+  };
+  let completedRefund: RefundResult | null = null;
+  const refundRepository: RefundExecutionRepository = {
+    async claimApprovedRefund(input) {
+      assert.equal(approvedRefunds.has(input.requestId), true);
+      if (input.requestId === creditRefundRequestId) {
+        return { status: "MANUAL_REVIEW_REQUIRED" };
+      }
+      if (completedRefund !== null) {
+        return { status: "SUCCEEDED", refund: completedRefund };
+      }
+      return {
+        status: "CLAIMED",
+        refundId,
+        requestId: semesterRefundRequestId,
+        orderId,
+        paymentId: paymentIntentId,
+        provider: "WECHAT",
+        providerTransactionId,
+        amountMinor: 7_900,
+        currency: "CNY",
+        idempotencyKey: refundIdempotencyKey,
+      };
+    },
+    async completeRefund(input) {
+      assert.equal(input.refundId, refundId);
+      assert.equal(input.claimToken, "refund-claim-stage-d1");
+      assert.deepEqual(input.result, {
+        providerRefundId: "5030000000000000099",
+        providerTransactionId,
+        status: "SUCCEEDED",
+        refundedAmountMinor: 7_900,
+        currency: "CNY",
+      });
+      completedRefund = { ...input.result };
+      subscriptionRevokeCount += 1;
+      semesterEntitlementActive = false;
+      return { status: "SUCCEEDED", refund: completedRefund };
+    },
+    async failRefundClaim() {
+      throw new Error("the successful signed refund must not release its claim");
+    },
+  };
+  const refundHandler = createRefundReviewHandler({
+    requireAdmin: async () => billingAdmin,
+    reviewRefund: (admin, input) =>
+      reviewRefundRequest(admin, input, adminRepository),
+    executeRefund: (requestId) =>
+      executeApprovedRefund(requestId, {
+        repository: refundRepository,
+        getConfig: () => enabledConfig,
+        getProvider: () => wechat,
+        now: () => new Date(NOW),
+        createClaimToken: () => "refund-claim-stage-d1",
+        logger: securityLogger,
+      }),
+    logger: securityLogger,
+  });
+  const refundResponseValue = await refundHandler(new Request(
+    "http://localhost/api/admin/billing/refunds",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestId: semesterRefundRequestId,
+        decision: "APPROVED",
+        reason: "Unused semester full refund",
+        idempotencyKey: "approve-stage-d1-semester",
+      }),
+    },
+  ));
+  assert.equal(refundResponseValue.status, 200);
+  const refundResponseBody = await refundResponseValue.json();
+  assert.equal(refundResponseBody.refundCompleted, true);
+  assert.equal(subscriptionRevokeCount, 1);
+  assert.equal(semesterEntitlementActive, false);
+
+  const providerCallsBeforeManualRefund = recordedTransport.length;
+  const manualRefundResponse = await refundHandler(new Request(
+    "http://localhost/api/admin/billing/refunds",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requestId: creditRefundRequestId,
+        decision: "APPROVED",
+        reason: "Credit Pack remains manual",
+        idempotencyKey: "approve-stage-d1-credit-pack",
+      }),
+    },
+  ));
+  assert.equal(manualRefundResponse.status, 202);
+  const manualRefundBody = await manualRefundResponse.json();
+  assert.equal(manualRefundBody.requiresManualAction, true);
+  assert.equal(recordedTransport.length, providerCallsBeforeManualRefund);
+
+  let disabledCreateCalls = 0;
+  const disabledHandler = createOrderPaymentPostHandler({
+    requireActor: async () => billingActor,
+    getConfig: () => disabledConfig,
+    assertAccess: assertBillingAccess,
+    createPayment: async () => {
+      disabledCreateCalls += 1;
+      throw new Error("disabled public purchase reached payment creation");
+    },
+  });
+  const disabledResponse = await disabledHandler(
+    new Request(`http://localhost/api/billing/orders/${orderId}/payment`, {
+      method: "POST",
+    }),
+    { params: Promise.resolve({ id: orderId }) },
+  );
+  assert.equal(disabledResponse.status, 403);
+  const disabledResponseBody = await disabledResponse.json();
+  assert.equal(disabledResponseBody.error.code, "BILLING_FEATURE_DISABLED");
+  assert.equal(disabledCreateCalls, 0);
+
+  assert.deepEqual(
+    recordedTransport.map(({ method, pathWithQuery }) => ({
+      method,
+      pathWithQuery,
+    })),
+    [
+      { method: "POST", pathWithQuery: "/v3/pay/transactions/native" },
+      {
+        method: "GET",
+        pathWithQuery:
+          `/v3/pay/transactions/out-trade-no/${merchantOrderNumber}?mchid=1900000109`,
+      },
+      { method: "POST", pathWithQuery: "/v3/refund/domestic/refunds" },
+    ],
+  );
+  assert.equal(capturedAuthorizations.length, 3);
+  for (const authorization of capturedAuthorizations) {
+    assert.match(authorization, /^WECHATPAY2-SHA256-RSA2048 /);
+  }
+  assert.equal(capturedResponseSignatures.length, 3);
+  for (const responseSignature of capturedResponseSignatures) {
+    assert.notEqual(responseSignature, "");
+  }
+
+  const capturedOutputs = [
+    createPaymentBody,
+    queriedPayment,
+    firstWebhook,
+    duplicateWebhook,
+    refundResponseBody,
+    manualRefundBody,
+    disabledResponseBody,
+    capturedLogs,
+  ];
+  const collectSurface = (
+    value: unknown,
+    seen = new Set<unknown>(),
+  ): string[] => {
+    if (typeof value === "string") return [value];
+    if (value === null || typeof value !== "object" || seen.has(value)) {
+      return [];
+    }
+    seen.add(value);
+    return Reflect.ownKeys(value).flatMap((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      return [
+        String(key),
+        ...(descriptor && "value" in descriptor
+          ? collectSurface(descriptor.value, seen)
+          : []),
+      ];
+    });
+  };
+  const outputSurface = collectSurface(capturedOutputs);
+  const forbiddenValues = [
+    API_V3_KEY.toString("utf8"),
+    wechatConfig.merchantPrivateKeyPem,
+    platformPublicKeyPem,
+    wechatConfig.mchId,
+    wechatConfig.appId,
+    wechatConfig.merchantCertificateSerialNumber,
+    wechatConfig.notifyUrl,
+    wechatConfig.verifier.mode === "PUBLIC_KEY"
+      ? wechatConfig.verifier.keyId
+      : wechatConfig.verifier.serialNumber,
+    paymentCodeUrl,
+    callback.rawBody,
+    JSON.stringify({
+      ...BASE_TRANSACTION,
+      out_trade_no: merchantOrderNumber,
+      transaction_id: providerTransactionId,
+      payer: { openid: decryptedResourceSentinel },
+    }),
+    decryptedResourceSentinel,
+    ...capturedAuthorizations,
+    ...capturedResponseSignatures,
+    callback.headers["WECHATPAY-SIGNATURE"],
+    "SENTINEL_NATIVE_REQUEST_NONCE",
+    "callback-signing-nonce",
+    CALLBACK_NONCE,
+  ];
+  for (const forbidden of forbiddenValues) {
+    assert.equal(
+      outputSurface.some((value) => value.includes(forbidden)),
+      false,
+      `captured output leaked forbidden value: ${forbidden.slice(0, 32)}`,
+    );
+  }
+  for (const forbiddenKeyFragment of [
+    "authorization",
+    "code_url",
+    "rawbody",
+    "rawcallback",
+    "decryptedresource",
+    "signature",
+    "nonce",
+  ]) {
+    assert.equal(
+      outputSurface.some((value) =>
+        value.toLowerCase().includes(forbiddenKeyFragment)),
+      false,
+      `captured output exposed forbidden field: ${forbiddenKeyFragment}`,
+    );
+  }
 });

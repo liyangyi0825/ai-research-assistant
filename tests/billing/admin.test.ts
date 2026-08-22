@@ -197,7 +197,7 @@ test("every admin handler rejects a regular user before repository access", asyn
 });
 
 test("reconciliation route rejects a regular user before generating a report", async () => {
-  const { createReconciliationGetHandler } = await import("../../app/api/admin/billing/reconciliation/route");
+  const { createReconciliationGetHandler } = await import("../../app/api/admin/billing/reconciliation/server");
   let generated = false;
   const handler = createReconciliationGetHandler({
     requireAdmin: async () => {
@@ -215,7 +215,7 @@ test("reconciliation route rejects a regular user before generating a report", a
 });
 
 test("reconciliation route returns the exact report DTO to an administrator", async () => {
-  const { createReconciliationGetHandler } = await import("../../app/api/admin/billing/reconciliation/route");
+  const { createReconciliationGetHandler } = await import("../../app/api/admin/billing/reconciliation/server");
   const handler = createReconciliationGetHandler({
     requireAdmin: async () => admin,
     generateReport: async () => reconciliationReport,
@@ -844,11 +844,17 @@ test("admin pages and routes enforce the server administrator boundary", async (
     "app/api/admin/billing/invoices/route.ts",
     "app/api/admin/billing/webhooks/route.ts",
     "app/api/admin/billing/catalog/route.ts",
-    "app/api/admin/billing/reconciliation/route.ts",
   ];
   for (const file of routes) {
     assert.match(await fs.readFile(file, "utf8"), /createAdminBillingHandler/);
   }
+  assert.match(
+    await fs.readFile(
+      "app/api/admin/billing/reconciliation/server.ts",
+      "utf8",
+    ),
+    /createAdminBillingHandler/,
+  );
 });
 
 test("admin repositories use real schema names and include payment records", async () => {

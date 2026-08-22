@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRefundReviewHandler } from "../../app/api/admin/billing/refunds/route";
+import { createRefundReviewHandler } from "../../app/api/admin/billing/refunds/server";
 import { BillingError } from "../../lib/billing/errors";
 import type { BillingSecurityLogEvent } from "../../lib/billing/security-logger";
 
