@@ -219,20 +219,16 @@ test("disabled billing reports only fully valid WeChat configuration as configur
   );
 });
 
-test("enabled WeChat billing retains the complete validated verifier configuration", () => {
+test("enabled WeChat billing keeps validated secrets outside its public shape", () => {
   const config = getBillingConfig({
     ...validWechatEnvironment(),
     BILLING_FEATURE_ENABLED: "true",
     PAYMENT_MODE: "wechat",
   });
-
   assert.equal(config.featureEnabled, true);
   assert.equal(config.paymentMode, "wechat");
   assert.equal(config.wechatConfigured, true);
-  assert.ok(config.wechat);
-  assert.equal(config.wechat.mchId, "merchant-1");
-  assert.equal(config.wechat.verifier.mode, "PUBLIC_KEY");
-  assert.equal(config.wechat.verifier.keyId, "PUB_KEY_ID_1");
+  assert.equal(Reflect.ownKeys(config).includes("wechat"), false);
 });
 
 test("only the explicit true string enables billing", () => {
@@ -363,18 +359,16 @@ test("configured Alipay remains unavailable without leaking its secret", () => {
 });
 
 test("legacy key aliases normalize into the validated enabled WeChat configuration", () => {
-  const config = getBillingConfig({
+  const config = loadWechatPayConfig({
     ...validWechatEnvironment(),
-    BILLING_FEATURE_ENABLED: "true",
-    PAYMENT_MODE: "wechat",
     WECHAT_PAY_PRIVATE_KEY: undefined,
     WECHAT_PAY_CERT_SERIAL_NO: undefined,
     WECHAT_PAY_MCH_PRIVATE_KEY: testPrivateKey,
     WECHAT_PAY_MCH_SERIAL_NO: "merchant-cert-1",
   });
 
-  assert.equal(config.wechat?.merchantPrivateKeyPem, testPrivateKey.trim());
-  assert.equal(config.wechat?.merchantCertificateSerialNumber, "merchant-cert-1");
+  assert.equal(config.merchantPrivateKeyPem, testPrivateKey.trim());
+  assert.equal(config.merchantCertificateSerialNumber, "merchant-cert-1");
 
   const secret = "must-not-leak";
   assert.throws(

@@ -3,8 +3,10 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { inspect } from "node:util";
 import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
+import ts from "typescript";
 
 import { assertBillingAccess } from "../../lib/billing/auth";
 import {
@@ -14,6 +16,9 @@ import {
 } from "../../lib/billing/config";
 import { CreditService } from "../../lib/billing/credits";
 import { BillingError } from "../../lib/billing/errors";
+import { getPaymentProvider } from "../../lib/billing/payments/registry";
+import { loadWechatPayConfig } from "../../lib/billing/payments/wechat-config";
+import { WechatHttpClient } from "../../lib/billing/payments/wechat-transport";
 import { createOrder, ORDER_EXPIRATION_MS } from "../../lib/billing/orders";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
 import {
@@ -30,6 +35,7 @@ import {
   SubscriptionService,
   type SubscriptionRepository,
 } from "../../lib/billing/subscriptions";
+import { createBillingSecurityLogger } from "../../lib/billing/security-logger";
 import {
   createBillingUsageRpcAdapter,
   type UsageRpcResult,
@@ -66,12 +72,26 @@ function collectEnumerableStrings(value: unknown, seen = new Set<unknown>()): st
   ]);
 }
 
+function collectReflectiveStrings(value: unknown, seen = new Set<unknown>()): string[] {
+  if (typeof value === "string") return [value];
+  if (value instanceof ArrayBuffer) return [Buffer.from(value).toString("utf8")];
+  if (ArrayBuffer.isView(value)) return [Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("utf8")];
+  if (value === null || typeof value !== "object" || seen.has(value)) return [];
+  seen.add(value);
+  return Reflect.ownKeys(value).flatMap((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return [String(key), ...(descriptor && "value" in descriptor
+      ? collectReflectiveStrings(descriptor.value, seen)
+      : [])];
+  });
+}
+
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory).flatMap((entry) => {
     const path = join(directory, entry);
     return statSync(path).isDirectory()
       ? sourceFiles(path)
-      : [".ts", ".tsx"].includes(extname(path))
+      : [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].includes(extname(path))
         ? [path]
         : [];
   });
@@ -89,23 +109,124 @@ function resolveLocalImport(from: string, specifier: string): string | null {
     unresolved,
     `${unresolved}.ts`,
     `${unresolved}.tsx`,
+    `${unresolved}.mts`,
+    `${unresolved}.cts`,
+    `${unresolved}.js`,
+    `${unresolved}.jsx`,
+    `${unresolved}.mjs`,
+    `${unresolved}.cjs`,
     join(unresolved, "index.ts"),
     join(unresolved, "index.tsx"),
+    join(unresolved, "index.js"),
+    join(unresolved, "index.jsx"),
   ]) {
     if (existsSync(candidate)) return candidate;
   }
   return null;
 }
 
+function staticModuleSpecifier(node: ts.Expression | undefined): string | null {
+  return node &&
+    (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+    ? node.text
+    : null;
+}
+
+function runtimeModuleSpecifiers(source: string, path: string): string[] {
+  const sourceFile = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    path.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const specifiers: string[] = [];
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node)) {
+      const clause = node.importClause;
+      const namedBindings = clause?.namedBindings;
+      const typeOnlyNamedImport =
+        namedBindings !== undefined &&
+        ts.isNamedImports(namedBindings) &&
+        namedBindings.elements.length > 0 &&
+        namedBindings.elements.every((element) => element.isTypeOnly);
+      if (
+        clause === undefined ||
+        (!clause.isTypeOnly &&
+          (clause.name !== undefined ||
+            namedBindings === undefined ||
+            ts.isNamespaceImport(namedBindings) ||
+            !typeOnlyNamedImport))
+      ) {
+        const specifier = staticModuleSpecifier(node.moduleSpecifier);
+        if (specifier !== null) specifiers.push(specifier);
+      }
+      return;
+    }
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+      const typeOnlyNamedExport =
+        node.exportClause !== undefined &&
+        ts.isNamedExports(node.exportClause) &&
+        node.exportClause.elements.length > 0 &&
+        node.exportClause.elements.every((element) => element.isTypeOnly);
+      if (!node.isTypeOnly && !typeOnlyNamedExport) {
+        const specifier = staticModuleSpecifier(node.moduleSpecifier);
+        if (specifier !== null) specifiers.push(specifier);
+      }
+      return;
+    }
+    if (
+      ts.isImportEqualsDeclaration(node) &&
+      !node.isTypeOnly &&
+      ts.isExternalModuleReference(node.moduleReference)
+    ) {
+      const specifier = staticModuleSpecifier(node.moduleReference.expression);
+      if (specifier !== null) specifiers.push(specifier);
+      return;
+    }
+    if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire =
+        ts.isIdentifier(node.expression) && node.expression.text === "require";
+      if (isDynamicImport || isRequire) {
+        const specifier = staticModuleSpecifier(node.arguments[0]);
+        if (specifier !== null) specifiers.push(specifier);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return specifiers;
+}
+
+function isClientEntry(path: string): boolean {
+  const sourceFile = ts.createSourceFile(
+    path,
+    readFileSync(path, "utf8"),
+    ts.ScriptTarget.Latest,
+    true,
+    path.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isExpressionStatement(statement) &&
+      ts.isStringLiteral(statement.expression)
+    ) {
+      if (statement.expression.text === "use client") return true;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
 function clientImportGraph(start: string, seen = new Set<string>()): string[] {
   if (seen.has(start)) return [];
   seen.add(start);
   const source = readFileSync(start, "utf8");
-  const imports = [
-    ...source.matchAll(/(?:import|export)\s+(type\s+)?(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/g),
-  ]
-    .filter((match) => match[1] === undefined)
-    .map((match) => resolveLocalImport(start, match[2]!))
+  const imports = runtimeModuleSpecifiers(source, start)
+    .map((specifier) => resolveLocalImport(start, specifier))
     .filter((path): path is string => path !== null);
 
   return [start, ...imports.flatMap((path) => clientImportGraph(path, seen))];
@@ -538,7 +659,7 @@ test("disabled billing and production Mock both fail closed for unauthorized use
   assert.match(pricing, /当前账号暂未开放购买/);
 });
 
-test("WeChat secrets are absent from enumerable configs, errors, logs, and API-like results", () => {
+test("WeChat secrets are absent from reflective config, provider, transport, errors, logs, and API-like results", () => {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const sentinel = "S".repeat(32);
   const environment = {
@@ -554,24 +675,54 @@ test("WeChat secrets are absent from enumerable configs, errors, logs, and API-l
     WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
   };
   const config = getBillingConfig(environment);
-  const logged: unknown[] = [config];
+  const httpClient = new WechatHttpClient({
+    config: loadWechatPayConfig(environment),
+    fetchImpl: async () => {
+      throw new Error("offline security test");
+    },
+  });
+  const provider = getPaymentProvider("wechat", config);
+  const logged: string[] = [];
+  const logger = createBillingSecurityLogger((line) => logged.push(line));
   let startupError: unknown;
   try {
     getBillingConfig({ ...environment, WECHAT_PAY_MCH_ID: undefined });
   } catch (error) {
     startupError = error;
-    logged.push(error);
   }
   assert.ok(startupError instanceof BillingError);
+  logger.warn({
+    eventCode: "PAYMENT_CREATE_FAILED",
+    provider: "WECHAT",
+    errorCode: startupError.code,
+    status: startupError.message,
+  });
 
   const apiLikeResults = [
-    { ok: true, data: config },
+    { ok: true, data: { config, provider, httpClient } },
     { ok: false, error: startupError },
     JSON.parse(JSON.stringify({ config, startupError })),
   ];
-  const visible = collectEnumerableStrings([config, startupError, logged, apiLikeResults]);
+  const targets = [config, provider, httpClient, startupError, logged, apiLikeResults];
+  const visible = targets.flatMap((target) => [
+    ...collectEnumerableStrings(target),
+    ...collectReflectiveStrings(target),
+    ...collectReflectiveStrings(Object.getOwnPropertyDescriptors(target)),
+    ...Reflect.ownKeys(target).map(String),
+    JSON.stringify(target),
+    inspect(target, { showHidden: true, depth: null }),
+  ]);
 
-  for (const secret of [sentinel, "merchant-secret-sentinel", "app-secret-sentinel"]) {
+  for (const secret of [
+    sentinel,
+    "merchant-secret-sentinel",
+    "app-secret-sentinel",
+    "merchant-cert-sentinel",
+    "public-key-id-sentinel",
+    environment.WECHAT_PAY_NOTIFY_URL,
+    environment.WECHAT_PAY_PRIVATE_KEY,
+    environment.WECHAT_PAY_PUBLIC_KEY,
+  ]) {
     assert.equal(visible.some((value) => value.includes(secret)), false);
   }
 });
@@ -585,18 +736,56 @@ test("the safe environment example leaves billing disabled and declares empty ex
   assert.equal(environment.WECHAT_PAY_PUBLIC_KEY, "");
 });
 
-test("no client component import graph can reach the secret-bearing billing configuration", () => {
-  const serverConfig = resolve(rootDirectory, "lib/billing/config.ts");
+test("client graph classification permits type-only imports but follows static, dynamic, and require edges", () => {
+  assert.deepEqual(
+    runtimeModuleSpecifiers(
+      `
+        import type { BillingConfig } from "@/lib/billing/config-types";
+        import { type PaymentMode } from "@/lib/billing/config-types";
+        export type { BillingConfig as PublicConfig } from "@/lib/billing/config-types";
+      `,
+      "type-only.ts",
+    ),
+    [],
+  );
+  assert.deepEqual(
+    runtimeModuleSpecifiers(
+      `
+        import { getBillingConfig } from "@/lib/billing/config";
+        void import("@/lib/billing/payments/registry");
+        require("@/lib/billing/payments/wechat-config");
+      `,
+      "runtime.ts",
+    ),
+    [
+      "@/lib/billing/config",
+      "@/lib/billing/payments/registry",
+      "@/lib/billing/payments/wechat-config",
+    ],
+  );
+});
+
+test("no client component runtime import graph can reach WeChat server modules", () => {
+  const serverModules = [
+    "lib/billing/config.ts",
+    "lib/billing/payments/registry.ts",
+    "lib/billing/payments/wechat-config.ts",
+    "lib/billing/payments/wechat-transport.ts",
+    "lib/billing/payments/wechat.ts",
+  ].map((path) => resolve(rootDirectory, path));
   const clientEntries = sourceFiles(join(rootDirectory, "app"))
     .concat(sourceFiles(join(rootDirectory, "components")))
-    .filter((path) => /^\s*["']use client["'];?/m.test(readFileSync(path, "utf8")));
+    .filter(isClientEntry);
 
   for (const entry of clientEntries) {
-    assert.equal(
-      clientImportGraph(entry).includes(serverConfig),
-      false,
-      `client import graph reached billing secrets from ${entry}`,
-    );
+    const graph = clientImportGraph(entry);
+    for (const serverModule of serverModules) {
+      assert.equal(
+        graph.includes(serverModule),
+        false,
+        `client import graph reached ${serverModule} from ${entry}`,
+      );
+    }
   }
 });
 

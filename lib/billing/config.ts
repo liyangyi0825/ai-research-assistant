@@ -1,34 +1,25 @@
 import { BillingError } from "./errors";
+import type {
+  BillingConfig,
+  PaymentMode,
+  PaymentRuntimeContext,
+} from "./config-types";
 import {
   loadWechatPayConfig,
   type WechatPayConfig,
 } from "./payments/wechat-config";
 
-export type PaymentMode = "mock" | "wechat" | "alipay";
+export type {
+  BillingConfig,
+  PaymentMode,
+  PaymentRuntimeContext,
+} from "./config-types";
 
 export const BILLING_AGREEMENT_VERSION = "billing-member-v1";
 
-export type BillingConfig = {
-  featureEnabled: boolean;
-  paymentMode: PaymentMode;
-  testUserIds: string[];
-  legal: {
-    operatorName: string;
-    operatorCreditCode: string;
-    contactEmail: string;
-  };
-  wechat: WechatPayConfig | null;
-  wechatConfigured: boolean;
-  alipayConfigured: boolean;
-  isProduction: boolean;
-};
-
-export type PaymentRuntimeContext = {
-  userId?: string;
-  isAdmin?: boolean;
-};
-
 type BillingEnvironment = Readonly<Record<string, string | undefined>>;
+
+const wechatConfigs = new WeakMap<BillingConfig, WechatPayConfig>();
 
 const ALIPAY_REQUIRED_VARIABLES = [
   "ALIPAY_APP_ID",
@@ -157,7 +148,6 @@ export function getBillingConfig(
       operatorCreditCode: paymentEnv.LEGAL_OPERATOR_CREDIT_CODE?.trim() ?? "",
       contactEmail: paymentEnv.LEGAL_CONTACT_EMAIL?.trim() ?? "",
     },
-    wechat,
     wechatConfigured: wechat !== null,
     alipayConfigured,
     isProduction: paymentEnv.NODE_ENV === "production",
@@ -177,20 +167,19 @@ export function getBillingConfig(
   }
 
   if (config.featureEnabled) {
-    assertProviderConfigured(config.paymentMode, paymentEnv, config.wechat);
+    assertProviderConfigured(config.paymentMode, paymentEnv, wechat);
     assertProviderImplemented(config.paymentMode);
   }
 
-  // The validated key material is deliberately non-enumerable so ordinary
-  // JSON serialization, object spreading, and structured logs cannot expose it.
-  Object.defineProperty(config, "wechat", {
-    value: wechat,
-    enumerable: false,
-    writable: false,
-    configurable: false,
-  });
+  if (wechat !== null) wechatConfigs.set(config, wechat);
 
   return config;
+}
+
+export function getServerWechatPayConfig(
+  config: BillingConfig,
+): WechatPayConfig | null {
+  return wechatConfigs.get(config) ?? null;
 }
 
 export function validateBillingRuntimeAtStartup(

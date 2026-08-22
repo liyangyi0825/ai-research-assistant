@@ -123,19 +123,19 @@ function normalizedCallbackHeaders(
 }
 
 export class WechatPayProvider implements PaymentProvider {
-  private readonly dependencies: CallbackDependencies | null;
-  private readonly legacyConfigured: boolean;
+  readonly #dependencies: CallbackDependencies | null;
+  readonly #legacyConfigured: boolean;
   constructor(configured: boolean);
   constructor(dependencies: WechatPayProviderDependencies);
   constructor(input: boolean | WechatPayProviderDependencies) {
     if (typeof input === "boolean") {
-      this.dependencies = null;
-      this.legacyConfigured = input;
+      this.#dependencies = null;
+      this.#legacyConfigured = input;
       return;
     }
 
-    this.legacyConfigured = true;
-    this.dependencies = {
+    this.#legacyConfigured = true;
+    this.#dependencies = {
       config: input.config,
       httpClient: input.httpClient,
       now: input.now ?? (() => new Date()),
@@ -308,8 +308,8 @@ export class WechatPayProvider implements PaymentProvider {
   }
 
   private callbackDependencies(): CallbackDependencies {
-    if (this.dependencies === null) return this.unavailable();
-    return this.dependencies;
+    if (this.#dependencies === null) return this.unavailable();
+    return this.#dependencies;
   }
 
   private async queryNativePayment(
@@ -531,7 +531,7 @@ export class WechatPayProvider implements PaymentProvider {
   }
 
   private unavailable(): never {
-    if (!this.legacyConfigured) {
+    if (!this.#legacyConfigured) {
       throw new BillingError(
         "PROVIDER_NOT_CONFIGURED",
         "WeChat Pay is not configured.",

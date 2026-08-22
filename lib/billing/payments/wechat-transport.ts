@@ -277,13 +277,13 @@ function cancelUnreadResponseBody(response: Response): void {
 }
 
 export class WechatHttpClient {
-  private readonly config: WechatPayConfig;
-  private readonly fetchImpl: WechatFetch;
-  private readonly trustedFetchAdapter: boolean;
-  private readonly now: () => Date;
-  private readonly nonce: () => string;
-  private readonly timeoutMs: number;
-  private readonly maxResponseBytes: number;
+  readonly #config: WechatPayConfig;
+  readonly #fetchImpl: WechatFetch;
+  readonly #trustedFetchAdapter: boolean;
+  readonly #now: () => Date;
+  readonly #nonce: () => string;
+  readonly #timeoutMs: number;
+  readonly #maxResponseBytes: number;
 
   constructor(input: {
     config: WechatPayConfig;
@@ -294,22 +294,22 @@ export class WechatHttpClient {
     maxResponseBytes?: number;
   }) {
     const fetchImpl = input.fetchImpl;
-    this.config = input.config;
-    this.trustedFetchAdapter = fetchImpl === undefined;
-    this.fetchImpl =
+    this.#config = input.config;
+    this.#trustedFetchAdapter = fetchImpl === undefined;
+    this.#fetchImpl =
       fetchImpl ??
       ((requestInput, init) => globalThis.fetch(requestInput, init));
-    this.now = input.now ?? (() => new Date());
-    this.nonce = input.nonce ?? (() => crypto.randomUUID().replaceAll("-", ""));
-    this.timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this.maxResponseBytes =
+    this.#now = input.now ?? (() => new Date());
+    this.#nonce = input.nonce ?? (() => crypto.randomUUID().replaceAll("-", ""));
+    this.#timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#maxResponseBytes =
       input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
 
     if (
-      !Number.isSafeInteger(this.timeoutMs) ||
-      this.timeoutMs < 0 ||
-      !Number.isSafeInteger(this.maxResponseBytes) ||
-      this.maxResponseBytes < 1
+      !Number.isSafeInteger(this.#timeoutMs) ||
+      this.#timeoutMs < 0 ||
+      !Number.isSafeInteger(this.#maxResponseBytes) ||
+      this.#maxResponseBytes < 1
     ) {
       throw requestInvalid();
     }
@@ -321,17 +321,17 @@ export class WechatHttpClient {
     }
     const pathWithQuery = validatedPath(input.pathWithQuery);
     const body = serializeBody(input.body);
-    const now = this.now();
+    const now = this.#now();
     const timestamp = Math.floor(now.getTime() / 1_000);
     const signed = signWechatRequest({
       method: input.method,
       pathWithQuery,
       body,
       timestamp,
-      nonce: this.nonce(),
-      mchId: this.config.mchId,
-      certificateSerialNumber: this.config.merchantCertificateSerialNumber,
-      privateKeyPem: this.config.merchantPrivateKeyPem,
+      nonce: this.#nonce(),
+      mchId: this.#config.mchId,
+      certificateSerialNumber: this.#config.merchantCertificateSerialNumber,
+      privateKeyPem: this.#config.merchantPrivateKeyPem,
     });
     const headers = new Headers({
       Accept: "application/json",
@@ -348,7 +348,7 @@ export class WechatHttpClient {
       timeoutHandle = setTimeout(() => {
         abortController.abort(timeoutError);
         queueMicrotask(() => reject(timeoutError));
-      }, this.timeoutMs);
+      }, this.#timeoutMs);
     });
 
     try {
@@ -381,7 +381,7 @@ export class WechatHttpClient {
   }): Promise<{ status: number; body: T }> {
     let response: Response;
     try {
-      response = await this.fetchImpl(`${WECHAT_ORIGIN}${input.pathWithQuery}`, {
+      response = await this.#fetchImpl(`${WECHAT_ORIGIN}${input.pathWithQuery}`, {
         method: input.input.method,
         headers: input.headers,
         body: input.input.body === undefined ? undefined : input.body,
@@ -395,7 +395,7 @@ export class WechatHttpClient {
       ) {
         throw unavailable();
       }
-      if (isConnectionError(error, this.trustedFetchAdapter)) {
+      if (isConnectionError(error, this.#trustedFetchAdapter)) {
         throw unavailable();
       }
       throw transportFailed();
@@ -423,14 +423,14 @@ export class WechatHttpClient {
 
     const responseBody = await boundedResponseBody(
       response,
-      this.maxResponseBytes,
-      this.trustedFetchAdapter,
+      this.#maxResponseBytes,
+      this.#trustedFetchAdapter,
       input.signal,
       input.timeoutError,
     );
     verifyWechatTimestamp({
       timestamp: responseTimestamp,
-      now: this.now(),
+      now: this.#now(),
       toleranceSeconds: RESPONSE_TIMESTAMP_TOLERANCE_SECONDS,
     });
     verifyWechatSignature({
@@ -439,7 +439,7 @@ export class WechatHttpClient {
       body: responseBody,
       signatureBase64: responseSignature,
       verifierId: responseVerifierId,
-      verifier: this.config.verifier,
+      verifier: this.#config.verifier,
     });
 
     if (response.status >= 500 && response.status <= 599) {

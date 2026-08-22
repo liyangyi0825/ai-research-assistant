@@ -46,7 +46,6 @@ function billingConfig(
     alipayConfigured: false,
     isProduction: false,
     ...overrides,
-    wechat: overrides.wechat ?? null,
   };
 }
 

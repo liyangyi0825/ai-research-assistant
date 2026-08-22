@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { createHmac, generateKeyPairSync } from "node:crypto";
+import {
+  createHmac,
+  generateKeyPairSync,
+  sign as rsaSign,
+} from "node:crypto";
 import test from "node:test";
 
 import { getBillingConfig, type BillingConfig, type PaymentMode } from "../../lib/billing/config";
@@ -53,7 +57,6 @@ function billingConfig(
     alipayConfigured: false,
     isProduction: false,
     ...overrides,
-    wechat: overrides.wechat ?? null,
   };
 }
 
@@ -452,29 +455,97 @@ test("registry selects only the server-configured payment mode", () => {
     (error: unknown) =>
       expectBillingError(error, "PAYMENT_PROVIDER_MISMATCH", 400),
   );
+  assert.throws(
+    () => getPaymentProvider("wechat", billingConfig("wechat")),
+    (error: unknown) =>
+      expectBillingError(error, "PROVIDER_NOT_CONFIGURED", 503),
+  );
 });
 
-test("registry injects validated WeChat configuration into an offline-capable provider", async () => {
+test("registry wires validated WeChat config through the real HTTP client with an injected transport", async () => {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const registryNow = new Date("2026-08-22T01:02:03.000Z");
+  const responseTimestamp = String(Math.floor(registryNow.getTime() / 1_000));
+  const responseNonce = "registry-response-nonce";
+  const responseBody = JSON.stringify({
+    code_url: "weixin://wxpay/bizpayurl?pr=registry-wired",
+  });
+  const calls: Array<{ input: string; init: RequestInit }> = [];
   const config = getBillingConfig({
     BILLING_FEATURE_ENABLED: "true",
     PAYMENT_MODE: "wechat",
-    WECHAT_PAY_MCH_ID: "merchant-from-config",
+    WECHAT_PAY_MCH_ID: "1900000999",
     WECHAT_PAY_APP_ID: "app-from-config",
     WECHAT_PAY_API_V3_KEY: "12345678901234567890123456789012",
     WECHAT_PAY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-    WECHAT_PAY_CERT_SERIAL_NO: "merchant-cert-from-config",
+    WECHAT_PAY_CERT_SERIAL_NO: "ABCDEF1234",
     WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_FROM_CONFIG",
     WECHAT_PAY_PUBLIC_KEY: publicKey.export({ type: "spki", format: "pem" }).toString(),
     WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
   });
-  const provider = getPaymentProvider("wechat", config);
-
-  await assert.rejects(
-    () => provider.createPayment(createInput({ description: "   " })),
+  const copiedPublicConfig = { ...config };
+  assert.equal(copiedPublicConfig.wechatConfigured, true);
+  assert.throws(
+    () => getPaymentProvider("wechat", copiedPublicConfig),
     (error: unknown) =>
-      expectBillingError(error, "PAYMENT_PROVIDER_REQUEST_INVALID", 400),
+      expectBillingError(error, "PROVIDER_NOT_CONFIGURED", 503),
   );
+  const provider = getPaymentProvider("wechat", config, {
+    wechatFetch: async (input, init) => {
+      calls.push({ input, init });
+      return new Response(responseBody, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "Wechatpay-Timestamp": responseTimestamp,
+          "Wechatpay-Nonce": responseNonce,
+          "Wechatpay-Signature": rsaSign(
+            "RSA-SHA256",
+            Buffer.from(
+              `${responseTimestamp}\n${responseNonce}\n${responseBody}\n`,
+              "utf8",
+            ),
+            privateKey,
+          ).toString("base64"),
+          "Wechatpay-Serial": "PUB_KEY_ID_FROM_CONFIG",
+        },
+      });
+    },
+    now: () => new Date(registryNow),
+    nonce: () => "registry-request-nonce",
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new TypeError("registry test forbids the ambient network transport");
+  };
+  let payment: Awaited<ReturnType<PaymentProvider["createPayment"]>>;
+  try {
+    payment = await provider.createPayment(
+      createInput({
+        orderNumber: "BILL-REGISTRY-WIRING",
+        expiresAt: "2099-08-22T01:32:03.000Z",
+      }),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(payment.paymentToken, "weixin://wxpay/bizpayurl?pr=registry-wired");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.input, "https://api.mch.weixin.qq.com/v3/pay/transactions/native");
+  assert.deepEqual(JSON.parse(String(calls[0]?.init.body)), {
+    appid: "app-from-config",
+    mchid: "1900000999",
+    description: "Pro Semester",
+    out_trade_no: "BILL-REGISTRY-WIRING",
+    time_expire: "2099-08-22T01:32:03.000Z",
+    notify_url: "https://billing.test/wechat/callback",
+    amount: { total: 1_990, currency: "CNY" },
+  });
+  const authorization = new Headers(calls[0]?.init.headers).get("Authorization");
+  assert.match(authorization ?? "", /mchid="1900000999"/);
+  assert.match(authorization ?? "", /serial_no="ABCDEF1234"/);
 });
 
 test("registry keeps Mock state and server confirmation across acquisitions", async () => {
