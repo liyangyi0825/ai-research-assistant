@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -240,6 +242,34 @@ test("reconciliation route exposes only GET and delegates to the guarded server 
     source,
     /export async function GET\(request: Request\) \{\s*return createReconciliationGetHandler\(\)\(request\);\s*\}/,
   );
+});
+
+test("actual reconciliation and refund route exports reject unauthenticated and ordinary users", () => {
+  const probe = "tests/fixtures/admin-route-auth-probe.mts";
+  assert.ok(existsSync(probe), "missing actual-route authentication probe");
+  const output = execFileSync(
+    process.execPath,
+    [
+      "--experimental-test-module-mocks",
+      "--import",
+      "tsx",
+      probe,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.deepEqual(JSON.parse(output), {
+    statuses: [401, 401, 401, 403, 403, 403],
+    errorCodes: [
+      "UNAUTHENTICATED",
+      "UNAUTHENTICATED",
+      "UNAUTHENTICATED",
+      "BILLING_ADMIN_REQUIRED",
+      "BILLING_ADMIN_REQUIRED",
+      "BILLING_ADMIN_REQUIRED",
+    ],
+    adminLookupCalls: 3,
+    businessRepositoryAccesses: 0,
+  });
 });
 
 test("reconciliation report view renders safe report fields and read-only scope", () => {

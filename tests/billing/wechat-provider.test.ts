@@ -1544,6 +1544,7 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
   const creditRefundRequestId = "refund-request-credit-pack";
   const refundId = "refund-stage-d1";
   const refundIdempotencyKey = "billing-refund:stage-d1-semester";
+  const approvedRefundNumber = "e70870702c8bcde0fe18027c5c729328";
   const subscriptionId = "subscription-stage-d1";
   const decoyUserId = "user-stage-d1-decoy";
   const decoyOrderId = "order-stage-d1-decoy";
@@ -1576,6 +1577,7 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     return JSON.parse(rawBody) as T;
   };
   const wechatConfig = config();
+  assert.match(approvedRefundNumber, /^[0-9a-f]{32}$/);
 
   const enabledConfig: BillingConfig = {
     featureEnabled: true,
@@ -1660,7 +1662,7 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
       ) {
         return respond(refundResponse({
           refund_id: "5030000000000000099",
-          out_refund_no: stableWechatRefundNumber(refundIdempotencyKey),
+          out_refund_no: approvedRefundNumber,
           transaction_id: providerTransactionId,
         }));
       }
@@ -2138,7 +2140,7 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
   };
   const expectedRefundBody = {
     transaction_id: providerTransactionId,
-    out_refund_no: stableWechatRefundNumber(refundIdempotencyKey),
+    out_refund_no: approvedRefundNumber,
     reason: "USER_APPROVED_FULL_REFUND",
     amount: { refund: 7_900, total: 7_900, currency: "CNY" },
   };
@@ -2165,12 +2167,34 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
   ]);
   assert.equal(capturedAuthorizations.length, 3);
   const capturedRequestSignatures: string[] = [];
-  for (const [index, authorization] of capturedAuthorizations.entries()) {
-    const parsed = /^WECHATPAY2-SHA256-RSA2048 mchid="([^"]+)",nonce_str="([^"]+)",timestamp="([^"]+)",serial_no="([^"]+)",signature="([^"]+)"$/.exec(
+  const parseAuthorization = (authorization: string) => {
+    const parsed = /^WECHATPAY2-SHA256-RSA2048 mchid="([^"]+)",nonce_str="([^"]+)",timestamp="([^"]+)",serial_no="([^"]+)",signature="([A-Za-z0-9+/]{342}==)"$/.exec(
       authorization,
     );
     assert.ok(parsed, "Authorization must contain the complete WeChat signing tuple");
     const [, mchId, nonce, timestamp, serial, requestSignature] = parsed;
+    assert.equal(requestSignature.length, 344);
+    const signatureBytes = Buffer.from(requestSignature, "base64");
+    assert.equal(signatureBytes.length, 256);
+    assert.equal(signatureBytes.toString("base64"), requestSignature);
+    return {
+      mchId,
+      nonce,
+      timestamp,
+      serial,
+      requestSignature,
+      signatureBytes,
+    };
+  };
+  for (const [index, authorization] of capturedAuthorizations.entries()) {
+    const {
+      mchId,
+      nonce,
+      timestamp,
+      serial,
+      requestSignature,
+      signatureBytes,
+    } = parseAuthorization(authorization);
     assert.equal(mchId, wechatConfig.mchId);
     assert.equal(nonce, "SENTINEL_NATIVE_REQUEST_NONCE");
     assert.equal(timestamp, TIMESTAMP);
@@ -2187,10 +2211,27 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
         "RSA-SHA256",
         Buffer.from(canonical, "utf8"),
         merchantPublicKey,
-        Buffer.from(requestSignature, "base64"),
+        signatureBytes,
       ),
       true,
       `request ${index} must sign its exact method/path/body`,
+    );
+  }
+  const firstAuthorization = capturedAuthorizations[0];
+  const firstRequestSignature = capturedRequestSignatures[0];
+  assert.ok(firstAuthorization);
+  assert.ok(firstRequestSignature);
+  for (const mutatedSignature of [
+    `${firstRequestSignature}A`,
+    `${firstRequestSignature} `,
+  ]) {
+    const mutatedAuthorization = firstAuthorization.replace(
+      `signature="${firstRequestSignature}"`,
+      `signature="${mutatedSignature}"`,
+    );
+    assert.throws(
+      () => parseAuthorization(mutatedAuthorization),
+      /complete WeChat signing tuple/,
     );
   }
   assert.equal(capturedResponseSignatures.length, 3);
