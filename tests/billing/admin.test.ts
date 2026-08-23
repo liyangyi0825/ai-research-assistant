@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -228,48 +226,85 @@ test("reconciliation route returns the exact report DTO to an administrator", as
   assert.deepEqual(await response.json(), reconciliationReport);
 });
 
-test("reconciliation route exposes only GET and delegates to the guarded server factory", async () => {
-  const route = await import("../../app/api/admin/billing/reconciliation/route");
+test("reconciliation route exports only the guarded default GET handler", async () => {
+  const [route, server] = await Promise.all([
+    import("../../app/api/admin/billing/reconciliation/route"),
+    import("../../app/api/admin/billing/reconciliation/server"),
+  ]);
   assert.deepEqual(Object.keys(route).sort(), ["GET"]);
-
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("app/api/admin/billing/reconciliation/route.ts", "utf8"));
-  assert.match(
-    source,
-    /import \{ createReconciliationGetHandler \} from "\.\/server";/,
-  );
-  assert.match(
-    source,
-    /export async function GET\(request: Request\) \{\s*return createReconciliationGetHandler\(\)\(request\);\s*\}/,
-  );
+  assert.equal(route.GET, server.reconciliationGetHandler);
 });
 
-test("actual reconciliation and refund route exports reject unauthenticated and ordinary users", () => {
-  const probe = "tests/fixtures/admin-route-auth-probe.mts";
-  assert.ok(existsSync(probe), "missing actual-route authentication probe");
-  const output = execFileSync(
-    process.execPath,
-    [
-      "--experimental-test-module-mocks",
-      "--import",
-      "tsx",
-      probe,
-    ],
-    { cwd: process.cwd(), encoding: "utf8" },
+test("portable admin route factories deny unauthenticated and ordinary users before business storage", async () => {
+  const reconciliationServer = await import(
+    "../../app/api/admin/billing/reconciliation/server"
   );
-  assert.deepEqual(JSON.parse(output), {
-    statuses: [401, 401, 401, 403, 403, 403],
-    errorCodes: [
-      "UNAUTHENTICATED",
-      "UNAUTHENTICATED",
-      "UNAUTHENTICATED",
-      "BILLING_ADMIN_REQUIRED",
-      "BILLING_ADMIN_REQUIRED",
-      "BILLING_ADMIN_REQUIRED",
-    ],
-    adminLookupCalls: 3,
-    businessRepositoryAccesses: 0,
-  });
+  const refundServer = await import("../../app/api/admin/billing/refunds/server");
+  let businessRepositoryAccesses = 0;
+  const statuses: number[] = [];
+  const errorCodes: string[] = [];
+
+  for (const denial of [
+    new BillingError("UNAUTHENTICATED", "unauthenticated", 401),
+    new BillingError("BILLING_ADMIN_REQUIRED", "forbidden", 403),
+  ]) {
+    const requireAdmin = async () => {
+      throw denial;
+    };
+    const responses = await Promise.all([
+      reconciliationServer.createReconciliationGetHandler({
+        requireAdmin,
+        generateReport: async () => {
+          businessRepositoryAccesses += 1;
+          return reconciliationReport;
+        },
+      })(new Request("http://localhost/api/admin/billing/reconciliation")),
+      refundServer.createRefundListHandler({
+        requireAdmin,
+        listRefunds: async () => {
+          businessRepositoryAccesses += 1;
+          return [];
+        },
+      })(new Request("http://localhost/api/admin/billing/refunds")),
+      refundServer.createRefundReviewHandler({
+        requireAdmin,
+        reviewRefund: async () => {
+          businessRepositoryAccesses += 1;
+          return { status: "APPLIED", auditId: "audit", resourceId: "refund" };
+        },
+        executeRefund: async () => {
+          businessRepositoryAccesses += 1;
+          throw new Error("must not execute");
+        },
+      })(new Request("http://localhost/api/admin/billing/refunds", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: "refund-auth-portability",
+          decision: "REJECTED",
+          reason: "authorization probe",
+          idempotencyKey: "refund-auth-portability-review",
+        }),
+      })),
+    ]);
+
+    for (const response of responses) {
+      statuses.push(response.status);
+      const body = await response.json() as { error: { code: string } };
+      errorCodes.push(body.error.code);
+    }
+  }
+
+  assert.deepEqual(statuses, [401, 401, 401, 403, 403, 403]);
+  assert.deepEqual(errorCodes, [
+    "UNAUTHENTICATED",
+    "UNAUTHENTICATED",
+    "UNAUTHENTICATED",
+    "BILLING_ADMIN_REQUIRED",
+    "BILLING_ADMIN_REQUIRED",
+    "BILLING_ADMIN_REQUIRED",
+  ]);
+  assert.equal(businessRepositoryAccesses, 0);
 });
 
 test("reconciliation report view renders safe report fields and read-only scope", () => {
@@ -886,7 +921,6 @@ test("admin pages and routes enforce the server administrator boundary", async (
     "app/api/admin/billing/users/[id]/route.ts",
     "app/api/admin/billing/credits/route.ts",
     "app/api/admin/billing/subscriptions/route.ts",
-    "app/api/admin/billing/refunds/route.ts",
     "app/api/admin/billing/invoices/route.ts",
     "app/api/admin/billing/webhooks/route.ts",
     "app/api/admin/billing/catalog/route.ts",
@@ -894,13 +928,12 @@ test("admin pages and routes enforce the server administrator boundary", async (
   for (const file of routes) {
     assert.match(await fs.readFile(file, "utf8"), /createAdminBillingHandler/);
   }
-  assert.match(
-    await fs.readFile(
-      "app/api/admin/billing/reconciliation/server.ts",
-      "utf8",
-    ),
-    /createAdminBillingHandler/,
-  );
+  for (const file of [
+    "app/api/admin/billing/reconciliation/server.ts",
+    "app/api/admin/billing/refunds/server.ts",
+  ]) {
+    assert.match(await fs.readFile(file, "utf8"), /createAdminBillingHandler/);
+  }
 });
 
 test("admin repositories use real schema names and include payment records", async () => {

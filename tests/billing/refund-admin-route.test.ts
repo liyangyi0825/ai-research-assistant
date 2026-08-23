@@ -49,20 +49,14 @@ function success() {
   };
 }
 
-test("refund route exposes only GET/PATCH and delegates both guarded operations", async () => {
-  const route = await import("../../app/api/admin/billing/refunds/route");
+test("refund route exports only the guarded default GET/PATCH handlers", async () => {
+  const [route, server] = await Promise.all([
+    import("../../app/api/admin/billing/refunds/route"),
+    import("../../app/api/admin/billing/refunds/server"),
+  ]);
   assert.deepEqual(Object.keys(route).sort(), ["GET", "PATCH"]);
-
-  const source = await import("node:fs/promises").then((fs) =>
-    fs.readFile("app/api/admin/billing/refunds/route.ts", "utf8"));
-  assert.match(
-    source,
-    /export async function GET\(request: Request\)[\s\S]*createAdminBillingHandler\([\s\S]*\)\(request\);/,
-  );
-  assert.match(
-    source,
-    /export const PATCH = createRefundReviewHandler\(\);/,
-  );
+  assert.equal(route.GET, server.refundGetHandler);
+  assert.equal(route.PATCH, server.refundPatchHandler);
 });
 
 test("approved refund review executes and returns the persisted review plus settlement", async () => {

@@ -604,7 +604,6 @@ test("every billing admin route delegates through the server-side admin guard", 
     "app/api/admin/billing/credits/route.ts",
     "app/api/admin/billing/invoices/route.ts",
     "app/api/admin/billing/orders/route.ts",
-    "app/api/admin/billing/refunds/route.ts",
     "app/api/admin/billing/subscriptions/route.ts",
     "app/api/admin/billing/users/[id]/route.ts",
     "app/api/admin/billing/webhooks/route.ts",
@@ -620,11 +619,14 @@ test("every billing admin route delegates through the server-side admin guard", 
     assert.match(source, /createAdminBillingHandler/);
     assert.doesNotMatch(source, /requireBillingUser/);
   }
-  const reconciliationServer = readProjectFile(
+  for (const server of [
     "app/api/admin/billing/reconciliation/server.ts",
-  );
-  assert.match(reconciliationServer, /createAdminBillingHandler/);
-  assert.doesNotMatch(reconciliationServer, /requireBillingUser/);
+    "app/api/admin/billing/refunds/server.ts",
+  ]) {
+    const source = readProjectFile(server);
+    assert.match(source, /createAdminBillingHandler/);
+    assert.doesNotMatch(source, /requireBillingUser/);
+  }
 });
 
 test("disabled billing and production Mock both fail closed for unauthorized users", () => {

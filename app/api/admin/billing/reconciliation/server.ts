@@ -19,3 +19,5 @@ export function createReconciliationGetHandler(
       (dependencies.generateReport ?? generateInternalReconciliationReport)(),
   });
 }
+
+export const reconciliationGetHandler = createReconciliationGetHandler();

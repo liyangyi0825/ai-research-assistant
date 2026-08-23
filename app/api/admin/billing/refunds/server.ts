@@ -1,4 +1,9 @@
-import { reviewRefundRequest } from "@/lib/billing/admin";
+import {
+  createAdminBillingHandler,
+  getBillingAdminRepository,
+  reviewRefundRequest,
+  type BillingAdminRepository,
+} from "@/lib/billing/admin";
 import { requireBillingAdmin, type BillingAdmin } from "@/lib/billing/auth";
 import { BillingError } from "@/lib/billing/errors";
 import { executeApprovedRefund } from "@/lib/billing/refunds";
@@ -14,6 +19,22 @@ type RefundReviewDependencies = {
   executeRefund?: typeof executeApprovedRefund;
   logger?: BillingSecurityLogger;
 };
+
+type RefundListDependencies = {
+  requireAdmin?: () => Promise<BillingAdmin>;
+  listRefunds?: BillingAdminRepository["listRefunds"];
+};
+
+export function createRefundListHandler(
+  dependencies: RefundListDependencies = {},
+) {
+  return createAdminBillingHandler({
+    requireAdmin: dependencies.requireAdmin,
+    operation: () =>
+      (dependencies.listRefunds ?? (() =>
+        getBillingAdminRepository().listRefunds()))(),
+  });
+}
 
 export function createRefundReviewHandler(
   dependencies: RefundReviewDependencies = {},
@@ -110,3 +131,6 @@ export function createRefundReviewHandler(
     }
   };
 }
+
+export const refundGetHandler = createRefundListHandler();
+export const refundPatchHandler = createRefundReviewHandler();
