@@ -529,7 +529,7 @@ const wideConstraintSemantics = [
     table: "billing_payment_intents",
     marker: "claim_expires_at IS NOT NULL",
     migration: /billing_payment_intents_lifecycle_check[\s\S]*merchant_order_number[\s\S]*status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_status\s*=\s*'PENDING'[\s\S]*payment_token\s+is\s+not\s+null[\s\S]*payment_status\s*=\s*'PAID'[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
-    valid: "CHECK (((NULLIF(btrim(merchant_order_number), ''::text) IS NOT NULL) AND (char_length(merchant_order_number) <= 64) AND (((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (last_error_code IS NULL) AND (((payment_status = 'PENDING'::text) AND (payment_token IS NOT NULL) AND (paid_at IS NULL)) OR ((payment_status = 'PAID'::text) AND (provider_transaction_id IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((payment_status = ANY (ARRAY['FAILED'::text, 'CLOSED'::text])) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NULL) AND (paid_at IS NULL)))) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL)))))",
+    valid: "CHECK (((NULLIF(btrim(merchant_order_number), ''::text) IS NOT NULL) AND (((provider = 'WECHAT'::text) AND (merchant_order_number ~ '^[A-Za-z0-9_|*-]{6,32}$'::text)) OR ((provider <> 'WECHAT'::text) AND (merchant_order_number ~ '^[A-Za-z0-9_|*-]{1,64}$'::text))) AND (((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (last_error_code IS NULL) AND (((payment_status = 'PENDING'::text) AND (payment_token IS NOT NULL) AND (paid_at IS NULL)) OR ((payment_status = 'PAID'::text) AND (provider_transaction_id IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((payment_status = ANY (ARRAY['FAILED'::text, 'CLOSED'::text])) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NULL) AND (paid_at IS NULL)))) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL)))))",
     mutationLeaf: "(claim_expires_at IS NOT NULL)",
   },
   {
@@ -1210,16 +1210,26 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
   assert.match(verify, /expected_writer_functions[\s\S]*aclexplode/i);
   assert.match(verify, /verify-insufficient-balance-009[\s\S]*100000[\s\S]*sqlstate\s+'53000'[\s\S]*insufficient credit balance was accepted/i);
   assert.match(verify, /billing_settle_paid_order\s*\([\s\S]*ALREADY_PROCESSED[\s\S]*duplicate settlement was not idempotent/i);
+  assert.ok(
+    verify.includes(
+      "merchant_order_number ~ ''\\^\\[A-Za-z0-9_\\|\\*-\\]\\{6,32\\}\\$''::text",
+    ),
+  );
+  assert.doesNotMatch(verify, /DRILL-WECHAT-EVENT-014/i);
   assert.match(verify, /DRILL-RETRY-EVENT-013[\s\S]*billing_mark_webhook_retryable[\s\S]*status[^;]*RETRYABLE[\s\S]*billing_prepare_webhook_settlement[\s\S]*status[^;]*RECEIVED[\s\S]*status\s*=\s*'PROCESSING'[\s\S]*status\s*=\s*'PROCESSED'/i);
   assert.match(
     verify,
-    /DRILL-WECHAT-MERCHANT-014[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*billing_settle_paid_order[\s\S]*DRILL-WECHAT-TXN-014[\s\S]*provider_transaction_id\s+is\s+distinct\s+from\s+'DRILL-WECHAT-TXN-014'[\s\S]*payment_status\s+is\s+distinct\s+from\s+'PAID'/i,
+    /DRILL-WECHAT-MERCHANT-014[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*billing_bind_verified_payment_query[\s\S]*QUERY:DRILL-WECHAT-TXN-014[\s\S]*status\s*=\s*'PROCESSED'[\s\S]*replay\s*:=\s*public\.billing_bind_verified_payment_query[\s\S]*verified query settlement was not exactly once/i,
   );
   assert.match(verify, /991[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement amount was accepted/i);
   assert.match(verify, /'USD'[\s\S]*sqlstate\s+'22000'[\s\S]*mismatched settlement currency was accepted/i);
   assert.match(verify, /billing_request_refund\s*\([\s\S]*b022[\s\S]*refund request replay was not idempotent/i);
   assert.match(verify, /billing_admin_review_invoice\s*\([\s\S]*ALREADY_APPLIED[\s\S]*administrator replay was not idempotent/i);
   assert.match(verify, /billing_claim_approved_refund\s*\([\s\S]*billing_fail_refund_claim\s*\([\s\S]*billing_complete_refund\s*\(/i);
+  assert.match(
+    verify,
+    /REFUND_PROVIDER_REJECTED[\s\S]*billing_claim_approved_refund[\s\S]*sqlstate\s+'P2101'[\s\S]*permanent refund failure was automatically retried/i,
+  );
   assert.match(verify, /MANUAL_REVIEW_REQUIRED[\s\S]*credit pack automatic refund was not rejected/i);
   assert.match(verify, /refund execution rollback sentinel[\s\S]*refund execution rollback failed/i);
   assert.match(

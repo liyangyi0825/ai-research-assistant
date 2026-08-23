@@ -4,6 +4,7 @@ export type BillingConfig = {
   featureEnabled: boolean;
   paymentMode: PaymentMode;
   testUserIds: string[];
+  realPaymentPublicEnabled: boolean;
   legal: {
     operatorName: string;
     operatorCreditCode: string;

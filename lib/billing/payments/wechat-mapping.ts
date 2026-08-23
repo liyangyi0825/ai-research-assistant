@@ -10,6 +10,7 @@ import { parseStrictWechatJson } from "./wechat-json";
 const MAX_EVENT_ID_LENGTH = 128;
 const MAX_TRANSACTION_ID_LENGTH = 64;
 const MAX_ORDER_NUMBER_LENGTH = 64;
+const WECHAT_ORDER_NUMBER_PATTERN = /^[A-Za-z0-9_|*-]{6,32}$/;
 const UNICODE_CATEGORY_C_PATTERN = /\p{C}/u;
 const RFC3339_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
@@ -172,7 +173,6 @@ export function parseWechatNativeTransaction(input: {
     typeof input.paymentToken === "string" ? input.paymentToken : null;
   const hasVerifiedPaymentToken = paymentToken !== null && paymentToken.length > 0;
   const status = nativeStatus(response.trade_state, hasVerifiedPaymentToken);
-  const expiresAt = normalizeWechatRfc3339(response.time_expire);
   const expectedExpiresAt = normalizeWechatRfc3339(input.expectedExpiresAt);
   const paidAt =
     status === "PAID" ? normalizeWechatRfc3339(response.success_time) : null;
@@ -198,10 +198,8 @@ export function parseWechatNativeTransaction(input: {
     amount.total !== input.expectedAmountMinor ||
     input.expectedCurrency !== "CNY" ||
     amount.currency !== input.expectedCurrency ||
-    expiresAt === null ||
     expectedExpiresAt === null ||
-    expiresAt !== expectedExpiresAt ||
-    (paidAt === null || Date.parse(paidAt) >= Date.parse(expiresAt)) &&
+    (paidAt === null || Date.parse(paidAt) >= Date.parse(expectedExpiresAt)) &&
       status === "PAID" ||
     !hasValidOptionalStringFields(response, [
       "trade_state_desc",
@@ -222,7 +220,7 @@ export function parseWechatNativeTransaction(input: {
     amountMinor: amount.total,
     currency: "CNY",
     paymentToken: status === "PENDING" ? paymentToken : null,
-    expiresAt,
+    expiresAt: expectedExpiresAt,
     paidAt,
   };
 }
@@ -233,7 +231,7 @@ export function parseWechatRefund(input: {
   expectedRefundNumber: string;
   expectedAmountMinor: number;
   expectedCurrency: "CNY";
-}): RefundResult | { status: "PROCESSING" | "FAILED" } {
+}): RefundResult | { status: "PROCESSING" | "CLOSED" | "ABNORMAL" } {
   if (!isRecord(input.response)) throw invalidResponse();
   const response = input.response;
   const amount = response.amount;
@@ -274,7 +272,8 @@ export function parseWechatRefund(input: {
     };
   }
   if (status === "PROCESSING") return { status: "PROCESSING" };
-  if (status === "CLOSED" || status === "ABNORMAL") return { status: "FAILED" };
+  if (status === "CLOSED") return { status: "CLOSED" };
+  if (status === "ABNORMAL") return { status: "ABNORMAL" };
   throw invalidResponse();
 }
 
@@ -329,6 +328,7 @@ export function parseWechatPaidNotification(input: {
     parsed.appid !== input.expectedAppId ||
     !isSafePathIdentifier(parsed.transaction_id, MAX_TRANSACTION_ID_LENGTH) ||
     !isSafePathIdentifier(parsed.out_trade_no, MAX_ORDER_NUMBER_LENGTH) ||
+    !WECHAT_ORDER_NUMBER_PATTERN.test(parsed.out_trade_no) ||
     !isRecord(amount) ||
     typeof amount.total !== "number" ||
     !Number.isSafeInteger(amount.total) ||
@@ -336,6 +336,7 @@ export function parseWechatPaidNotification(input: {
     amount.currency !== "CNY" ||
     !validOptionalAmountFields(amount) ||
     occurredAt === null ||
+    ("trade_type" in parsed && parsed.trade_type !== "NATIVE") ||
     !hasValidOptionalStringFields(parsed, [
       "trade_type",
       "trade_state_desc",

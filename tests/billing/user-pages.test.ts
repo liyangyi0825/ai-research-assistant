@@ -37,6 +37,7 @@ function billingConfig(
     featureEnabled: false,
     paymentMode: "mock",
     testUserIds: [],
+    realPaymentPublicEnabled: false,
     legal: {
       operatorName: "",
       operatorCreditCode: "",
@@ -291,6 +292,44 @@ test("availability fails closed and only enables production mock for a test user
     mockConfirmationAllowed: true,
     agreementVersion: "billing-member-v1",
   });
+});
+
+test("WeChat availability enforces the server allowlist until public real payments are explicitly enabled", async () => {
+  const { createBillingAvailabilityGetHandler } = await userPagesModule();
+  const restrictedConfig = billingConfig({
+    featureEnabled: true,
+    paymentMode: "wechat",
+    wechatConfigured: true,
+    testUserIds: ["test-user"],
+    realPaymentPublicEnabled: false,
+  } as Partial<BillingConfig>);
+  const ordinary = createBillingAvailabilityGetHandler({
+    getConfig: () => restrictedConfig,
+    requireActor: async () => user(),
+  });
+  assert.deepEqual(await (await ordinary()).json(), {
+    available: false,
+    paymentMode: null,
+    mockConfirmationAllowed: false,
+    agreementVersion: null,
+  });
+
+  for (const actor of [
+    user({ id: "test-user" }),
+    user({ isAdmin: true }),
+  ]) {
+    const allowed = createBillingAvailabilityGetHandler({
+      getConfig: () => restrictedConfig,
+      requireActor: async () => actor,
+    });
+    assert.equal((await (await allowed()).json()).available, true);
+  }
+
+  const publicHandler = createBillingAvailabilityGetHandler({
+    getConfig: () => ({ ...restrictedConfig, realPaymentPublicEnabled: true }),
+    requireActor: async () => user(),
+  });
+  assert.equal((await (await publicHandler()).json()).available, true);
 });
 
 test("billing summary authenticates server-side and hides storage errors", async () => {

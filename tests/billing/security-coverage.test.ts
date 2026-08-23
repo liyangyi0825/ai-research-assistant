@@ -671,12 +671,12 @@ test("WeChat secrets are absent from reflective config, provider, transport, err
   const environment = {
     BILLING_FEATURE_ENABLED: "true",
     PAYMENT_MODE: "wechat",
-    WECHAT_PAY_MCH_ID: "merchant-secret-sentinel",
-    WECHAT_PAY_APP_ID: "app-secret-sentinel",
+    WECHAT_PAY_MCH_ID: "1900000109",
+    WECHAT_PAY_APP_ID: "wx1234567890abcdef",
     WECHAT_PAY_API_V3_KEY: sentinel,
     WECHAT_PAY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
-    WECHAT_PAY_CERT_SERIAL_NO: "merchant-cert-sentinel",
-    WECHAT_PAY_PUBLIC_KEY_ID: "public-key-id-sentinel",
+    WECHAT_PAY_CERT_SERIAL_NO: "ABCDEF0123456789",
+    WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_00000000000000000000000000000001",
     WECHAT_PAY_PUBLIC_KEY: publicKey.export({ type: "spki", format: "pem" }).toString(),
     WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
   };

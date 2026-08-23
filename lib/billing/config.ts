@@ -143,6 +143,8 @@ export function getBillingConfig(
     featureEnabled: paymentEnv.BILLING_FEATURE_ENABLED === "true",
     paymentMode,
     testUserIds,
+    realPaymentPublicEnabled:
+      paymentEnv.BILLING_REAL_PAYMENT_PUBLIC_ENABLED === "true",
     legal: {
       operatorName: paymentEnv.LEGAL_OPERATOR_NAME?.trim() ?? "",
       operatorCreditCode: paymentEnv.LEGAL_OPERATOR_CREDIT_CODE?.trim() ?? "",
@@ -190,8 +192,8 @@ export function validateBillingRuntimeAtStartup(
 
   if (
     config.featureEnabled &&
-    config.isProduction &&
-    config.paymentMode === "mock" &&
+    ((config.isProduction && config.paymentMode === "mock") ||
+      config.paymentMode === "wechat") &&
     config.testUserIds.some((id) => unsafeTestUserIds.has(id.toLowerCase()))
   ) {
     throw new BillingError(
@@ -206,15 +208,23 @@ export function assertPaymentRuntimeSafe(
   config: BillingConfig,
   context: PaymentRuntimeContext,
 ): void {
+  if (!config.featureEnabled) return;
   if (
-    !config.featureEnabled ||
-    !config.isProduction ||
-    config.paymentMode !== "mock" ||
     context.isAdmin ||
     (context.userId !== undefined && config.testUserIds.includes(context.userId))
   ) {
     return;
   }
+
+  if (config.paymentMode === "wechat" && !config.realPaymentPublicEnabled) {
+    throw new BillingError(
+      "REAL_PAYMENT_NOT_ALLOWED",
+      "Real payments are restricted to administrators and listed test users before public launch.",
+      403,
+    );
+  }
+
+  if (!config.isProduction || config.paymentMode !== "mock") return;
 
   throw new BillingError(
     "MOCK_PAYMENT_NOT_ALLOWED",

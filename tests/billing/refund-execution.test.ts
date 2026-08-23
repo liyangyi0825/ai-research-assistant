@@ -18,6 +18,7 @@ const config: BillingConfig = {
   featureEnabled: true,
   paymentMode: "mock",
   testUserIds: ["user-1"],
+  realPaymentPublicEnabled: false,
   legal: { operatorName: "", operatorCreditCode: "", contactEmail: "" },
   wechatConfigured: false,
   alipayConfigured: false,
@@ -314,7 +315,11 @@ test("provider errors preserve the claim for same-key recovery and emit only saf
   const { provider, payment } = await paidProvider();
   const transactionSecret = payment.providerTransactionId;
   provider.refundPayment = async () => {
-    throw new Error(`private-key=must-not-leak transaction=${transactionSecret}`);
+    throw new BillingError(
+      "PAYMENT_PROVIDER_TRANSPORT_FAILED",
+      `private-key=must-not-leak transaction=${transactionSecret}`,
+      502,
+    );
   };
   const logs: string[] = [];
   const failures: unknown[] = [];
@@ -425,8 +430,8 @@ test("deterministic provider preflight failures release the refund claim", async
     }),
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "REFUND_PROVIDER_UNAVAILABLE" &&
-      error.status === 503,
+      error.code === "REFUND_PROVIDER_FAILED" &&
+      error.status === 409,
   );
   assert.deepEqual(failures, [{
     refundId: "refund-1",
@@ -435,7 +440,7 @@ test("deterministic provider preflight failures release the refund claim", async
   }]);
 });
 
-test("verified remote provider rejections retain the refund claim", async () => {
+test("verified remote provider rejections fail the claim and are non-retryable", async () => {
   const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
   const executeApprovedRefund = refundModule.executeApprovedRefund!;
   const provider = new MockPaymentProvider({ secret: "unused" });
@@ -481,11 +486,63 @@ test("verified remote provider rejections retain the refund claim", async () => 
     }),
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "REFUND_PROVIDER_UNAVAILABLE" &&
-      error.status === 503,
+      error.code === "REFUND_PROVIDER_FAILED" &&
+      error.status === 409,
   );
   assert.equal(providerCalls, 1);
-  assert.deepEqual(failures, []);
+  assert.deepEqual(failures, [{
+    refundId: "refund-1",
+    claimToken: "claim-1",
+    errorCode: "REFUND_PROVIDER_REJECTED",
+  }]);
+});
+
+test("provider contract mismatch fails the claim into manual review", async () => {
+  const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
+  const executeApprovedRefund = refundModule.executeApprovedRefund!;
+  const provider = new MockPaymentProvider({ secret: "unused" });
+  provider.refundPayment = async () => {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "Provider response contract mismatch.",
+      502,
+    );
+  };
+  const failures: Array<{ errorCode: string }> = [];
+
+  await assert.rejects(
+    () => executeApprovedRefund("request-1", {
+      repository: {
+        async claimApprovedRefund() {
+          return {
+            status: "CLAIMED" as const,
+            refundId: "refund-1",
+            requestId: "request-1",
+            orderId: "order-1",
+            paymentId: "payment-1",
+            provider: "MOCK" as const,
+            providerTransactionId: "mock-tx-1",
+            amountMinor: 7_900,
+            currency: "CNY" as const,
+            idempotencyKey: "billing-refund:request-1",
+          };
+        },
+        async completeRefund() { assert.fail("contract mismatch cannot complete"); },
+        async failRefundClaim(input: { errorCode: string }) { failures.push(input); },
+      },
+      getConfig: () => config,
+      getProvider: () => provider,
+      now: () => now,
+      createClaimToken: () => "claim-1",
+    } as never),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "REFUND_REQUIRES_MANUAL_REVIEW" &&
+      error.status === 409,
+  );
+  assert.deepEqual(failures.map(({ errorCode }) => errorCode), [
+    "REFUND_PROVIDER_CONTRACT_MISMATCH",
+  ]);
 });
 
 test("explicit unavailable provider outcomes retain the refund claim", async () => {
@@ -540,7 +597,7 @@ test("explicit unavailable provider outcomes retain the refund claim", async () 
   }
 });
 
-test("actual WeChat provider retains the lease when query recovery fails", async () => {
+test("actual WeChat provider fails the lease when query recovery is permanently rejected", async () => {
   const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
   const executeApprovedRefund = refundModule.executeApprovedRefund!;
   const requests: string[] = [];
@@ -600,14 +657,18 @@ test("actual WeChat provider retains the lease when query recovery fails", async
     } as never),
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "REFUND_PROVIDER_UNAVAILABLE" &&
-      error.status === 503,
+      error.code === "REFUND_PROVIDER_FAILED" &&
+      error.status === 409,
   );
   assert.deepEqual(requests, [
     "/v3/refund/domestic/refunds",
     "/v3/refund/domestic/refunds/a1a255e9c5297ead756ecb2f4117ffe0",
   ]);
-  assert.deepEqual(failures, []);
+  assert.deepEqual(failures, [{
+    refundId: "refund-1",
+    claimToken: "claim-1",
+    errorCode: "REFUND_PROVIDER_REJECTED",
+  }]);
 });
 
 test("credit-pack refunds require manual review before provider construction", async () => {
@@ -641,6 +702,35 @@ test("credit-pack refunds require manual review before provider construction", a
       error.status === 409,
   );
   assert.equal(providerConstructed, false);
+});
+
+test("durable terminal refund claims cannot re-enter provider execution", async () => {
+  const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
+  const executeApprovedRefund = refundModule.executeApprovedRefund!;
+  for (const [status, code] of [
+    ["FAILED", "REFUND_PROVIDER_FAILED"],
+    ["MANUAL_REVIEW_REQUIRED", "REFUND_REQUIRES_MANUAL_REVIEW"],
+  ] as const) {
+    let providerCalls = 0;
+    await assert.rejects(
+      () => executeApprovedRefund("request-1", {
+        repository: {
+          async claimApprovedRefund() { return { status }; },
+          async completeRefund() { assert.fail("terminal claims cannot complete"); },
+          async failRefundClaim() { assert.fail("terminal claims have no new lease"); },
+        },
+        getConfig: () => config,
+        getProvider: () => {
+          providerCalls += 1;
+          return new MockPaymentProvider({ secret: "unused" });
+        },
+        now: () => now,
+        createClaimToken: () => "claim-1",
+      } as never),
+      (error: unknown) => error instanceof BillingError && error.code === code,
+    );
+    assert.equal(providerCalls, 0);
+  }
 });
 
 test("the forward refund migration claims approved full refunds and completes all final state atomically", async () => {
@@ -804,4 +894,22 @@ test("refund repository sends only server claim and provider result fields to th
     },
   ]);
   assert.equal(JSON.stringify(calls).includes("amountFromClient"), false);
+});
+
+test("refund repository maps terminal trigger SQLSTATEs without reopening a lease", async () => {
+  for (const [sqlState, status] of [
+    ["P2101", "FAILED"],
+    ["P2102", "MANUAL_REVIEW_REQUIRED"],
+  ] as const) {
+    const repository = createRefundExecutionRepository({
+      async rpc() {
+        return { data: null, error: { code: sqlState, message: "private database detail" } };
+      },
+    });
+    assert.deepEqual(await repository.claimApprovedRefund({
+      requestId: "request-1",
+      claimToken: "claim-1",
+      claimedAt: now.toISOString(),
+    }), { status });
+  }
 });

@@ -8,11 +8,13 @@
 BILLING_FEATURE_ENABLED=false
 PAYMENT_MODE=mock
 BILLING_TEST_USER_IDS=
+BILLING_REAL_PAYMENT_PUBLIC_ENABLED=false
 ```
 
 - `BILLING_FEATURE_ENABLED=false` 时不展示公开购买入口，创建订单、创建支付、Mock 确认及售后写接口拒绝访问；已付款订单的已验签支付回调仍会继续结算，避免商户扣款后未发放权益。
 - 此功能开关不是支付回调硬停开关。需要硬停 Provider 时，必须使用独立、经审批的运维机制并保留对账与人工处置路径。
 - `PAYMENT_MODE=mock` 只用于本地、测试环境，以及生产环境中明确列入 `BILLING_TEST_USER_IDS` 的测试账号或服务端确认的管理员。
+- `PAYMENT_MODE=wechat` 默认同样只允许服务端确认的管理员或 `BILLING_TEST_USER_IDS` 白名单账号。只有另行批准公开真实支付后，才可显式设置 `BILLING_REAL_PAYMENT_PUBLIC_ENABLED=true`；默认 `false`，且订单、支付创建和可用性接口都在服务端执行该门禁。
 - 生产环境不能将 Mock 支付公开给普通用户。程序启动和每次支付访问都会执行安全校验。
 - 根目录 `instrumentation.ts` 的 `register()` 会在 Next.js 服务实例就绪前调用 Billing 启动校验；默认关闭配置可正常构建和启动，不安全的生产 Mock 或缺少正式 Provider 配置会阻止实例就绪。
 - 不要在仓库、数据库或日志中保存真实商户密钥。
@@ -36,6 +38,8 @@ WECHAT_PAY_API_V3_KEY=
 WECHAT_PAY_PRIVATE_KEY=
 WECHAT_PAY_CERT_SERIAL_NO=
 WECHAT_PAY_PLATFORM_CERT=
+WECHAT_PAY_PUBLIC_KEY_ID=
+WECHAT_PAY_PUBLIC_KEY=
 WECHAT_PAY_NOTIFY_URL=
 ```
 
@@ -49,9 +53,9 @@ ALIPAY_NOTIFY_URL=
 ALIPAY_RETURN_URL=
 ```
 
-`WECHAT_PAY_PRIVATE_KEY` 是商户私钥，`WECHAT_PAY_CERT_SERIAL_NO` 是商户证书序列号；`WECHAT_PAY_PLATFORM_CERT` 用于平台证书/公钥材料。`ALIPAY_PRIVATE_KEY` 是支付宝应用私钥。旧变量 `WECHAT_PAY_MCH_PRIVATE_KEY`、`WECHAT_PAY_MCH_SERIAL_NO` 和 `ALIPAY_APP_PRIVATE_KEY` 仅作为兼容别名；若新旧变量同时设置且值不同，程序会拒绝启动收费功能。所有值只应通过受控的服务端密钥管理注入，日志不得输出其内容。
+`WECHAT_PAY_PRIVATE_KEY` 是商户 RSA-2048 私钥，`WECHAT_PAY_CERT_SERIAL_NO` 是十六进制商户证书序列号。验签材料必须二选一：平台证书 `WECHAT_PAY_PLATFORM_CERT`，或完整的微信支付公钥 ID/PEM 对 `WECHAT_PAY_PUBLIC_KEY_ID`、`WECHAT_PAY_PUBLIC_KEY`。启动校验还会拒绝非 RSA-2048 密钥、过期或尚未生效的平台证书、非法商户号/AppID/序列号/公钥 ID。`ALIPAY_PRIVATE_KEY` 是支付宝应用私钥。旧变量 `WECHAT_PAY_MCH_PRIVATE_KEY`、`WECHAT_PAY_MCH_SERIAL_NO` 和 `ALIPAY_APP_PRIVATE_KEY` 仅作为兼容别名；若新旧变量同时设置且值不同，程序会拒绝启动收费功能。所有值只应通过受控的服务端密钥管理注入，日志不得输出其内容。
 
-当 `PAYMENT_MODE=wechat` 或 `PAYMENT_MODE=alipay` 且收费功能开启时，缺少任一对应配置会拒绝启用支付功能；即使配置完整，在 Provider 仍为接口骨架期间也会以 `PROVIDER_NOT_IMPLEMENTED` 拒绝启动。错误信息不输出变量值。
+当 `PAYMENT_MODE=wechat` 或 `PAYMENT_MODE=alipay` 且收费功能开启时，缺少任一对应配置会拒绝启用支付功能。微信 Native Provider 已具备离线验证的创建、查询、关闭、退款和回调实现；支付宝 Provider 仍为失败关闭的接口骨架。错误信息不输出变量值。
 
 ## 独立测试数据库
 
@@ -69,6 +73,10 @@ ALIPAY_RETURN_URL=
 8. `202607290008_revoke_legacy_billing_credit_rpc.sql`
 9. `202607290009_billing_feature_usage_costs.sql`
 10. `202608050010_billing_catalog_seed.sql`
+11. `202608120011_billing_fast_launch_catalog_guard.sql`
+12. `202608160012_billing_refund_execution.sql`
+13. `202608180013_billing_webhook_retry.sql`
+14. `202608210014_wechat_native_payment_intents.sql`
 
 ### 2026-08-05 独立测试库验收记录
 
@@ -110,7 +118,7 @@ npm.cmd run build
 - 微信商户平台的产品权限、结算账户及必要审核；
 - 用于验签、证书轮换和回调重放测试的测试流程。
 
-当前 `WechatPayProvider` 仅为失败关闭的接口骨架；未完成真实签名、请求、证书轮换和回调验签前不能切换 `PAYMENT_MODE=wechat`。
+`WechatPayProvider` 的代码级签名、验签、Native 创建/查询/关闭、退款和回调路径已通过离线 fake transport 测试，但这不等于商户联调或生产就绪。切换 `PAYMENT_MODE=wechat`、注入凭据、执行迁移、真实金额验证和公开购买仍分别需要审批。获准测试账号创建 Native 支付后，owner-authenticated 支付端点只向该订单所有者返回已验签 `code_url` 及本地生成、未持久化的 SVG data URL；浏览器不能自行确认成功，必须等待服务端验签查询或回调完成原子结算。
 
 ## 正式启用支付宝所需资料
 

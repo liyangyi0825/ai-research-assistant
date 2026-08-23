@@ -53,6 +53,7 @@ export const TEST_CONFIG: BillingConfig = {
   featureEnabled: true,
   paymentMode: "mock",
   testUserIds: [TEST_USER_ID],
+  realPaymentPublicEnabled: false,
   legal: { operatorName: "", operatorCreditCode: "", contactEmail: "" },
   wechatConfigured: false,
   alipayConfigured: false,

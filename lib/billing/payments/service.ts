@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import QRCode from "qrcode";
 
 import { getSupabaseAdminClient } from "../../supabase";
 import {
@@ -145,6 +146,13 @@ export type CreateOrderPaymentPostHandlerDependencies = {
   getConfig: () => BillingConfig;
   assertAccess: (actor: BillingActor, config: BillingConfig) => void;
   createPayment: typeof createOrderPayment;
+};
+
+export type CreateOrderPaymentGetHandlerDependencies = {
+  requireActor: () => Promise<BillingActor>;
+  getConfig: () => BillingConfig;
+  assertAccess: (actor: BillingActor, config: BillingConfig) => void;
+  queryPayment: typeof queryAndBindOrderPayment;
 };
 
 const PAYMENT_ORDER_COLUMNS = [
@@ -571,7 +579,7 @@ function defaultMerchantOrderNumber(
   billingOrderNumber: string,
 ): string {
   return provider === "WECHAT"
-    ? `WX${randomUUID().replaceAll("-", "")}`
+    ? `WX${randomUUID().replaceAll("-", "").slice(0, 30)}`
     : billingOrderNumber;
 }
 
@@ -898,6 +906,63 @@ function paymentErrorResponse(error: unknown): Response {
   );
 }
 
+async function paymentRouteDto(
+  payment: PaymentResult,
+  config: BillingConfig,
+): Promise<{
+  status: PaymentResult["status"];
+  expiresAt: string;
+  codeUrl?: string;
+  qrCodeDataUrl?: string;
+}> {
+  if (
+    config.paymentMode !== "wechat" ||
+    payment.status !== "PENDING" ||
+    payment.paymentToken === null
+  ) {
+    return { status: payment.status, expiresAt: payment.expiresAt };
+  }
+
+  let codeUrl: URL;
+  try {
+    codeUrl = new URL(payment.paymentToken);
+  } catch {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "The payment provider returned an invalid response.",
+      503,
+    );
+  }
+  if (codeUrl.protocol !== "weixin:") {
+    throw new BillingError(
+      "PAYMENT_PROVIDER_INVALID_RESPONSE",
+      "The payment provider returned an invalid response.",
+      503,
+    );
+  }
+
+  try {
+    const svg = await QRCode.toString(payment.paymentToken, {
+      type: "svg",
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 256,
+    });
+    return {
+      status: payment.status,
+      expiresAt: payment.expiresAt,
+      codeUrl: payment.paymentToken,
+      qrCodeDataUrl: `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`,
+    };
+  } catch {
+    throw new BillingError(
+      "PAYMENT_QR_GENERATION_FAILED",
+      "The payment QR code could not be generated.",
+      503,
+    );
+  }
+}
+
 export function createOrderPaymentPostHandler(
   dependencies: CreateOrderPaymentPostHandlerDependencies = {
     requireActor: requireBillingActor,
@@ -921,14 +986,37 @@ export function createOrderPaymentPostHandler(
       });
 
       return Response.json(
-        {
-          payment: {
-            status: payment.status,
-            expiresAt: payment.expiresAt,
-          },
-        },
+        { payment: await paymentRouteDto(payment, config) },
         { status: 201 },
       );
+    } catch (error) {
+      return paymentErrorResponse(error);
+    }
+  };
+}
+
+export function createOrderPaymentGetHandler(
+  dependencies: CreateOrderPaymentGetHandlerDependencies = {
+    requireActor: requireBillingActor,
+    getConfig: getBillingConfig,
+    assertAccess: assertBillingAccess,
+    queryPayment: queryAndBindOrderPayment,
+  },
+): (request: Request, context: PaymentRouteContext) => Promise<Response> {
+  return async function getOrderPaymentHandler(
+    _request: Request,
+    context: PaymentRouteContext,
+  ): Promise<Response> {
+    try {
+      const actor = await dependencies.requireActor();
+      const config = dependencies.getConfig();
+      dependencies.assertAccess(actor, config);
+      const { id } = await context.params;
+      const payment = await dependencies.queryPayment(actor.id, id, {
+        getConfig: () => config,
+        isAdmin: actor.isAdmin,
+      });
+      return Response.json({ payment: await paymentRouteDto(payment, config) });
     } catch (error) {
       return paymentErrorResponse(error);
     }

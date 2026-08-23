@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
@@ -25,6 +26,8 @@ export function CheckoutPanel({ productId }: { productId: string }) {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [wechatQrCode, setWechatQrCode] = useState<string | null>(null);
+  const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -64,6 +67,43 @@ export function CheckoutPanel({ productId }: { productId: string }) {
     return () => controller.abort();
   }, [productId]);
 
+  useEffect(() => {
+    if (!pendingOrderId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch(
+          `/api/billing/orders/${encodeURIComponent(pendingOrderId)}/payment`,
+          { cache: "no-store" },
+        );
+        if (response.status === 401) {
+          router.push("/login");
+          return;
+        }
+        if (response.ok) {
+          const body = (await response.json()) as {
+            payment?: { status?: string };
+          };
+          if (body.payment?.status === "PAID") {
+            router.push(
+              `/billing/payment-result?orderId=${encodeURIComponent(pendingOrderId)}`,
+            );
+            return;
+          }
+        }
+      } catch {
+        // A bounded owner-authenticated retry follows below.
+      }
+      if (!cancelled) timer = setTimeout(poll, 3_000);
+    };
+    timer = setTimeout(poll, 1_500);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [pendingOrderId, router]);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (
@@ -77,6 +117,7 @@ export function CheckoutPanel({ productId }: { productId: string }) {
     }
     setSubmitting(true);
     setMessage(null);
+    setWechatQrCode(null);
     try {
       const response = await fetch("/api/billing/orders", {
         method: "POST",
@@ -105,6 +146,23 @@ export function CheckoutPanel({ productId }: { productId: string }) {
         setMessage(
           "璁㈠崟宸插垱寤猴紝浣嗘敮浠樺噯澶囨湭瀹屾垚锛岃浠庤处鍗曚腑蹇冮噸璇曘€?",
         );
+        return;
+      }
+      const paymentBody = (await paymentResponse.json()) as {
+        payment?: {
+          status?: string;
+          qrCodeDataUrl?: string;
+        };
+      };
+      if (
+        paymentBody.payment?.status === "PENDING" &&
+        paymentBody.payment.qrCodeDataUrl?.startsWith(
+          "data:image/svg+xml;base64,",
+        )
+      ) {
+        setWechatQrCode(paymentBody.payment.qrCodeDataUrl);
+        setPendingOrderId(body.order.id);
+        setMessage("请使用微信扫描二维码完成支付，页面会自动核验结果。");
         return;
       }
       router.push(
@@ -201,6 +259,21 @@ export function CheckoutPanel({ productId }: { productId: string }) {
         <p className="mt-3 text-xs leading-5 text-slate-400">
           金额与币种由服务端商品记录决定，页面不会向后端提交计价字段。
         </p>
+        {wechatQrCode && (
+          <div className="mt-5 rounded-xl bg-white p-3 text-center text-slate-900">
+            <Image
+              src={wechatQrCode}
+              alt="微信支付二维码"
+              width={256}
+              height={256}
+              unoptimized
+              className="mx-auto h-auto w-full max-w-64"
+            />
+            <p className="mt-2 text-xs text-slate-600">
+              二维码仅对当前订单持有人显示，请勿转发。
+            </p>
+          </div>
+        )}
         {availability?.available ? (
           <button
             type="submit"

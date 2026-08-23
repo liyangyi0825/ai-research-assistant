@@ -129,6 +129,7 @@ const config: BillingConfig = {
   featureEnabled: true,
   paymentMode: "mock",
   testUserIds: ["user-1"],
+  realPaymentPublicEnabled: false,
   legal: { operatorName: "", operatorCreditCode: "", contactEmail: "" },
   wechatConfigured: false,
   alipayConfigured: false,
@@ -405,7 +406,7 @@ test("a valid callback is persisted as RECEIVED before the exact nine-argument s
   assert.equal(JSON.stringify(stored).includes(rawBody), false);
 });
 
-test("invalid signatures never trust business fields and persist only a rejected payload hash", async () => {
+test("invalid signatures never trust business fields or amplify core billing storage", async () => {
   const repository = new MemoryWebhookRepository();
   const rawBody = `${eventBody({ orderNumber: "attacker-order", amountMinor: 1 }).slice(0, -1)},"email":"student@example.com","taxIdentifier":"tax-id"}`;
   const logs: string[] = [];
@@ -428,27 +429,18 @@ test("invalid signatures never trust business fields and persist only a rejected
       expectBillingError(error, "INVALID_WEBHOOK_SIGNATURE", 401),
   );
 
-  const hash = createHash("sha256").update(rawBody).digest("hex");
-  const stored = repository.events.get(`MOCK:rejected:${hash}`);
-  assert.equal(stored?.status, "FAILED");
-  assert.equal(stored?.signatureValid, false);
-  assert.equal(stored?.orderNumber, null);
-  assert.equal(stored?.providerTransactionId, null);
-  assert.equal(stored?.amountMinor, null);
-  assert.equal(stored?.currency, null);
-  assert.deepEqual(stored?.payloadSummary, { payload_hash: hash });
+  assert.equal(repository.events.size, 0);
   assert.equal(logs.length, 1);
   assert.deepEqual(
     JSON.parse(logs[0].slice("billing_security_event ".length)),
     {
       eventCode: "WEBHOOK_SIGNATURE_REJECTED",
       provider: "MOCK",
-      providerEventId: `rejected:${hash}`,
       errorCode: "INVALID_WEBHOOK_SIGNATURE",
       status: "FAILED",
     },
   );
-  const auditText = JSON.stringify({ stored, logs });
+  const auditText = JSON.stringify({ logs });
   assert.equal(auditText.includes(rawBody), false);
   assert.equal(auditText.includes("secret-header"), false);
   assert.equal(auditText.includes("student@example.com"), false);
@@ -456,7 +448,7 @@ test("invalid signatures never trust business fields and persist only a rejected
   assert.equal(repository.settlementCalls, 0);
 });
 
-test("a verifier-classified invalid signature is also retained as a hash-only audit", async () => {
+test("a verifier-classified invalid signature also avoids core billing writes", async () => {
   const repository = new MemoryWebhookRepository();
   const provider = mockProvider();
   provider.verifyWebhook = async () => {
@@ -480,11 +472,34 @@ test("a verifier-classified invalid signature is also retained as a hash-only au
       expectBillingError(error, "INVALID_WEBHOOK_SIGNATURE", 401),
   );
 
-  const hash = createHash("sha256").update(rawBody).digest("hex");
-  const stored = repository.events.get(`MOCK:rejected:${hash}`);
-  assert.equal(stored?.status, "FAILED");
-  assert.equal(stored?.signatureValid, false);
-  assert.equal(stored?.orderNumber, null);
+  assert.equal(repository.events.size, 0);
+});
+
+test("random unsigned webhook floods are rate-limited to one safe aggregate log", async () => {
+  const repository = new MemoryWebhookRepository();
+  const logs: string[] = [];
+  let first = true;
+  const dependencies = {
+    ...webhookDependencies(repository),
+    rejectionLogGate: {
+      shouldLog() {
+        const allowed = first;
+        first = false;
+        return allowed;
+      },
+    },
+    logger: createBillingSecurityLogger((line) => logs.push(line)),
+  };
+
+  for (let index = 0; index < 100; index += 1) {
+    await assert.rejects(
+      () => processPaymentWebhook("mock", `unsigned-${index}-${crypto.randomUUID()}`, {}, dependencies),
+      (error: unknown) => expectBillingError(error, "INVALID_WEBHOOK_SIGNATURE", 401),
+    );
+  }
+  assert.equal(repository.events.size, 0);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.includes("unsigned-"), false);
 });
 
 test("a signed but malformed callback is retained as a hash-only FAILED audit", async () => {

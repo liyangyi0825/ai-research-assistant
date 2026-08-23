@@ -41,6 +41,7 @@ const disabledConfig: BillingConfig = {
   featureEnabled: false,
   paymentMode: "mock",
   testUserIds: [],
+  realPaymentPublicEnabled: false,
   legal: { operatorName: "", operatorCreditCode: "", contactEmail: "" },
   wechatConfigured: false,
   alipayConfigured: false,

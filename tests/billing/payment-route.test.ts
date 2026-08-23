@@ -6,6 +6,7 @@ import type { BillingActor } from "../../lib/billing/auth";
 import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 import {
+  createOrderPaymentGetHandler,
   createOrderPaymentPostHandler,
 } from "../../lib/billing/payments/service";
 import type { PaymentResult } from "../../lib/billing/payments/types";
@@ -20,6 +21,7 @@ const config: BillingConfig = {
   featureEnabled: true,
   paymentMode: "mock",
   testUserIds: [],
+  realPaymentPublicEnabled: false,
   legal: {
     operatorName: "",
     operatorCreditCode: "",
@@ -75,6 +77,75 @@ test("payment route authenticates the owner and returns only a safe intent DTO",
   ]);
 });
 
+test("owner-authenticated WeChat creation returns a local SVG QR for the verified code_url", async () => {
+  const wechatPayment: PaymentResult = {
+    ...payment,
+    orderNumber: "WX0123456789abcdef0123456789abcd",
+    providerTransactionId: null,
+    paymentToken: "weixin://wxpay/bizpayurl?pr=owner-only-token",
+  };
+  const handler = createOrderPaymentPostHandler({
+    requireActor: async () => actor,
+    getConfig: () => ({
+      ...config,
+      paymentMode: "wechat",
+      wechatConfigured: true,
+    }),
+    assertAccess: () => undefined,
+    createPayment: async () => wechatPayment,
+  });
+
+  const response = await handler(
+    new Request("http://localhost/api/billing/orders/order-1/payment", {
+      method: "POST",
+    }),
+    { params: Promise.resolve({ id: "order-1" }) },
+  );
+  const body = (await response.json()) as {
+    payment: { codeUrl: string; qrCodeDataUrl: string };
+  };
+
+  assert.equal(response.status, 201);
+  assert.equal(body.payment.codeUrl, wechatPayment.paymentToken);
+  assert.match(body.payment.qrCodeDataUrl, /^data:image\/svg\+xml;base64,/);
+  const svg = Buffer.from(body.payment.qrCodeDataUrl.split(",")[1]!, "base64").toString("utf8");
+  assert.match(svg, /^<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+  assert.match(svg, /<path/);
+  assert.doesNotMatch(svg, /https?:\/\/(?!www\.w3\.org\/2000\/svg)/);
+});
+
+test("owner-authenticated payment status GET queries and settles before returning PAID", async () => {
+  const calls: unknown[] = [];
+  const handler = createOrderPaymentGetHandler({
+    requireActor: async () => actor,
+    getConfig: () => ({
+      ...config,
+      paymentMode: "wechat",
+      wechatConfigured: true,
+    }),
+    assertAccess: () => undefined,
+    queryPayment: async (userId, orderId, dependencies) => {
+      calls.push([userId, orderId, dependencies?.isAdmin]);
+      return {
+        ...payment,
+        orderNumber: "WX0123456789abcdef0123456789abcd",
+        status: "PAID",
+        paymentToken: null,
+        paidAt: "2026-07-30T01:00:00.000Z",
+      };
+    },
+  });
+
+  const response = await handler(new Request("http://localhost"), {
+    params: Promise.resolve({ id: "order-1" }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    payment: { status: "PAID", expiresAt: payment.expiresAt },
+  });
+  assert.deepEqual(calls, [["user-1", "order-1", false]]);
+});
+
 test("payment route rejects disabled, unauthorized, paid, expired, and foreign orders without leaking details", async () => {
   for (const error of [
     new BillingError("BILLING_FEATURE_DISABLED", "Billing writes are disabled.", 403),
@@ -100,7 +171,7 @@ test("payment route rejects disabled, unauthorized, paid, expired, and foreign o
   }
 });
 
-test("checkout follows create order -> create intent -> payment result and never sends price/provider to the intent route", async () => {
+test("checkout renders the owner-only WeChat QR and polls the verified payment status endpoint", async () => {
   const checkout = await readFile(
     new URL("../../components/billing/CheckoutPanel.tsx", import.meta.url),
     "utf8",
@@ -118,17 +189,19 @@ test("checkout follows create order -> create intent -> payment result and never
   );
 
   const createOrder = checkout.indexOf('fetch("/api/billing/orders"');
-  const createIntent = checkout.indexOf("/payment");
-  const navigate = checkout.indexOf("/billing/payment-result");
+  const createIntent = checkout.indexOf("/payment", createOrder);
   assert.ok(createOrder >= 0);
   assert.ok(createIntent > createOrder);
-  assert.ok(navigate > createIntent);
-  assert.match(checkout.slice(createIntent, navigate), /method:\s*"POST"/);
+  assert.match(checkout.slice(createIntent), /method:\s*"POST"/);
   assert.doesNotMatch(
-    checkout.slice(createIntent, navigate),
+    checkout.slice(createIntent),
     /\b(?:amount|currency|provider|userId)\s*:/,
   );
   assert.match(route, /createOrderPaymentPostHandler/);
+  assert.match(route, /createOrderPaymentGetHandler/);
+  assert.match(checkout, /qrCodeDataUrl/);
+  assert.match(checkout, /<Image/);
+  assert.match(checkout, /setTimeout/);
   assert.match(paymentResult, /\/api\/billing\/payments\/mock\/confirm/);
   assert.match(paymentResult, /await refresh\(\)/);
 });

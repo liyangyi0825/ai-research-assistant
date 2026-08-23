@@ -42,7 +42,28 @@ export function createRefundReviewHandler(
   return async (request: Request): Promise<Response> => {
     try {
       const admin = await (dependencies.requireAdmin ?? requireBillingAdmin)();
-      const body = await request.json() as Record<string, unknown>;
+      let bodyValue: unknown;
+      try {
+        bodyValue = await request.json();
+      } catch {
+        throw new BillingError(
+          "INVALID_ADMIN_INPUT",
+          "Refund request body must be valid JSON.",
+          400,
+        );
+      }
+      if (
+        typeof bodyValue !== "object" ||
+        bodyValue === null ||
+        Array.isArray(bodyValue)
+      ) {
+        throw new BillingError(
+          "INVALID_ADMIN_INPUT",
+          "Refund request body must be a JSON object.",
+          400,
+        );
+      }
+      const body = bodyValue as Record<string, unknown>;
       const requestId = String(body.requestId ?? "");
       const action = body.action ?? "REVIEW";
       if (action !== "REVIEW" && action !== "RETRY_EXECUTION") {
@@ -75,6 +96,28 @@ export function createRefundReviewHandler(
               ...persisted,
               refundExecution: { status: "MANUAL_REVIEW_REQUIRED" as const },
             }, { status: 202 });
+          }
+          if (
+            error instanceof BillingError &&
+            error.code === "REFUND_PROVIDER_FAILED"
+          ) {
+            warnBillingSecurity(dependencies.logger ?? billingSecurityLogger, {
+              eventCode: "REFUND_EXECUTION_FAILED",
+              errorCode: "REFUND_PROVIDER_FAILED",
+              status: "FAILED",
+            });
+            return Response.json({
+              success: false,
+              approvalPersisted: true,
+              refundCompleted: false,
+              requiresManualAction: false,
+              ...persisted,
+              refundExecution: { status: "FAILED" as const },
+              error: {
+                code: "REFUND_PROVIDER_FAILED",
+                message: "The payment provider permanently rejected the refund.",
+              },
+            }, { status: 409 });
           }
           warnBillingSecurity(dependencies.logger ?? billingSecurityLogger, {
             eventCode: "REFUND_EXECUTION_FAILED",

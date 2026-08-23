@@ -26,6 +26,7 @@ const config: BillingConfig = {
   featureEnabled: true,
   paymentMode: "mock",
   testUserIds: ["user-1"],
+  realPaymentPublicEnabled: false,
   legal: { operatorName: "", operatorCreditCode: "", contactEmail: "" },
   wechatConfigured: false,
   alipayConfigured: false,
@@ -817,6 +818,58 @@ test("createOrderPayment persists a WeChat pending intent without fabricating a 
   assert.equal(payment.providerTransactionId, null);
   assert.equal(payment.orderNumber, "WX-MERCHANT-ATTEMPT-1");
   assert.deepEqual(completed, payment);
+});
+
+test("createOrderPayment default WeChat merchant number satisfies the official 6-32 character contract", async () => {
+  const storedOrder = order({
+    provider: "WECHAT",
+    amountMinor: 7_900,
+    expiresAt: "2026-08-19T02:30:00.000Z",
+  });
+  let claimedMerchantOrderNumber = "";
+  const repository = {
+    async findOwnedOrder() { return storedOrder; },
+    async claimPaymentIntent(input: { merchantOrderNumber: string; requestIdempotencyKey: string }) {
+      claimedMerchantOrderNumber = input.merchantOrderNumber;
+      return {
+        status: "CLAIMED" as const,
+        intentId: "intent-default-number",
+        merchantOrderNumber: input.merchantOrderNumber,
+        requestIdempotencyKey: input.requestIdempotencyKey,
+      };
+    },
+    async completePaymentIntent(input: { payment: PaymentResult }) { return input.payment; },
+    async failPaymentIntent() { throw new Error("must not fail"); },
+    async claimMockPaymentConfirmation() { throw new Error("not used"); },
+  } as unknown as PaymentServiceRepository;
+  const provider = {
+    async createPayment(input: CreatePaymentInput): Promise<PaymentResult> {
+      return {
+        providerTransactionId: null,
+        orderNumber: input.orderNumber,
+        status: "PENDING",
+        amountMinor: input.amountMinor,
+        currency: input.currency,
+        paymentToken: "weixin://wxpay/bizpayurl?pr=default-number",
+        expiresAt: input.expiresAt,
+        paidAt: null,
+      };
+    },
+  } as unknown as PaymentProvider;
+
+  await createOrderPayment("user-1", "order-id-1", {
+    repository,
+    now: () => now,
+    getConfig: () => ({
+      ...config,
+      paymentMode: "wechat",
+      wechatConfigured: true,
+    }),
+    getProvider: () => provider,
+  });
+
+  assert.match(claimedMerchantOrderNumber, /^[0-9A-Za-z_\-|*]{6,32}$/);
+  assert.equal(claimedMerchantOrderNumber.startsWith("WX"), true);
 });
 
 test("createOrderPayment retires a verified closed uncertain attempt and explicitly requests a new payment", async () => {

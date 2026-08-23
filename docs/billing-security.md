@@ -4,8 +4,9 @@
 
 - 收费功能默认关闭；`BILLING_FEATURE_ENABLED=false` 时公开定价页没有购买动作，收费 API 在服务端拒绝写操作。
 - Mock 支付不能为普通生产用户授予权益，只允许本地/测试环境，以及生产环境的管理员或 `BILLING_TEST_USER_IDS` 白名单账号。
+- 微信真实支付默认也仅限管理员或 `BILLING_TEST_USER_IDS`；`BILLING_REAL_PAYMENT_PUBLIC_ENABLED` 默认 `false`，公开启用必须另行审批，并由所有服务端创建与可用性入口共同校验。
 - 微信和支付宝 Provider 未配置时明确失败，不伪造支付成功。
-- 当前阶段不得生成真实收费二维码、开放生产支付回调、自动扣款或自动续费。
+- 获准测试账号可在 owner-authenticated 订单响应中取得已验签 `code_url` 和服务端本地生成的内存 SVG QR；QR 不写日志、不提供给其他用户、不生成持久图片，也不调用外部 QR 服务。当前阶段仍不得开放生产支付、自动扣款或自动续费。
 
 ## 服务端信任边界
 
@@ -13,12 +14,12 @@
 - 订单价格、币种、商品、套餐与权益快照来自后端数据库，拒绝客户端金额、币种和用户 ID。
 - 金额以 `BIGINT` 整数最小货币单位保存，人民币使用“分”，不进行浮点运算。
 - 创建订单有原子持久化限流，订单设置到期时间。
-- 前端不能确认支付成功。支付完成只能通过验签后的服务端回调结算；Mock 确认同样生成签名事件并进入统一回调链路。
+- 前端不能确认支付成功。支付完成只能通过验签后的服务端回调，或服务端主动查询并严格核对后进入同一原子结算 RPC；返回 `PAID` 前必须已经完成幂等结算。Mock 确认同样生成签名事件并进入统一回调链路。
 
 ## 回调、事务与幂等
 
 - Provider 暴露统一的签名校验和回调解析接口。
-- 原始回调体有大小限制；无效签名只保留摘要，不信任或持久化业务字段。
+- 原始回调体有大小限制；随机未验签请求不写核心 Billing 事件表，只产生限频、固定字段的安全日志。已验签但协议解析失败的事件才保留哈希摘要，且不持久化不可信业务字段。
 - 结算核对 Provider、订单号、支付事务号、请求幂等键、金额、币种、支付时间、订单状态与到期时间。
 - Webhook 事件、支付、订单、订阅、权益、额度和流水在数据库事务/RPC 中统一处理。
 - 事件 ID、支付事务号、订单号、额度流水及任务幂等键具有唯一约束；重复事件不会重复开通会员或增加额度。
@@ -58,8 +59,8 @@
 
 - Automatic Provider refunds are limited to unused `SUBSCRIPTION` orders that contain no credit grant. The service derives the full refund amount and currency from the paid order and payment; administrators cannot supply either value.
 - `CREDIT_PACK` requests return `REFUND_REQUIRES_MANUAL_REVIEW` before a claim lease is created or a Provider is called. The approved request remains available for an audited manual process.
-- `RETRY_REQUIRED` means the approval was persisted but automatic execution did not finish. Operators must retry with the same review idempotency key so that the existing review and refund claim can be recovered safely.
-- Once a Provider call may have occurred, the claim lease is retained and the same Provider refund idempotency key is reused. Deterministic configuration failures detected before the Provider call release the claim for a corrected retry.
+- `RETRY_REQUIRED` 只用于连接失败、超时、已验签 5xx 或 `PROCESSING` 等可能仍在途的结果；重试必须复用同一 Provider refund idempotency key。
+- 已验签 `CLOSED`、永久 4xx 和本地预检失败进入 `FAILED`，不再向管理员提供自动重试；`ABNORMAL` 或响应契约不匹配进入人工复核。只有 Provider 可能已成功但结果未知的情况保留 claim lease。
 
 ## 上线前安全门
 

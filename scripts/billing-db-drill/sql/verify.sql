@@ -185,7 +185,7 @@ begin
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(amount_minor >= 0\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(currency = ''CNY''::text\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(attempt_count > 0\)\)$'),
-      ('public', 'billing_payment_intents', 'billing_payment_intents_lifecycle_check', 'c', '^CHECK \(\(\(NULLIF\(btrim\(merchant_order_number\), ''''::text\) IS NOT NULL\) AND \(char_length\(merchant_order_number\) <= 64\) AND \(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\).*\(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\).*\(payment_status = ''PENDING''::text\).*\(payment_token IS NOT NULL\).*\(paid_at IS NULL\).*\(payment_status = ''PAID''::text\).*\(provider_transaction_id IS NOT NULL\).*\(paid_at IS NOT NULL\).*\(payment_status = ANY \(ARRAY\[''FAILED''::text, ''CLOSED''::text\]\)\).*\(payment_token IS NULL\).*\(paid_at IS NULL\).*\(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)\)$'),
+      ('public', 'billing_payment_intents', 'billing_payment_intents_lifecycle_check', 'c', '^CHECK \(\(\(NULLIF\(btrim\(merchant_order_number\), ''''::text\) IS NOT NULL\) AND \(\(\(provider = ''WECHAT''::text\) AND \(merchant_order_number ~ ''\^\[A-Za-z0-9_\|\*-\]\{6,32\}\$''::text\)\) OR \(\(provider <> ''WECHAT''::text\) AND \(merchant_order_number ~ ''\^\[A-Za-z0-9_\|\*-\]\{1,64\}\$''::text\)\)\) AND \(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\).*\(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\).*\(payment_status = ''PENDING''::text\).*\(payment_token IS NOT NULL\).*\(paid_at IS NULL\).*\(payment_status = ''PAID''::text\).*\(provider_transaction_id IS NOT NULL\).*\(paid_at IS NOT NULL\).*\(payment_status = ANY \(ARRAY\[''FAILED''::text, ''CLOSED''::text\]\)\).*\(payment_token IS NULL\).*\(paid_at IS NULL\).*\(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)\)$'),
 
       ('public', 'billing_payments', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_payments', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -1061,6 +1061,26 @@ begin
       raise exception 'approved subscription refund was not claimed';
     end if;
 
+    expected_failure := false;
+    begin
+      perform public.billing_fail_refund_claim(
+        (result ->> 'refund_id')::uuid,
+        '00000000-0000-4000-8000-00000000b080',
+        'REFUND_PROVIDER_REJECTED'
+      );
+      perform public.billing_claim_approved_refund(
+        '00000000-0000-4000-8000-00000000b060',
+        '00000000-0000-4000-8000-00000000b081',
+        clock_timestamp()
+      );
+    exception
+      when sqlstate 'P2101' then
+        expected_failure := true;
+    end;
+    if expected_failure is not true then
+      raise exception 'permanent refund failure was automatically retried';
+    end if;
+
     replay := public.billing_fail_refund_claim(
       (result ->> 'refund_id')::uuid,
       '00000000-0000-4000-8000-00000000b080',
@@ -1611,36 +1631,53 @@ begin
           or payment_status is distinct from 'PAID'
           or payment_token is not null
         )
-    ) then
-    raise exception 'verified query transaction identity was not atomically bound';
+    )
+    or not exists (
+      select 1 from public.billing_orders
+      where id = '00000000-0000-4000-8000-00000000b090'
+        and status = 'PAID'
+        and paid_at = timestamptz '2026-01-06 00:00:00+00'
+    )
+    or (
+      select count(*) from public.billing_payments
+      where order_id = '00000000-0000-4000-8000-00000000b090'
+        and provider = 'WECHAT'
+        and provider_transaction_id = 'DRILL-WECHAT-TXN-014'
+        and status = 'PAID'
+    ) is distinct from 1::bigint
+    or not exists (
+      select 1 from public.billing_webhook_events
+      where provider = 'WECHAT'
+        and provider_event_id = 'QUERY:DRILL-WECHAT-TXN-014'
+        and status = 'PROCESSED'
+        and signature_valid is true
+    )
+    or (
+      select count(*) from public.billing_credit_ledger
+      where idempotency_key =
+        'settlement:WECHAT:QUERY:DRILL-WECHAT-TXN-014:credit'
+    ) is distinct from 1::bigint then
+    raise exception 'verified query transaction was not atomically settled';
   end if;
 
-  insert into public.billing_webhook_events (
-    provider, provider_event_id, order_number, provider_transaction_id,
-    request_idempotency_key, amount_minor, currency, paid_at,
-    signature_valid, status, payload_summary
-  ) values (
-    'WECHAT', 'DRILL-WECHAT-EVENT-014', 'DRILL-WECHAT-MERCHANT-014',
-    'DRILL-WECHAT-TXN-014', 'drill-wechat-payment-014', 990, 'CNY',
-    timestamptz '2026-01-06 00:00:00+00', true, 'RECEIVED',
-    '{"fixture":"billing-drill-wechat-014"}'::jsonb
+  replay := public.billing_bind_verified_payment_query(
+    '00000000-0000-4000-8000-00000000b001',
+    '00000000-0000-4000-8000-00000000b090',
+    'WECHAT', 'DRILL-WECHAT-MERCHANT-014', 'DRILL-WECHAT-TXN-014',
+    'PAID', 990, 'CNY', timestamptz '2099-01-01 00:00:00+00',
+    timestamptz '2026-01-06 00:00:00+00'
   );
-  result := public.billing_settle_paid_order(
-    'DRILL-WECHAT-MERCHANT-014', 'WECHAT', 'DRILL-WECHAT-TXN-014',
-    'DRILL-WECHAT-EVENT-014', 'drill-wechat-payment-014', 990, 'CNY',
-    timestamptz '2026-01-06 00:00:00+00',
-    '{"fixture":"billing-drill-wechat-014"}'::jsonb
-  );
-  if result ->> 'status' is distinct from 'PROCESSED'
-    or exists (
-      select 1 from public.billing_payment_intents
-      where merchant_order_number = 'DRILL-WECHAT-MERCHANT-014'
-        and (
-          provider_transaction_id is distinct from 'DRILL-WECHAT-TXN-014'
-          or payment_status is distinct from 'PAID'
-        )
-    ) then
-    raise exception 'verified webhook transaction identity was not atomically bound';
+  if replay ->> 'payment_status' is distinct from 'PAID'
+    or (
+      select count(*) from public.billing_payments
+      where order_id = '00000000-0000-4000-8000-00000000b090'
+    ) is distinct from 1::bigint
+    or (
+      select count(*) from public.billing_credit_ledger
+      where idempotency_key =
+        'settlement:WECHAT:QUERY:DRILL-WECHAT-TXN-014:credit'
+    ) is distinct from 1::bigint then
+    raise exception 'verified query settlement was not exactly once';
   end if;
 
   select count(*) into refund_count_before

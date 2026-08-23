@@ -66,7 +66,13 @@ function canonicalValue(
 
 function parsePrivateKey(pem: string, variable: string): void {
   try {
-    createPrivateKey(pem);
+    const key = createPrivateKey(pem);
+    if (
+      key.asymmetricKeyType !== "rsa" ||
+      key.asymmetricKeyDetails?.modulusLength !== 2_048
+    ) {
+      throw new Error("not RSA-2048");
+    }
   } catch {
     throw configurationError("PROVIDER_NOT_CONFIGURED", [variable]);
   }
@@ -74,7 +80,13 @@ function parsePrivateKey(pem: string, variable: string): void {
 
 function parsePublicKey(pem: string): void {
   try {
-    createPublicKey(pem);
+    const key = createPublicKey(pem);
+    if (
+      key.asymmetricKeyType !== "rsa" ||
+      key.asymmetricKeyDetails?.modulusLength !== 2_048
+    ) {
+      throw new Error("not RSA-2048");
+    }
   } catch {
     throw configurationError("PROVIDER_NOT_CONFIGURED", ["WECHAT_PAY_PUBLIC_KEY"]);
   }
@@ -88,6 +100,19 @@ function normalizedCertificateSerialNumber(certificate: X509Certificate): string
 function parsePlatformCertificate(pem: string): string {
   try {
     const certificate = new X509Certificate(pem);
+    const now = Date.now();
+    const validFrom = Date.parse(certificate.validFrom);
+    const validTo = Date.parse(certificate.validTo);
+    if (
+      certificate.publicKey.asymmetricKeyType !== "rsa" ||
+      certificate.publicKey.asymmetricKeyDetails?.modulusLength !== 2_048 ||
+      !Number.isFinite(validFrom) ||
+      !Number.isFinite(validTo) ||
+      now < validFrom ||
+      now > validTo
+    ) {
+      throw new Error("invalid platform certificate");
+    }
     return normalizedCertificateSerialNumber(certificate);
   } catch {
     throw configurationError("PROVIDER_NOT_CONFIGURED", [
@@ -124,6 +149,11 @@ function verifier(env: WechatEnvironment): WechatVerifierConfig {
         !publicKeyId ? "WECHAT_PAY_PUBLIC_KEY_ID" : "WECHAT_PAY_PUBLIC_KEY",
       ]);
     }
+    if (!/^PUB_KEY_ID_\d{32}$/.test(publicKeyId)) {
+      throw configurationError("PROVIDER_NOT_CONFIGURED", [
+        "WECHAT_PAY_PUBLIC_KEY_ID",
+      ]);
+    }
     parsePublicKey(publicKeyPem);
     return { mode: "PUBLIC_KEY", keyId: publicKeyId, publicKeyPem };
   }
@@ -157,17 +187,32 @@ export function loadWechatPayConfig(env: WechatEnvironment): WechatPayConfig {
   parsePrivateKey(merchantPrivateKeyPem, "WECHAT_PAY_PRIVATE_KEY");
   const notifyUrl = required(env, "WECHAT_PAY_NOTIFY_URL");
   parseNotifyUrl(notifyUrl);
+  const mchId = required(env, "WECHAT_PAY_MCH_ID");
+  if (!/^\d{1,32}$/.test(mchId)) {
+    throw configurationError("PROVIDER_NOT_CONFIGURED", ["WECHAT_PAY_MCH_ID"]);
+  }
+  const appId = required(env, "WECHAT_PAY_APP_ID");
+  if (!/^wx[A-Za-z0-9]{16}$/.test(appId)) {
+    throw configurationError("PROVIDER_NOT_CONFIGURED", ["WECHAT_PAY_APP_ID"]);
+  }
+  const merchantCertificateSerialNumber = canonicalValue(
+    env,
+    "WECHAT_PAY_CERT_SERIAL_NO",
+    "WECHAT_PAY_MCH_SERIAL_NO",
+  );
+  if (!/^[0-9A-Fa-f]{1,64}$/.test(merchantCertificateSerialNumber)) {
+    throw configurationError("PROVIDER_NOT_CONFIGURED", [
+      "WECHAT_PAY_CERT_SERIAL_NO",
+    ]);
+  }
 
   return {
-    mchId: required(env, "WECHAT_PAY_MCH_ID"),
-    appId: required(env, "WECHAT_PAY_APP_ID"),
+    mchId,
+    appId,
     apiV3Key: Buffer.from(apiV3KeyValue, "utf8"),
     merchantPrivateKeyPem,
-    merchantCertificateSerialNumber: canonicalValue(
-      env,
-      "WECHAT_PAY_CERT_SERIAL_NO",
-      "WECHAT_PAY_MCH_SERIAL_NO",
-    ),
+    merchantCertificateSerialNumber:
+      merchantCertificateSerialNumber.toUpperCase(),
     notifyUrl,
     verifier: verifier(env),
   };

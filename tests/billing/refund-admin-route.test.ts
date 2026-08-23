@@ -59,6 +59,33 @@ test("refund route exports only the guarded default GET/PATCH handlers", async (
   assert.equal(route.PATCH, server.refundPatchHandler);
 });
 
+test("refund review rejects null and array JSON bodies as a plain-record 400", async () => {
+  let reviewCalls = 0;
+  const handler = createRefundReviewHandler({
+    requireAdmin: async () => admin,
+    reviewRefund: async () => {
+      reviewCalls += 1;
+      throw new Error("must not review invalid JSON shapes");
+    },
+  });
+  for (const body of ["null", "[]"]) {
+    const response = await handler(new Request("http://localhost", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body,
+    }));
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      success: false,
+      error: {
+        code: "INVALID_ADMIN_INPUT",
+        message: "Refund request body must be a JSON object.",
+      },
+    });
+  }
+  assert.equal(reviewCalls, 0);
+});
+
 test("approved refund review executes and returns the persisted review plus settlement", async () => {
   let executions = 0;
   const handler = createRefundReviewHandler({
@@ -127,6 +154,43 @@ test("a persisted approval distinguishes manual action from a failed execution",
       assert.equal(result.error.code, "REFUND_EXECUTION_RETRY_REQUIRED");
     }
   }
+});
+
+test("a permanent provider rejection is returned as failed without offering retry", async () => {
+  const handler = createRefundReviewHandler({
+    requireAdmin: async () => admin,
+    reviewRefund: async () => ({
+      status: "APPLIED",
+      auditId: "audit-1",
+      resourceId: "refund-request-1",
+    }),
+    executeRefund: async () => {
+      throw new BillingError(
+        "REFUND_PROVIDER_FAILED",
+        "provider diagnostics must not leak",
+        409,
+      );
+    },
+  });
+
+  const response = await handler(request());
+  const text = await response.text();
+  assert.equal(response.status, 409);
+  assert.equal(text.includes("provider diagnostics"), false);
+  assert.deepEqual(JSON.parse(text), {
+    success: false,
+    approvalPersisted: true,
+    refundCompleted: false,
+    requiresManualAction: false,
+    status: "APPLIED",
+    auditId: "audit-1",
+    resourceId: "refund-request-1",
+    refundExecution: { status: "FAILED" },
+    error: {
+      code: "REFUND_PROVIDER_FAILED",
+      message: "The payment provider permanently rejected the refund.",
+    },
+  });
 });
 
 test("unexpected execution failures emit one fixed safe event while manual review emits none", async () => {

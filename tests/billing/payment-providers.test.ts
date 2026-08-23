@@ -48,6 +48,7 @@ function billingConfig(
     featureEnabled: true,
     paymentMode,
     testUserIds: [],
+    realPaymentPublicEnabled: false,
     legal: {
       operatorName: "",
       operatorCreditCode: "",
@@ -475,11 +476,11 @@ test("registry wires validated WeChat config through the real HTTP client with a
     BILLING_FEATURE_ENABLED: "true",
     PAYMENT_MODE: "wechat",
     WECHAT_PAY_MCH_ID: "1900000999",
-    WECHAT_PAY_APP_ID: "app-from-config",
+    WECHAT_PAY_APP_ID: "wx1234567890abcdef",
     WECHAT_PAY_API_V3_KEY: "12345678901234567890123456789012",
     WECHAT_PAY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
     WECHAT_PAY_CERT_SERIAL_NO: "ABCDEF1234",
-    WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_FROM_CONFIG",
+    WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_00000000000000000000000000000001",
     WECHAT_PAY_PUBLIC_KEY: publicKey.export({ type: "spki", format: "pem" }).toString(),
     WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
   });
@@ -507,7 +508,7 @@ test("registry wires validated WeChat config through the real HTTP client with a
             ),
             privateKey,
           ).toString("base64"),
-          "Wechatpay-Serial": "PUB_KEY_ID_FROM_CONFIG",
+          "Wechatpay-Serial": "PUB_KEY_ID_00000000000000000000000000000001",
         },
       });
     },
@@ -535,7 +536,7 @@ test("registry wires validated WeChat config through the real HTTP client with a
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.input, "https://api.mch.weixin.qq.com/v3/pay/transactions/native");
   assert.deepEqual(JSON.parse(String(calls[0]?.init.body)), {
-    appid: "app-from-config",
+    appid: "wx1234567890abcdef",
     mchid: "1900000999",
     description: "Pro Semester",
     out_trade_no: "BILL-REGISTRY-WIRING",

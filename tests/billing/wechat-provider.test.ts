@@ -320,7 +320,6 @@ function nativeTransaction(
     trade_type: "NATIVE",
     trade_state: "NOTPAY",
     amount: { total: 7_900, currency: "CNY" },
-    time_expire: "2026-08-19T10:30:00+08:00",
     ...overrides,
   };
 }
@@ -781,6 +780,7 @@ test("only successful transactions for the configured merchant and app are mappe
     { mchid: "other-secret-merchant" },
     { appid: "other-secret-app" },
     { trade_type: 7 },
+    { trade_type: "JSAPI" },
     { payer: [] },
     { transaction_id: "" },
     { transaction_id: "x".repeat(65) },
@@ -922,6 +922,32 @@ test("marks an uncertain unpaid Native create as requiring a new payment without
   ]);
 });
 
+test("recovers OUT_TRADE_NO_USED by querying the same merchant order number", async () => {
+  const recorded: Array<{ url: string; method: string; body: unknown }> = [];
+  const wechat = nativeProvider(
+    [
+      signedResponse({ code: "OUT_TRADE_NO_USED", message: "already exists" }, 400),
+      signedResponse(nativeTransaction()),
+    ],
+    recorded,
+  );
+
+  const result = await wechat.createPayment(NATIVE_CREATE_INPUT);
+
+  assert.equal(result.orderNumber, NATIVE_CREATE_INPUT.orderNumber);
+  assert.equal(result.status, "REQUIRES_NEW_PAYMENT");
+  assert.deepEqual(recorded.map(({ method, url }) => ({ method, url })), [
+    {
+      method: "POST",
+      url: "https://api.mch.weixin.qq.com/v3/pay/transactions/native",
+    },
+    {
+      method: "GET",
+      url: "https://api.mch.weixin.qq.com/v3/pay/transactions/out-trade-no/BILL-ORDER-1?mchid=1900000109",
+    },
+  ]);
+});
+
 test("persists a verified paid recovery with the real transaction and no payment token", async () => {
   const recorded: Array<{ url: string; method: string; body: unknown }> = [];
   const wechat = nativeProvider(
@@ -946,23 +972,35 @@ test("persists a verified paid recovery with the real transaction and no payment
   );
 });
 
-test("rejects wrong server-owned amount and expiry when recovering an uncertain Native create", async () => {
+test("uses the durable expiry when a Native recovery query omits or disagrees on time_expire", async () => {
   for (const transaction of [
-    nativeTransaction({ amount: { total: 7_901, currency: "CNY" } }),
+    nativeTransaction(),
     nativeTransaction({ time_expire: "2026-08-19T10:31:00+08:00" }),
   ]) {
     const wechat = nativeProvider(
       [signedResponse({}, 500), signedResponse(transaction)],
       [],
     );
-    await assert.rejects(
-      () => wechat.createPayment(NATIVE_CREATE_INPUT),
-      (error: unknown) =>
-        error instanceof BillingError &&
-        error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
-        error.status === 502,
-    );
+    const result = await wechat.createPayment(NATIVE_CREATE_INPUT);
+    assert.equal(result.expiresAt, new Date(NATIVE_CREATE_INPUT.expiresAt).toISOString());
   }
+});
+
+test("rejects wrong server-owned amount when recovering an uncertain Native create", async () => {
+  const wechat = nativeProvider(
+    [
+      signedResponse({}, 500),
+      signedResponse(nativeTransaction({ amount: { total: 7_901, currency: "CNY" } })),
+    ],
+    [],
+  );
+  await assert.rejects(
+    () => wechat.createPayment(NATIVE_CREATE_INPUT),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
 });
 
 test("maps every Native query trade state from durable expectations in a fresh provider", async () => {
@@ -1011,7 +1049,19 @@ test("validates a fresh Native close before POST and recovers paid and timed-out
   const pending = nativeProvider(
     [
       signedResponse(nativeTransaction()),
-      signedResponse({}),
+      new Response(null, {
+        status: 204,
+        headers: {
+          "Wechatpay-Timestamp": TIMESTAMP,
+          "Wechatpay-Nonce": "response-signing-nonce",
+          "Wechatpay-Signature": rsaSign(
+            "RSA-SHA256",
+            Buffer.from(`${TIMESTAMP}\nresponse-signing-nonce\n\n`, "utf8"),
+            platformPrivateKey,
+          ).toString("base64"),
+          "Wechatpay-Serial": VERIFIER_ID,
+        },
+      }),
       signedResponse(nativeTransaction({ trade_state: "CLOSED" })),
     ],
     pendingCalls,
@@ -1346,7 +1396,7 @@ test("queries the deterministic refund after an uncertain response and preserves
     () => wechat.refundPayment(REFUND_INPUT),
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
+      error.code === "PAYMENT_PROVIDER_REFUND_PROCESSING" &&
       error.status === 503,
   );
   assert.deepEqual(recorded.map(({ url, method, body }) => ({ url, method, body })), [
@@ -1379,7 +1429,7 @@ test("does not query after a verified POST PROCESSING refund response", async ()
     () => wechat.refundPayment(REFUND_INPUT),
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
+      error.code === "PAYMENT_PROVIDER_REFUND_PROCESSING" &&
       error.status === 503,
   );
   assert.deepEqual(recorded.map(({ method }) => method), ["POST"]);
@@ -1399,7 +1449,7 @@ test("rejects a full refund whose total does not match the durable amount", asyn
   );
 });
 
-test("keeps a verified POST ABNORMAL refund response retryable", async () => {
+test("classifies a verified POST ABNORMAL refund response for manual review", async () => {
   const recorded: Array<{ url: string; method: string; body: unknown }> = [];
   const wechat = nativeProvider(
     [signedResponse(refundResponse({ status: "ABNORMAL" }))],
@@ -1410,8 +1460,8 @@ test("keeps a verified POST ABNORMAL refund response retryable", async () => {
     () => wechat.refundPayment(REFUND_INPUT),
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
-      error.status === 503,
+      error.code === "PAYMENT_PROVIDER_REFUND_MANUAL_REVIEW" &&
+      error.status === 409,
   );
   assert.deepEqual(recorded.map(({ method }) => method), ["POST"]);
 });
@@ -1448,7 +1498,7 @@ test("recovers a verified successful refund after a connection failure", async (
   assert.deepEqual(recorded.map(({ method }) => method), ["POST", "GET"]);
 });
 
-test("keeps failed and not-found refund queries retryable", async () => {
+test("classifies verified CLOSED refund queries as failed and 404 as non-retryable", async () => {
   const failed = nativeProvider([
     signedResponse({}, 500),
     signedResponse(refundResponse({ status: "CLOSED" })),
@@ -1457,8 +1507,8 @@ test("keeps failed and not-found refund queries retryable", async () => {
     () => failed.refundPayment(REFUND_INPUT),
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
-      error.status === 503,
+      error.code === "PAYMENT_PROVIDER_REFUND_FAILED" &&
+      error.status === 409,
   );
 
   const missing = nativeProvider([
@@ -1582,7 +1632,8 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
   const enabledConfig: BillingConfig = {
     featureEnabled: true,
     paymentMode: "wechat",
-    testUserIds: [],
+    testUserIds: [userId],
+    realPaymentPublicEnabled: false,
     legal: { operatorName: "", operatorCreditCode: "", contactEmail: "" },
     wechatConfigured: true,
     alipayConfigured: false,
@@ -1763,11 +1814,17 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
   );
   assert.equal(createPaymentResponse.status, 201);
   const createPaymentBody = await captureJsonResponse<{
-    payment: { status: string; expiresAt: string };
+    payment: {
+      status: string;
+      expiresAt: string;
+      codeUrl: string;
+      qrCodeDataUrl: string;
+    };
   }>(createPaymentResponse);
-  assert.deepEqual(createPaymentBody, {
-    payment: { status: "PENDING", expiresAt: "2026-08-19T12:30:00.000Z" },
-  });
+  assert.equal(createPaymentBody.payment.status, "PENDING");
+  assert.equal(createPaymentBody.payment.expiresAt, "2026-08-19T12:30:00.000Z");
+  assert.equal(createPaymentBody.payment.codeUrl, paymentCodeUrl);
+  assert.match(createPaymentBody.payment.qrCodeDataUrl, /^data:image\/svg\+xml;base64,/);
   const persistedAfterCreate = await paymentRepository.findOwnedPaymentIntent(
     userId,
     orderId,
@@ -2273,14 +2330,10 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
       status: "FAILED",
     },
   );
-  assert.match(
-    String(capturedLogEvent.providerEventId),
-    /^rejected:[a-f0-9]{64}$/,
-  );
+  assert.equal("providerEventId" in capturedLogEvent, false);
 
   const capturedOutputs = [
-    capturedResponses,
-    createPaymentBody,
+    capturedResponses.slice(1),
     queriedPayment,
     firstWebhook,
     duplicateWebhook,
@@ -2434,6 +2487,19 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
       outputSurface.some((value) => value.includes(forbidden)),
       false,
       `captured output leaked forbidden value: ${forbidden.slice(0, 32)}`,
+    );
+  }
+  const ownerPaymentSurface = collectSurface([
+    capturedResponses[0],
+    createPaymentBody,
+  ]);
+  for (const forbidden of forbiddenValues.filter(
+    (value) => value !== paymentCodeUrl,
+  )) {
+    assert.equal(
+      ownerPaymentSurface.some((value) => value.includes(forbidden)),
+      false,
+      `owner payment response leaked forbidden value: ${forbidden.slice(0, 32)}`,
     );
   }
   for (const forbiddenKeyFragment of [

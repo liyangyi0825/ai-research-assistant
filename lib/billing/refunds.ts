@@ -29,6 +29,7 @@ export type ApprovedRefundClaim = {
 export type RefundClaimResult =
   | ApprovedRefundClaim
   | { status: "IN_PROGRESS" }
+  | { status: "FAILED" }
   | { status: "MANUAL_REVIEW_REQUIRED" }
   | { status: "SUCCEEDED"; refund: RefundResult };
 
@@ -131,6 +132,7 @@ function mapRefundResult(value: unknown): RefundResult {
 function mapClaim(value: unknown): RefundClaimResult {
   const row = record(value);
   if (row.status === "IN_PROGRESS") return { status: "IN_PROGRESS" };
+  if (row.status === "FAILED") return { status: "FAILED" };
   if (row.status === "MANUAL_REVIEW_REQUIRED") {
     return { status: "MANUAL_REVIEW_REQUIRED" };
   }
@@ -235,11 +237,26 @@ function validateProviderResult(
   }
 }
 
-function isDeterministicProviderPreflightFailure(error: unknown): boolean {
-  return (
+type RefundFailureDisposition = "UNCERTAIN" | "FAILED" | "MANUAL";
+
+function refundFailureDisposition(error: unknown): RefundFailureDisposition {
+  if (
     error instanceof BillingError &&
-    error.code === "PAYMENT_PROVIDER_REFUND_PRECHECK_FAILED"
-  );
+    (error.code === "PAYMENT_PROVIDER_UNAVAILABLE" ||
+      error.code === "PAYMENT_PROVIDER_TRANSPORT_FAILED" ||
+      error.code === "PAYMENT_PROVIDER_REFUND_PROCESSING")
+  ) {
+    return "UNCERTAIN";
+  }
+  if (
+    !(error instanceof BillingError) ||
+    error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" ||
+    error.code === "REFUND_PROVIDER_INVALID_RESPONSE" ||
+    error.code === "PAYMENT_PROVIDER_REFUND_MANUAL_REVIEW"
+  ) {
+    return "MANUAL";
+  }
+  return "FAILED";
 }
 
 export function createRefundExecutionRepository(
@@ -258,13 +275,22 @@ export function createRefundExecutionRepository(
 
   return {
     async claimApprovedRefund(input) {
-      return mapClaim(
-        await rpc("billing_claim_approved_refund", {
+      try {
+        const result = await client.rpc("billing_claim_approved_refund", {
           p_request_id: input.requestId,
           p_claim_token: input.claimToken,
           p_claimed_at: input.claimedAt,
-        }),
-      );
+        });
+        if (result.error?.code === "P2101") return { status: "FAILED" };
+        if (result.error?.code === "P2102") {
+          return { status: "MANUAL_REVIEW_REQUIRED" };
+        }
+        if (result.error) throw storageError();
+        return mapClaim(result.data);
+      } catch (error) {
+        if (error instanceof BillingError) throw error;
+        throw storageError();
+      }
     },
     async completeRefund(input) {
       return mapCompletion(
@@ -321,6 +347,13 @@ export async function executeApprovedRefund(
     throw storageError();
   }
   if (claim.status === "SUCCEEDED") return claim;
+  if (claim.status === "FAILED") {
+    throw new BillingError(
+      "REFUND_PROVIDER_FAILED",
+      "The payment provider permanently rejected the refund.",
+      409,
+    );
+  }
   if (claim.status === "MANUAL_REVIEW_REQUIRED") {
     throw new BillingError(
       "REFUND_REQUIRES_MANUAL_REVIEW",
@@ -366,12 +399,19 @@ export async function executeApprovedRefund(
     });
     validateProviderResult(claim, refund);
   } catch (error) {
-    if (isDeterministicProviderPreflightFailure(error)) {
+    const disposition = refundFailureDisposition(error);
+    if (disposition !== "UNCERTAIN") {
       try {
         await repository.failRefundClaim({
           refundId: claim.refundId,
           claimToken,
-          errorCode: "REFUND_PROVIDER_REFUND_PRECHECK_FAILED",
+          errorCode:
+            disposition === "MANUAL"
+              ? "REFUND_PROVIDER_CONTRACT_MISMATCH"
+              : error instanceof BillingError &&
+                  error.code === "PAYMENT_PROVIDER_REFUND_PRECHECK_FAILED"
+                ? "REFUND_PROVIDER_REFUND_PRECHECK_FAILED"
+                : "REFUND_PROVIDER_REJECTED",
         });
       } catch {
         // The bounded lease remains recoverable if deterministic cleanup fails.
@@ -383,8 +423,22 @@ export async function executeApprovedRefund(
       errorCode: "REFUND_PROVIDER_FAILED",
       status: "FAILED",
     });
-    // Once a provider call begins, its outcome may be unknown. Keep the claim
-    // and retry with the same provider idempotency key after the lease expires.
+    if (disposition === "MANUAL") {
+      throw new BillingError(
+        "REFUND_REQUIRES_MANUAL_REVIEW",
+        "This refund requires manual review and cannot be retried automatically.",
+        409,
+      );
+    }
+    if (disposition === "FAILED") {
+      throw new BillingError(
+        "REFUND_PROVIDER_FAILED",
+        "The payment provider permanently rejected the refund.",
+        409,
+      );
+    }
+    // Only explicitly nonterminal or transport-uncertain outcomes retain the
+    // claim for a same-idempotency-key retry after its lease expires.
     throw new BillingError(
       "REFUND_PROVIDER_UNAVAILABLE",
       "The payment provider could not complete the refund.",

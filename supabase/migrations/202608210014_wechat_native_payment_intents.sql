@@ -7,7 +7,11 @@ ALTER TABLE public.billing_payment_intents
   ADD COLUMN merchant_order_number TEXT;
 
 UPDATE public.billing_payment_intents AS intent
-SET merchant_order_number = billing_order.order_number
+SET merchant_order_number = CASE
+  WHEN intent.provider = 'WECHAT'
+    THEN 'WX' || left(replace(intent.id::TEXT, '-', ''), 30)
+  ELSE billing_order.order_number
+END
 FROM public.billing_orders AS billing_order
 WHERE billing_order.id = intent.order_id
   AND intent.merchant_order_number IS NULL;
@@ -17,7 +21,6 @@ WHERE billing_order.id = intent.order_id
 UPDATE public.billing_payment_intents
 SET provider_transaction_id = NULL
 WHERE provider = 'WECHAT'
-  AND provider_transaction_id = merchant_order_number
   AND payment_status = 'PENDING';
 
 ALTER TABLE public.billing_payment_intents
@@ -30,7 +33,12 @@ ALTER TABLE public.billing_payment_intents
 ALTER TABLE public.billing_payment_intents
   ADD CONSTRAINT billing_payment_intents_lifecycle_check CHECK (
     NULLIF(btrim(merchant_order_number), '') IS NOT NULL
-    AND char_length(merchant_order_number) <= 64
+    AND (
+      (provider = 'WECHAT'
+        AND merchant_order_number ~ '^[A-Za-z0-9_|*-]{6,32}$')
+      OR (provider <> 'WECHAT'
+        AND merchant_order_number ~ '^[A-Za-z0-9_|*-]{1,64}$')
+    )
     AND (
       (status = 'CREATING'
         AND claim_token IS NOT NULL
@@ -69,6 +77,38 @@ ALTER TABLE public.billing_payment_intents
     )
   );
 
+CREATE OR REPLACE FUNCTION public.billing_guard_refund_execution_management()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' AND NEW.execution_managed IS NOT TRUE THEN
+    RAISE EXCEPTION 'new refunds must be execution managed'
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+  IF TG_OP = 'UPDATE'
+     AND NEW.execution_managed IS DISTINCT FROM OLD.execution_managed THEN
+    RAISE EXCEPTION 'refund execution management is immutable'
+      USING ERRCODE = 'object_not_in_prerequisite_state';
+  END IF;
+  IF TG_OP = 'UPDATE'
+     AND OLD.execution_managed
+     AND OLD.status = 'FAILED'
+     AND NEW.status = 'PENDING' THEN
+    IF OLD.last_error_code = 'REFUND_PROVIDER_CONTRACT_MISMATCH' THEN
+      RAISE EXCEPTION 'refund requires manual review' USING ERRCODE = 'P2102';
+    ELSIF OLD.last_error_code IN (
+      'REFUND_PROVIDER_REJECTED',
+      'REFUND_PROVIDER_REFUND_PRECHECK_FAILED'
+    ) THEN
+      RAISE EXCEPTION 'refund failure is permanent' USING ERRCODE = 'P2101';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 DROP FUNCTION public.billing_claim_payment_intent(UUID, UUID, TEXT, TEXT, UUID);
 
 CREATE FUNCTION public.billing_claim_payment_intent(
@@ -92,7 +132,12 @@ BEGIN
   IF p_user_id IS NULL
     OR p_order_id IS NULL
     OR p_claim_token IS NULL
-    OR p_merchant_order_number !~ '^[A-Za-z0-9_-]{1,64}$'
+    OR NOT (
+      (upper(p_provider) = 'WECHAT'
+        AND p_merchant_order_number ~ '^[A-Za-z0-9_|*-]{6,32}$')
+      OR (upper(p_provider) IN ('MOCK', 'ALIPAY')
+        AND p_merchant_order_number ~ '^[A-Za-z0-9_|*-]{1,64}$')
+    )
     OR NULLIF(btrim(p_request_idempotency_key), '') IS NULL
     OR upper(p_provider) NOT IN ('MOCK', 'WECHAT', 'ALIPAY') THEN
     RAISE EXCEPTION 'invalid payment intent claim'
@@ -238,7 +283,7 @@ DECLARE
 BEGIN
   IF p_intent_id IS NULL
     OR p_claim_token IS NULL
-    OR p_merchant_order_number !~ '^[A-Za-z0-9_-]{1,64}$'
+    OR p_merchant_order_number !~ '^[A-Za-z0-9_|*-]{1,64}$'
     OR (p_provider_transaction_id IS NOT NULL
       AND NULLIF(btrim(p_provider_transaction_id), '') IS NULL)
     OR (p_payment_token IS NOT NULL
@@ -268,6 +313,11 @@ BEGIN
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'payment intent not found' USING ERRCODE = 'no_data_found';
+  END IF;
+  IF v_intent.provider = 'WECHAT'
+    AND p_merchant_order_number !~ '^[A-Za-z0-9_|*-]{6,32}$' THEN
+    RAISE EXCEPTION 'invalid completed payment intent'
+      USING ERRCODE = 'invalid_parameter_value';
   END IF;
   IF v_intent.expires_at IS DISTINCT FROM p_expires_at THEN
     RAISE EXCEPTION 'payment intent expiration mismatch'
@@ -344,11 +394,20 @@ AS $$
 DECLARE
   v_order public.billing_orders%ROWTYPE;
   v_intent public.billing_payment_intents%ROWTYPE;
+  v_query_event public.billing_webhook_events%ROWTYPE;
+  v_query_event_id TEXT;
+  v_query_summary JSONB;
+  v_settlement JSONB;
 BEGIN
   IF p_user_id IS NULL
     OR p_order_id IS NULL
     OR upper(p_provider) NOT IN ('MOCK', 'WECHAT', 'ALIPAY')
-    OR p_merchant_order_number !~ '^[A-Za-z0-9_-]{1,64}$'
+    OR NOT (
+      (upper(p_provider) = 'WECHAT'
+        AND p_merchant_order_number ~ '^[A-Za-z0-9_|*-]{6,32}$')
+      OR (upper(p_provider) IN ('MOCK', 'ALIPAY')
+        AND p_merchant_order_number ~ '^[A-Za-z0-9_|*-]{1,64}$')
+    )
     OR NULLIF(btrim(p_provider_transaction_id), '') IS NULL
     OR char_length(p_provider_transaction_id) > 64
     OR octet_length(p_provider_transaction_id) > 256
@@ -415,17 +474,98 @@ BEGIN
       USING ERRCODE = 'object_not_in_prerequisite_state';
   END IF;
 
-  UPDATE public.billing_payment_intents
-  SET provider_transaction_id = p_provider_transaction_id,
-      payment_token = CASE
-        WHEN p_payment_status = 'PENDING' THEN v_intent.payment_token
-        ELSE NULL
-      END,
-      payment_status = p_payment_status,
-      paid_at = p_paid_at,
-      updated_at = now()
-  WHERE id = v_intent.id
-  RETURNING * INTO v_intent;
+  IF p_payment_status = 'PAID' THEN
+    IF v_order.status = 'PAID' THEN
+      IF v_intent.payment_status IS DISTINCT FROM 'PAID'
+        OR v_intent.provider_transaction_id IS DISTINCT FROM p_provider_transaction_id
+        OR v_intent.paid_at IS DISTINCT FROM p_paid_at
+        OR NOT EXISTS (
+          SELECT 1
+          FROM public.billing_payments
+          WHERE order_id = v_order.id
+            AND user_id = v_order.user_id
+            AND provider = upper(p_provider)
+            AND provider_transaction_id = p_provider_transaction_id
+            AND request_idempotency_key = v_intent.request_idempotency_key
+            AND status = 'PAID'
+            AND amount_minor = p_amount_minor
+            AND currency = upper(p_currency)
+            AND paid_at = p_paid_at
+        ) THEN
+        RAISE EXCEPTION 'verified payment query settlement mismatch'
+          USING ERRCODE = 'data_exception';
+      END IF;
+    ELSE
+      v_query_event_id := 'QUERY:' || p_provider_transaction_id;
+      v_query_summary := jsonb_build_object(
+        'payload_hash',
+        md5('merchant-query:' || p_provider_transaction_id)
+          || md5('merchant-query-2:' || p_provider_transaction_id),
+        'event_type', 'PAYMENT.PAID',
+        'source', 'merchant-query'
+      );
+      INSERT INTO public.billing_webhook_events (
+        provider, provider_event_id, order_number, provider_transaction_id,
+        request_idempotency_key, amount_minor, currency, paid_at,
+        signature_valid, status, payload_summary
+      ) VALUES (
+        upper(p_provider), v_query_event_id, p_merchant_order_number,
+        p_provider_transaction_id, v_intent.request_idempotency_key,
+        p_amount_minor, upper(p_currency), p_paid_at, TRUE, 'RECEIVED',
+        v_query_summary
+      )
+      ON CONFLICT (provider, provider_event_id) DO NOTHING;
+
+      SELECT * INTO v_query_event
+      FROM public.billing_webhook_events
+      WHERE provider = upper(p_provider)
+        AND provider_event_id = v_query_event_id
+      FOR UPDATE;
+      IF NOT FOUND
+        OR v_query_event.order_number IS DISTINCT FROM p_merchant_order_number
+        OR v_query_event.provider_transaction_id IS DISTINCT FROM p_provider_transaction_id
+        OR v_query_event.request_idempotency_key IS DISTINCT FROM v_intent.request_idempotency_key
+        OR v_query_event.amount_minor IS DISTINCT FROM p_amount_minor
+        OR v_query_event.currency IS DISTINCT FROM upper(p_currency)
+        OR v_query_event.paid_at IS DISTINCT FROM p_paid_at
+        OR v_query_event.signature_valid IS NOT TRUE
+        OR v_query_event.payload_summary IS DISTINCT FROM v_query_summary THEN
+        RAISE EXCEPTION 'verified payment query event mismatch'
+          USING ERRCODE = 'data_exception';
+      END IF;
+
+      SELECT public.billing_settle_paid_order(
+        p_merchant_order_number,
+        upper(p_provider),
+        p_provider_transaction_id,
+        v_query_event_id,
+        v_intent.request_idempotency_key,
+        p_amount_minor,
+        upper(p_currency),
+        p_paid_at,
+        jsonb_build_object('source', 'merchant-query')
+      ) INTO v_settlement;
+      IF v_settlement ->> 'status' NOT IN ('PROCESSED', 'ALREADY_PROCESSED') THEN
+        RAISE EXCEPTION 'verified payment query settlement did not complete'
+          USING ERRCODE = 'object_not_in_prerequisite_state';
+      END IF;
+      SELECT * INTO v_intent
+      FROM public.billing_payment_intents
+      WHERE order_id = v_order.id;
+    END IF;
+  ELSE
+    UPDATE public.billing_payment_intents
+    SET provider_transaction_id = p_provider_transaction_id,
+        payment_token = CASE
+          WHEN p_payment_status = 'PENDING' THEN v_intent.payment_token
+          ELSE NULL
+        END,
+        payment_status = p_payment_status,
+        paid_at = p_paid_at,
+        updated_at = now()
+    WHERE id = v_intent.id
+    RETURNING * INTO v_intent;
+  END IF;
 
   RETURN jsonb_build_object(
     'status', 'CREATED',

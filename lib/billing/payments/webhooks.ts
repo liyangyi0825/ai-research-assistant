@@ -133,7 +133,35 @@ export type ProcessPaymentWebhookDependencies = {
     config: BillingConfig,
   ) => PaymentProvider;
   logger?: BillingSecurityLogger;
+  rejectionLogGate?: WebhookRejectionLogGate;
 };
+
+export type WebhookRejectionLogGate = {
+  shouldLog(provider: BillingProvider): boolean;
+};
+
+export function createWebhookRejectionLogGate(input: {
+  now?: () => number;
+  windowMs?: number;
+} = {}): WebhookRejectionLogGate {
+  const now = input.now ?? Date.now;
+  const windowMs = input.windowMs ?? 60_000;
+  const lastLoggedAt = new Map<BillingProvider, number>();
+  return {
+    shouldLog(provider) {
+      const timestamp = now();
+      if (!Number.isFinite(timestamp) || !Number.isSafeInteger(windowMs) || windowMs < 1) {
+        return false;
+      }
+      const previous = lastLoggedAt.get(provider);
+      if (previous !== undefined && timestamp - previous < windowMs) return false;
+      lastLoggedAt.set(provider, timestamp);
+      return true;
+    },
+  };
+}
+
+const unsignedWebhookRejectionLogGate = createWebhookRejectionLogGate();
 
 const WEBHOOK_COLUMNS = [
   "id",
@@ -529,6 +557,20 @@ async function persistRejectedEvent(
   return stored;
 }
 
+function logUnsignedWebhookRejection(
+  logger: BillingSecurityLogger,
+  gate: WebhookRejectionLogGate,
+  provider: BillingProvider,
+): void {
+  if (!gate.shouldLog(provider)) return;
+  warnBillingSecurity(logger, {
+    eventCode: "WEBHOOK_SIGNATURE_REJECTED",
+    provider,
+    errorCode: "INVALID_WEBHOOK_SIGNATURE",
+    status: "FAILED",
+  });
+}
+
 export async function processPaymentWebhook(
   providerMode: PaymentMode,
   rawBody: string,
@@ -548,9 +590,9 @@ export async function processPaymentWebhook(
     providerMode,
     config,
   );
-  const repository = dependencies.repository ?? defaultRepository();
   const logger = dependencies.logger ?? billingSecurityLogger;
-  const hash = payloadHash(rawBody);
+  const rejectionLogGate =
+    dependencies.rejectionLogGate ?? unsignedWebhookRejectionLogGate;
 
   let signatureValid: boolean;
   try {
@@ -558,20 +600,7 @@ export async function processPaymentWebhook(
   } catch (cause) {
     const error = normalizeError(cause);
     if (error.code === "INVALID_WEBHOOK_SIGNATURE") {
-      const audit = await persistRejectedEvent(
-        repository,
-        providerNameValue,
-        hash,
-        false,
-        error.code,
-      );
-      warnBillingSecurity(logger, {
-        eventCode: "WEBHOOK_SIGNATURE_REJECTED",
-        provider: providerNameValue,
-        providerEventId: audit.providerEventId,
-        errorCode: error.code,
-        status: "FAILED",
-      });
+      logUnsignedWebhookRejection(logger, rejectionLogGate, providerNameValue);
     }
     throw error;
   }
@@ -581,22 +610,12 @@ export async function processPaymentWebhook(
       "The payment webhook signature is invalid.",
       401,
     );
-    const audit = await persistRejectedEvent(
-      repository,
-      providerNameValue,
-      hash,
-      false,
-      error.code,
-    );
-    warnBillingSecurity(logger, {
-      eventCode: "WEBHOOK_SIGNATURE_REJECTED",
-      provider: providerNameValue,
-      providerEventId: audit.providerEventId,
-      errorCode: error.code,
-      status: "FAILED",
-    });
+    logUnsignedWebhookRejection(logger, rejectionLogGate, providerNameValue);
     throw error;
   }
+
+  const repository = dependencies.repository ?? defaultRepository();
+  const hash = payloadHash(rawBody);
 
   let parsed;
   try {

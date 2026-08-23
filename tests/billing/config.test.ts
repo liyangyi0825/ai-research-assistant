@@ -8,13 +8,16 @@ import {
 } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 import { loadWechatPayConfig } from "../../lib/billing/payments/wechat-config";
+import {
+  VALID_WECHAT_PLATFORM_CERTIFICATE,
+} from "./helpers/wechat-certificates";
 
 const { privateKey, publicKey } = generateKeyPairSync("rsa", {
   modulusLength: 2048,
 });
 const testPrivateKey = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
 const testPublicKey = publicKey.export({ type: "spki", format: "pem" }).toString();
-const testCertificate = `-----BEGIN CERTIFICATE-----
+const expiredTestCertificate = `-----BEGIN CERTIFICATE-----
 MIICuzCCAaOgAwIBAgIJAK0647KjCDoVMA0GCSqGSIb3DQEBCwUAMB0xGzAZBgNVBAMT
 EndlY2hhdC1jb25maWctdGVzdDAeFw0yNjA4MTgwOTI3NDdaFw0yNjA4MjAwOTI3NDdaMB0xGzAZ
 BgNVBAMTEndlY2hhdC1jb25maWctdGVzdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
@@ -32,13 +35,13 @@ iuCvYg13CEv2skezRklelHcOgmEdumUJErdCQ==
 
 function validWechatEnvironment(): Record<string, string> {
   return {
-    WECHAT_PAY_MCH_ID: "merchant-1",
-    WECHAT_PAY_APP_ID: "app-1",
+    WECHAT_PAY_MCH_ID: "1900000109",
+    WECHAT_PAY_APP_ID: "wx1234567890abcdef",
     WECHAT_PAY_API_V3_KEY: "12345678901234567890123456789012",
     WECHAT_PAY_PRIVATE_KEY: testPrivateKey,
-    WECHAT_PAY_CERT_SERIAL_NO: "merchant-cert-1",
+    WECHAT_PAY_CERT_SERIAL_NO: "A1B2C3D4E5F6",
     WECHAT_PAY_NOTIFY_URL: "https://example.test/payments/wechat/notify",
-    WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_1",
+    WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_00000000000000000000000000000001",
     WECHAT_PAY_PUBLIC_KEY: testPublicKey,
   };
 }
@@ -62,7 +65,7 @@ test("WeChat configuration accepts one public-key verifier and a 32-byte API v3 
 
   assert.equal(config.apiV3Key.length, 32);
   assert.equal(config.verifier.mode, "PUBLIC_KEY");
-  assert.equal(config.verifier.keyId, "PUB_KEY_ID_1");
+  assert.equal(config.verifier.keyId, "PUB_KEY_ID_00000000000000000000000000000001");
 });
 
 test("WeChat API v3 key validates and preserves the raw 32 UTF-8 bytes", () => {
@@ -125,7 +128,7 @@ test("WeChat configuration requires exactly one complete verifier mode", () => {
     () =>
       loadWechatPayConfig({
         ...validWechatEnvironment(),
-        WECHAT_PAY_PLATFORM_CERT: testCertificate,
+        WECHAT_PAY_PLATFORM_CERT: VALID_WECHAT_PLATFORM_CERTIFICATE,
       }),
     (error: unknown) =>
       billingErrorCode(error) === "PAYMENT_CONFIGURATION_CONFLICT",
@@ -136,15 +139,63 @@ test("WeChat configuration derives a normalized platform certificate serial numb
   const environment = validWechatEnvironment();
   delete environment.WECHAT_PAY_PUBLIC_KEY_ID;
   delete environment.WECHAT_PAY_PUBLIC_KEY;
-  environment.WECHAT_PAY_PLATFORM_CERT = testCertificate;
+  environment.WECHAT_PAY_PLATFORM_CERT = VALID_WECHAT_PLATFORM_CERTIFICATE;
 
   const config = loadWechatPayConfig(environment);
 
   assert.deepEqual(config.verifier, {
     mode: "PLATFORM_CERTIFICATE",
-    serialNumber: "AD3AE3B2A3083A15",
-    certificatePem: testCertificate,
+    serialNumber: "B7B2B6CA7BD13715",
+    certificatePem: VALID_WECHAT_PLATFORM_CERTIFICATE,
   });
+});
+
+test("WeChat startup credentials require RSA-2048 keys, strict identifiers, and a currently valid RSA certificate", () => {
+  const weakRsa = generateKeyPairSync("rsa", { modulusLength: 1024 });
+  const ec = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const invalidEnvironments = [
+    { WECHAT_PAY_MCH_ID: "merchant-1" },
+    { WECHAT_PAY_APP_ID: "app-1" },
+    { WECHAT_PAY_CERT_SERIAL_NO: "serial-with-hyphens" },
+    { WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_TEST" },
+    {
+      WECHAT_PAY_PRIVATE_KEY: weakRsa.privateKey
+        .export({ type: "pkcs8", format: "pem" })
+        .toString(),
+    },
+    {
+      WECHAT_PAY_PRIVATE_KEY: ec.privateKey
+        .export({ type: "pkcs8", format: "pem" })
+        .toString(),
+    },
+    {
+      WECHAT_PAY_PUBLIC_KEY: weakRsa.publicKey
+        .export({ type: "spki", format: "pem" })
+        .toString(),
+    },
+    {
+      WECHAT_PAY_PUBLIC_KEY: ec.publicKey
+        .export({ type: "spki", format: "pem" })
+        .toString(),
+    },
+  ];
+  for (const overrides of invalidEnvironments) {
+    assert.throws(
+      () => loadWechatPayConfig({ ...validWechatEnvironment(), ...overrides }),
+      (error: unknown) =>
+        error instanceof BillingError && error.code === "PROVIDER_NOT_CONFIGURED",
+    );
+  }
+
+  const platformEnvironment = validWechatEnvironment();
+  delete platformEnvironment.WECHAT_PAY_PUBLIC_KEY_ID;
+  delete platformEnvironment.WECHAT_PAY_PUBLIC_KEY;
+  platformEnvironment.WECHAT_PAY_PLATFORM_CERT = expiredTestCertificate;
+  assert.throws(
+    () => loadWechatPayConfig(platformEnvironment),
+    (error: unknown) =>
+      error instanceof BillingError && error.code === "PROVIDER_NOT_CONFIGURED",
+  );
 });
 
 test("WeChat configuration rejects a non-HTTPS notification URL independently", () => {
@@ -288,6 +339,36 @@ test("production mock payments only permit an administrator or listed test user"
   );
 });
 
+test("real WeChat payments default to administrators and explicit test users until the public launch switch is true", () => {
+  const restricted = {
+    ...getBillingConfig({}),
+    featureEnabled: true,
+    paymentMode: "wechat" as const,
+    wechatConfigured: true,
+    testUserIds: ["test-user"],
+    realPaymentPublicEnabled: false,
+  };
+  assert.throws(
+    () => assertPaymentRuntimeSafe(restricted, { userId: "regular-user" }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "REAL_PAYMENT_NOT_ALLOWED" &&
+      error.status === 403,
+  );
+  assert.doesNotThrow(() =>
+    assertPaymentRuntimeSafe(restricted, { userId: "test-user" }),
+  );
+  assert.doesNotThrow(() =>
+    assertPaymentRuntimeSafe(restricted, { isAdmin: true }),
+  );
+  assert.doesNotThrow(() =>
+    assertPaymentRuntimeSafe(
+      { ...restricted, realPaymentPublicEnabled: true },
+      { userId: "regular-user" },
+    ),
+  );
+});
+
 test("a formal payment provider is rejected when its required configuration is missing", () => {
   assert.throws(
     () =>
@@ -364,11 +445,11 @@ test("legacy key aliases normalize into the validated enabled WeChat configurati
     WECHAT_PAY_PRIVATE_KEY: undefined,
     WECHAT_PAY_CERT_SERIAL_NO: undefined,
     WECHAT_PAY_MCH_PRIVATE_KEY: testPrivateKey,
-    WECHAT_PAY_MCH_SERIAL_NO: "merchant-cert-1",
+    WECHAT_PAY_MCH_SERIAL_NO: "A1B2C3D4E5F6",
   });
 
   assert.equal(config.merchantPrivateKeyPem, testPrivateKey.trim());
-  assert.equal(config.merchantCertificateSerialNumber, "merchant-cert-1");
+  assert.equal(config.merchantCertificateSerialNumber, "A1B2C3D4E5F6");
 
   const secret = "must-not-leak";
   assert.throws(

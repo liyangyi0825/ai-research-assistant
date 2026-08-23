@@ -1036,7 +1036,25 @@ test("verified 4xx non-object, non-string code, and 429 bodies stay permanently 
   }
 });
 
-test("signed empty 204 and 304 responses are permanent invalid responses", async () => {
+test("only an explicitly no-content operation accepts a verified signed empty 204", async () => {
+  const closeResponse = new Response(null, {
+    status: 204,
+    headers: {
+      "Wechatpay-Timestamp": TIMESTAMP,
+      "Wechatpay-Nonce": RESPONSE_NONCE,
+      "Wechatpay-Signature": responseSignature(""),
+      "Wechatpay-Serial": VERIFIER_ID,
+    },
+  });
+  const accepted = await client(async () => closeResponse).request({
+    method: "POST",
+    pathWithQuery: "/v3/pay/transactions/out-trade-no/order-1/close",
+    body: { mchid: "1900000001" },
+    responseMode: "NO_CONTENT",
+  });
+  assert.equal(accepted.status, 204);
+  assert.equal(accepted.body, null);
+
   for (const status of [204, 304]) {
     const response = new Response(null, {
       status,

@@ -8,6 +8,7 @@ import {
 } from "./auth";
 import {
   BILLING_AGREEMENT_VERSION,
+  assertPaymentRuntimeSafe,
   getBillingConfig,
   type BillingConfig,
   type PaymentMode,
@@ -666,7 +667,7 @@ export async function getCurrentBillingAvailability(
   try {
     const config = dependencies.getConfig();
     if (!config.featureEnabled) return unavailable;
-    if (!config.isProduction || config.paymentMode !== "mock") {
+    if (!config.isProduction && config.paymentMode === "mock") {
       return {
         available: true,
         paymentMode: config.paymentMode,
@@ -676,13 +677,18 @@ export async function getCurrentBillingAvailability(
     }
 
     const actor = await dependencies.requireActor();
-    if (!actor.isAdmin && !config.testUserIds.includes(actor.id)) {
+    try {
+      assertPaymentRuntimeSafe(config, {
+        userId: actor.id,
+        isAdmin: actor.isAdmin,
+      });
+    } catch {
       return unavailable;
     }
     return {
       available: true,
-      paymentMode: "mock",
-      mockConfirmationAllowed: true,
+      paymentMode: config.paymentMode,
+      mockConfirmationAllowed: config.paymentMode === "mock",
       agreementVersion: BILLING_AGREEMENT_VERSION,
     };
   } catch {

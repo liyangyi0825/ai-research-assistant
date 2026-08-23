@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import {
+  generateKeyPairSync,
+  sign as rsaSign,
+  verify as rsaVerify,
+} from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
@@ -8,26 +12,32 @@ import {
   validateBillingRuntimeAtStartup,
 } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
+import { loadWechatPayConfig } from "../../lib/billing/payments/wechat-config";
+import {
+  signWechatRequest,
+  verifyWechatSignature,
+} from "../../lib/billing/payments/wechat-crypto";
+import { VALID_WECHAT_PLATFORM_CERTIFICATE } from "./helpers/wechat-certificates";
 
 const { privateKey: wechatPrivateKey, publicKey: wechatPublicKey } =
   generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 const configuredWechat: Record<string, string | undefined> = {
-  WECHAT_PAY_MCH_ID: "test-mch",
-  WECHAT_PAY_APP_ID: "test-app",
+  WECHAT_PAY_MCH_ID: "1900000109",
+  WECHAT_PAY_APP_ID: "wx1234567890abcdef",
   WECHAT_PAY_API_V3_KEY: "12345678901234567890123456789012",
   WECHAT_PAY_PRIVATE_KEY: wechatPrivateKey
     .export({ type: "pkcs8", format: "pem" })
     .toString(),
-  WECHAT_PAY_CERT_SERIAL_NO: "test-serial",
-  WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_TEST",
+  WECHAT_PAY_CERT_SERIAL_NO: "A1B2C3D4E5F6",
+  WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_00000000000000000000000000000001",
   WECHAT_PAY_PUBLIC_KEY: wechatPublicKey
     .export({ type: "spki", format: "pem" })
     .toString(),
   WECHAT_PAY_NOTIFY_URL: "https://billing.test/wechat/callback",
 };
 
-const platformCertificate = `-----BEGIN CERTIFICATE-----
+const expiredPlatformCertificate = `-----BEGIN CERTIFICATE-----
 MIICuzCCAaOgAwIBAgIJAK0647KjCDoVMA0GCSqGSIb3DQEBCwUAMB0xGzAZBgNVBAMT
 EndlY2hhdC1jb25maWctdGVzdDAeFw0yNjA4MTgwOTI3NDdaFw0yNjA4MjAwOTI3NDdaMB0xGzAZ
 BgNVBAMTEndlY2hhdC1jb25maWctdGVzdDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
@@ -137,6 +147,59 @@ test("startup accepts a complete exactly-one WeChat verifier mode", () => {
   );
 });
 
+test("startup-validated WeChat keys perform an actual RSA-2048 request sign and response verify", () => {
+  const environment = {
+    NODE_ENV: "production",
+    BILLING_FEATURE_ENABLED: "true",
+    PAYMENT_MODE: "wechat",
+    ...configuredWechat,
+  };
+  assert.doesNotThrow(() => validateBillingRuntimeAtStartup(environment));
+  const config = loadWechatPayConfig(environment);
+  const signed = signWechatRequest({
+    method: "POST",
+    pathWithQuery: "/v3/pay/transactions/native",
+    body: "{}",
+    timestamp: 1_777_777_777,
+    nonce: "startup-test-nonce",
+    mchId: config.mchId,
+    certificateSerialNumber: config.merchantCertificateSerialNumber,
+    privateKeyPem: config.merchantPrivateKeyPem,
+  });
+  const requestSignature = /signature="([A-Za-z0-9+/]+={0,2})"/.exec(
+    signed.authorization,
+  )?.[1];
+  assert.ok(requestSignature);
+  assert.equal(
+    rsaVerify(
+      "RSA-SHA256",
+      Buffer.from(signed.message, "utf8"),
+      wechatPublicKey,
+      Buffer.from(requestSignature, "base64"),
+    ),
+    true,
+  );
+
+  const responseBody = "{}";
+  const timestamp = "1777777777";
+  const nonce = "startup-response-nonce";
+  const responseSignature = rsaSign(
+    "RSA-SHA256",
+    Buffer.from(`${timestamp}\n${nonce}\n${responseBody}\n`, "utf8"),
+    wechatPrivateKey,
+  ).toString("base64");
+  assert.doesNotThrow(() =>
+    verifyWechatSignature({
+      timestamp,
+      nonce,
+      body: responseBody,
+      signatureBase64: responseSignature,
+      verifierId: config.verifier.mode === "PUBLIC_KEY" ? config.verifier.keyId : "",
+      verifier: config.verifier,
+    }),
+  );
+});
+
 test("startup accepts a complete platform-certificate WeChat verifier mode", () => {
   assert.doesNotThrow(() =>
     validateBillingRuntimeAtStartup({
@@ -146,7 +209,7 @@ test("startup accepts a complete platform-certificate WeChat verifier mode", () 
       ...configuredWechat,
       WECHAT_PAY_PUBLIC_KEY_ID: undefined,
       WECHAT_PAY_PUBLIC_KEY: undefined,
-      WECHAT_PAY_PLATFORM_CERT: platformCertificate,
+      WECHAT_PAY_PLATFORM_CERT: VALID_WECHAT_PLATFORM_CERTIFICATE,
     }),
   );
 });
@@ -179,7 +242,7 @@ test("startup rejects missing, blank, whitespace, malformed, and conflicting WeC
     },
     {
       name: "conflicting",
-      overrides: { WECHAT_PAY_PLATFORM_CERT: platformCertificate },
+      overrides: { WECHAT_PAY_PLATFORM_CERT: VALID_WECHAT_PLATFORM_CERTIFICATE },
       code: "PAYMENT_CONFIGURATION_CONFLICT",
     },
   ];
@@ -202,6 +265,22 @@ test("startup rejects missing, blank, whitespace, malformed, and conflicting WeC
       },
     );
   }
+});
+
+test("startup rejects an expired WeChat platform certificate", () => {
+  assert.throws(
+    () => validateBillingRuntimeAtStartup({
+      NODE_ENV: "production",
+      BILLING_FEATURE_ENABLED: "true",
+      PAYMENT_MODE: "wechat",
+      ...configuredWechat,
+      WECHAT_PAY_PUBLIC_KEY_ID: undefined,
+      WECHAT_PAY_PUBLIC_KEY: undefined,
+      WECHAT_PAY_PLATFORM_CERT: expiredPlatformCertificate,
+    }),
+    (error: unknown) =>
+      error instanceof BillingError && error.code === "PROVIDER_NOT_CONFIGURED",
+  );
 });
 
 test("startup keeps fully configured Alipay blocked as unimplemented", () => {

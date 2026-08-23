@@ -166,7 +166,7 @@ export class WechatPayProvider implements PaymentProvider {
         },
       });
     } catch (error) {
-      if (!this.isUncertain(error)) throw error;
+      if (!this.isUncertain(error) && !this.isStateConflict(error)) throw error;
       return this.queryNativePayment(
         {
           orderNumber: input.orderNumber,
@@ -212,6 +212,7 @@ export class WechatPayProvider implements PaymentProvider {
         method: "POST",
         pathWithQuery: `/v3/pay/transactions/out-trade-no/${encodeURIComponent(orderNumber)}/close`,
         body: { mchid: dependencies.config.mchId },
+        responseMode: "NO_CONTENT",
       });
     } catch (error) {
       if (!this.isUncertain(error) && !this.isStateConflict(error)) throw error;
@@ -251,7 +252,7 @@ export class WechatPayProvider implements PaymentProvider {
       expectedCurrency: input.currency,
     });
     if (result.status === "SUCCEEDED") return result;
-    throw this.refundUncertain();
+    throw this.refundStatusError(result.status);
   }
 
   async verifyWebhook(input: PaymentWebhookInput): Promise<boolean> {
@@ -358,7 +359,7 @@ export class WechatPayProvider implements PaymentProvider {
       expectedCurrency: input.currency,
     });
     if (result.status === "SUCCEEDED") return result;
-    throw this.refundUncertain();
+    throw this.refundStatusError(result.status);
   }
 
   private nativeDescription(value: string): string {
@@ -378,7 +379,7 @@ export class WechatPayProvider implements PaymentProvider {
     dependencies: CallbackDependencies,
   ): void {
     if (
-      !this.isNativeIdentifier(input.orderNumber) ||
+      !this.isNativeOrderNumber(input.orderNumber) ||
       !this.isNativeIdempotencyKey(input.idempotencyKey) ||
       description.length === 0 ||
       !Number.isSafeInteger(input.amountMinor) ||
@@ -412,7 +413,7 @@ export class WechatPayProvider implements PaymentProvider {
   }
 
   private nativeOrderNumber(value: string): string {
-    if (!this.isNativeIdentifier(value)) {
+    if (!this.isNativeOrderNumber(value)) {
       throw new BillingError(
         "PAYMENT_PROVIDER_REQUEST_INVALID",
         "The WeChat Pay request is invalid.",
@@ -450,6 +451,10 @@ export class WechatPayProvider implements PaymentProvider {
     );
   }
 
+  private isNativeOrderNumber(value: unknown): value is string {
+    return typeof value === "string" && /^[0-9A-Za-z_\-|*]{6,32}$/.test(value);
+  }
+
   private isNativeIdempotencyKey(value: unknown): value is string {
     return (
       typeof value === "string" &&
@@ -476,11 +481,27 @@ export class WechatPayProvider implements PaymentProvider {
     );
   }
 
-  private refundUncertain(): BillingError {
+  private refundStatusError(
+    status: "PROCESSING" | "CLOSED" | "ABNORMAL",
+  ): BillingError {
+    if (status === "PROCESSING") {
+      return new BillingError(
+        "PAYMENT_PROVIDER_REFUND_PROCESSING",
+        "WeChat Pay refund status is not yet final.",
+        503,
+      );
+    }
+    if (status === "ABNORMAL") {
+      return new BillingError(
+        "PAYMENT_PROVIDER_REFUND_MANUAL_REVIEW",
+        "The WeChat Pay refund requires manual review.",
+        409,
+      );
+    }
     return new BillingError(
-      "PAYMENT_PROVIDER_UNAVAILABLE",
-      "WeChat Pay refund status is not yet final.",
-      503,
+      "PAYMENT_PROVIDER_REFUND_FAILED",
+      "The WeChat Pay refund reached a failed terminal state.",
+      409,
     );
   }
 

@@ -45,12 +45,13 @@ test("014 persists owned Native intent expectations and atomically binds only ve
   assert.match(sql, /add column merchant_order_number text/);
   assert.match(
     sql,
-    /update public\.billing_payment_intents as intent set merchant_order_number = billing_order\.order_number from public\.billing_orders as billing_order where billing_order\.id = intent\.order_id and intent\.merchant_order_number is null/,
+    /update public\.billing_payment_intents as intent set merchant_order_number = case when intent\.provider = 'wechat' then 'wx' \|\| left\(replace\(intent\.id::text, '-', ''\), 30\) else billing_order\.order_number end/,
   );
   assert.match(
     sql,
-    /update public\.billing_payment_intents set provider_transaction_id = null where provider = 'wechat' and provider_transaction_id = merchant_order_number/,
+    /update public\.billing_payment_intents set provider_transaction_id = null where provider = 'wechat' and payment_status = 'pending'/,
   );
+  assert.match(sql, /provider = 'wechat' and merchant_order_number ~ '\^\[a-za-z0-9_\|\*-\]\{6,32\}\$'/);
   assert.match(sql, /unique \(provider, merchant_order_number\)/);
   assert.match(sql, /payment_status = 'pending'[\s\S]*provider_transaction_id is null[\s\S]*payment_token is not null/);
   assert.match(sql, /payment_status = 'paid'[\s\S]*provider_transaction_id is not null[\s\S]*paid_at is not null/);
@@ -145,6 +146,18 @@ test("014 persists owned Native intent expectations and atomically binds only ve
   assert.match(bind, /v_intent\.currency is distinct from upper\(p_currency\)/);
   assert.match(bind, /v_intent\.expires_at is distinct from p_expires_at/);
   assert.match(bind, /provider_transaction_id = p_provider_transaction_id/);
+  assert.match(bind, /insert into public\.billing_webhook_events/);
+  assert.match(bind, /public\.billing_settle_paid_order\s*\(/);
+  assert.ok(
+    bind.indexOf("insert into public.billing_webhook_events") <
+      bind.indexOf("public.billing_settle_paid_order"),
+    "a PAID query must persist a verified synthetic event before shared settlement",
+  );
+  assert.match(bind, /v_order\.status\s*=\s*'paid'[\s\S]*billing_payments/);
+  assert.match(
+    sql,
+    /create or replace function public\.billing_guard_refund_execution_management\(\)[\s\S]*old\.status = 'failed'[\s\S]*refund_provider_contract_mismatch[\s\S]*p2102[\s\S]*refund_provider_rejected[\s\S]*p2101/,
+  );
 });
 
 const sqlFunction = (name: string, path = functionsPath) => {

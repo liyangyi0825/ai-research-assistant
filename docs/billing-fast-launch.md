@@ -36,9 +36,10 @@ Stage B 标记为 `PARTIAL`：第二托管项目和本地 Docker 恢复演练暂
 ```text
 BILLING_FEATURE_ENABLED=false
 PAYMENT_MODE=mock
+BILLING_REAL_PAYMENT_PUBLIC_ENABLED=false
 ```
 
-只有进入另行批准的微信商户测试时，服务端才可选择 `PAYMENT_MODE=wechat`。微信 Native 支付的共同必需变量名如下；真实值只能注入受控的服务端密钥存储，不得写入仓库、日志或客户端环境变量：
+只有进入另行批准的微信商户测试时，服务端才可选择 `PAYMENT_MODE=wechat`。即使选择微信模式，默认仍只允许管理员与 `BILLING_TEST_USER_IDS`；公开真实支付还要求另行批准并显式设置 `BILLING_REAL_PAYMENT_PUBLIC_ENABLED=true`。微信 Native 支付的共同必需变量名如下；真实值只能注入受控的服务端密钥存储，不得写入仓库、日志或客户端环境变量：
 
 ```text
 WECHAT_PAY_MCH_ID
@@ -57,6 +58,8 @@ WECHAT_PAY_NOTIFY_URL
 2. 平台证书模式：提供 `WECHAT_PAY_PLATFORM_CERT`，内容为微信支付平台证书 PEM；服务端从证书读取并匹配平台证书序列号。
 
 两种验签材料不得混用。商户侧后续仍需从微信商户平台受控取得并复核：商户号、已绑定的应用 ID、32 字节 API v3 密钥、商户 API 证书私钥及证书序列号，以及所选验签模式对应的微信支付公钥/公钥 ID或平台证书。还需准备受控 HTTPS 回调域名和路径；Stage D1 仓库不包含任何真实材料。
+
+Native 创建成功后，服务端 owner-authenticated 端点只向订单所有者返回已验签 `code_url` 与本地 `qrcode` 生成的内存 SVG data URL；不调用外部 QR 服务、不写日志、不持久化图片。结算页轮询同一 owner-authenticated 端点，只有服务端验签查询或回调完成原子 settlement 后才返回 `PAID`。
 
 ## 离线验证
 

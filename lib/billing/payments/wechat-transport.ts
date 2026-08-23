@@ -22,6 +22,7 @@ type RequestInput = {
   method: "GET" | "POST";
   pathWithQuery: string;
   body?: Readonly<Record<string, unknown>>;
+  responseMode?: "JSON" | "NO_CONTENT";
 };
 
 function requestInvalid(): BillingError {
@@ -444,6 +445,13 @@ export class WechatHttpClient {
 
     if (response.status >= 500 && response.status <= 599) {
       throw unavailable();
+    }
+
+    if (input.input.responseMode === "NO_CONTENT") {
+      if (response.status !== 204 || responseBody.length !== 0) {
+        throw invalidResponse();
+      }
+      return { status: response.status, body: null as T };
     }
 
     let parsedBody: unknown;

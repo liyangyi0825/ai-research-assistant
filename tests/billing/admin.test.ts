@@ -72,6 +72,7 @@ const enabledBillingConfig: BillingConfig = {
   featureEnabled: true,
   paymentMode: "mock",
   testUserIds: ["admin-1"],
+  realPaymentPublicEnabled: false,
   legal: {
     operatorName: "",
     operatorCreditCode: "",
