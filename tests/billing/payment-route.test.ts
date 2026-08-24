@@ -102,11 +102,12 @@ test("owner-authenticated WeChat creation returns a local SVG QR for the verifie
     { params: Promise.resolve({ id: "order-1" }) },
   );
   const body = (await response.json()) as {
-    payment: { codeUrl: string; qrCodeDataUrl: string };
+    payment: { qrCodeDataUrl: string } & Record<string, unknown>;
   };
 
   assert.equal(response.status, 201);
-  assert.equal(body.payment.codeUrl, wechatPayment.paymentToken);
+  assert.equal("codeUrl" in body.payment, false);
+  assert.equal(JSON.stringify(body).includes(wechatPayment.paymentToken!), false);
   assert.match(body.payment.qrCodeDataUrl, /^data:image\/svg\+xml;base64,/);
   const svg = Buffer.from(body.payment.qrCodeDataUrl.split(",")[1]!, "base64").toString("utf8");
   assert.match(svg, /^<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);

@@ -1215,7 +1215,10 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
       "merchant_order_number ~ ''\\^\\[A-Za-z0-9_\\|\\*-\\]\\{6,32\\}\\$''::text",
     ),
   );
-  assert.doesNotMatch(verify, /DRILL-WECHAT-EVENT-014/i);
+  assert.match(
+    verify,
+    /DRILL-WECHAT-EVENT-014[\s\S]*billing_settle_paid_order\s*\([\s\S]*ALREADY_PROCESSED[\s\S]*query-settled webhook replay was not idempotent/i,
+  );
   assert.match(verify, /DRILL-RETRY-EVENT-013[\s\S]*billing_mark_webhook_retryable[\s\S]*status[^;]*RETRYABLE[\s\S]*billing_prepare_webhook_settlement[\s\S]*status[^;]*RECEIVED[\s\S]*status\s*=\s*'PROCESSING'[\s\S]*status\s*=\s*'PROCESSED'/i);
   assert.match(
     verify,

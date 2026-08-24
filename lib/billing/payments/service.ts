@@ -912,7 +912,6 @@ async function paymentRouteDto(
 ): Promise<{
   status: PaymentResult["status"];
   expiresAt: string;
-  codeUrl?: string;
   qrCodeDataUrl?: string;
 }> {
   if (
@@ -951,7 +950,6 @@ async function paymentRouteDto(
     return {
       status: payment.status,
       expiresAt: payment.expiresAt,
-      codeUrl: payment.paymentToken,
       qrCodeDataUrl: `data:image/svg+xml;base64,${Buffer.from(svg, "utf8").toString("base64")}`,
     };
   } catch {

@@ -336,7 +336,7 @@ export function parseWechatPaidNotification(input: {
     amount.currency !== "CNY" ||
     !validOptionalAmountFields(amount) ||
     occurredAt === null ||
-    ("trade_type" in parsed && parsed.trade_type !== "NATIVE") ||
+    parsed.trade_type !== "NATIVE" ||
     !hasValidOptionalStringFields(parsed, [
       "trade_type",
       "trade_state_desc",

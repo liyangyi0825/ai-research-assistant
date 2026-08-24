@@ -1680,6 +1680,49 @@ begin
     raise exception 'verified query settlement was not exactly once';
   end if;
 
+  insert into public.billing_webhook_events (
+    provider, provider_event_id, order_number, provider_transaction_id,
+    request_idempotency_key, amount_minor, currency, paid_at,
+    signature_valid, status, payload_summary
+  ) values (
+    'WECHAT', 'DRILL-WECHAT-EVENT-014', 'DRILL-WECHAT-MERCHANT-014',
+    'DRILL-WECHAT-TXN-014', 'drill-wechat-payment-014', 990, 'CNY',
+    timestamptz '2026-01-06 00:00:00+00', true, 'RECEIVED',
+    jsonb_build_object(
+      'payload_hash', repeat('a', 64),
+      'event_type', 'PAYMENT.PAID'
+    )
+  );
+  result := public.billing_settle_paid_order(
+    'DRILL-WECHAT-MERCHANT-014',
+    'WECHAT',
+    'DRILL-WECHAT-TXN-014',
+    'DRILL-WECHAT-EVENT-014',
+    'drill-wechat-payment-014',
+    990,
+    'CNY',
+    timestamptz '2026-01-06 00:00:00+00',
+    jsonb_build_object('source', 'wechat-callback')
+  );
+  if result ->> 'status' is distinct from 'ALREADY_PROCESSED'
+    or not exists (
+      select 1 from public.billing_webhook_events
+      where provider = 'WECHAT'
+        and provider_event_id = 'DRILL-WECHAT-EVENT-014'
+        and order_id = '00000000-0000-4000-8000-00000000b090'
+        and status = 'PROCESSED'
+    )
+    or (
+      select count(*) from public.billing_payments
+      where order_id = '00000000-0000-4000-8000-00000000b090'
+    ) is distinct from 1::bigint
+    or (
+      select count(*) from public.billing_credit_ledger
+      where reference_id = '00000000-0000-4000-8000-00000000b090'
+    ) is distinct from 1::bigint then
+    raise exception 'query-settled webhook replay was not idempotent';
+  end if;
+
   select count(*) into refund_count_before
   from public.billing_refund_requests
   where user_id = '00000000-0000-4000-8000-00000000b001'

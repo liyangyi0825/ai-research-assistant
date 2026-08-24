@@ -189,6 +189,7 @@ function handwrittenTransaction(totalLiteral: string, extra = ""): string {
     `"mchid":"1900000109",` +
     `"out_trade_no":"BILL-ORDER-1",` +
     `"transaction_id":"4200000000001",` +
+    `"trade_type":"NATIVE",` +
     `"trade_state":"SUCCESS",` +
     `"success_time":"2026-08-19T18:00:00+08:00",` +
     `"amount":{"total":${totalLiteral},"currency":"CNY"}${extra}}`
@@ -801,6 +802,18 @@ test("only successful transactions for the configured merchant and app are mappe
         ]),
     );
   }
+});
+
+test("paid Native notifications require an explicit NATIVE trade type", async () => {
+  const transactionWithoutTradeType = { ...BASE_TRANSACTION };
+  delete transactionWithoutTradeType.trade_type;
+
+  await assert.rejects(
+    provider().parseWebhook(
+      fixture({ transaction: transactionWithoutTradeType }),
+    ),
+    (error: unknown) => expectFixedError(error, INVALID_WEBHOOK),
+  );
 });
 
 test("amount, currency, and success time reject unsafe or malformed values", async () => {
@@ -1817,13 +1830,13 @@ test("Stage D1 signed WeChat flow grants one unused semester then revokes it wit
     payment: {
       status: string;
       expiresAt: string;
-      codeUrl: string;
       qrCodeDataUrl: string;
-    };
+    } & Record<string, unknown>;
   }>(createPaymentResponse);
   assert.equal(createPaymentBody.payment.status, "PENDING");
   assert.equal(createPaymentBody.payment.expiresAt, "2026-08-19T12:30:00.000Z");
-  assert.equal(createPaymentBody.payment.codeUrl, paymentCodeUrl);
+  assert.equal("codeUrl" in createPaymentBody.payment, false);
+  assert.equal(JSON.stringify(createPaymentBody).includes(paymentCodeUrl), false);
   assert.match(createPaymentBody.payment.qrCodeDataUrl, /^data:image\/svg\+xml;base64,/);
   const persistedAfterCreate = await paymentRepository.findOwnedPaymentIntent(
     userId,

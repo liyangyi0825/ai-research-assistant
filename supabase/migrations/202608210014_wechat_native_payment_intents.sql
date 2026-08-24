@@ -834,6 +834,39 @@ BEGIN
     RAISE EXCEPTION 'payment order payload mismatch'
       USING ERRCODE = 'data_exception';
   END IF;
+  IF v_order.status = 'PAID' THEN
+    IF v_order.paid_at IS DISTINCT FROM p_paid_at
+      OR v_order.expires_at <= p_paid_at
+      OR v_intent.payment_status IS DISTINCT FROM 'PAID'
+      OR v_intent.provider_transaction_id IS DISTINCT FROM p_provider_transaction_id
+      OR v_intent.paid_at IS DISTINCT FROM p_paid_at
+      OR NOT EXISTS (
+        SELECT 1
+        FROM public.billing_payments
+        WHERE order_id IS NOT DISTINCT FROM v_order.id
+          AND user_id IS NOT DISTINCT FROM v_order.user_id
+          AND provider IS NOT DISTINCT FROM upper(p_provider)
+          AND provider_transaction_id IS NOT DISTINCT FROM p_provider_transaction_id
+          AND request_idempotency_key IS NOT DISTINCT FROM p_request_idempotency_key
+          AND amount_minor IS NOT DISTINCT FROM p_amount_minor
+          AND currency IS NOT DISTINCT FROM upper(p_currency)
+          AND paid_at IS NOT DISTINCT FROM p_paid_at
+          AND status IS NOT DISTINCT FROM 'PAID'
+      ) THEN
+      RAISE EXCEPTION 'already-settled payment payload mismatch'
+        USING ERRCODE = 'data_exception';
+    END IF;
+
+    UPDATE public.billing_webhook_events
+    SET order_id = v_order.id, user_id = v_order.user_id,
+        status = 'PROCESSED', error_code = NULL,
+        processed_at = now(), updated_at = now()
+    WHERE id = v_event_id;
+    RETURN jsonb_build_object(
+      'status', 'ALREADY_PROCESSED', 'event_status', 'PROCESSED',
+      'order_id', v_order.id, 'event_id', v_event_id
+    );
+  END IF;
   IF v_order.status IS DISTINCT FROM 'PENDING' THEN
     RAISE EXCEPTION 'order is not pending'
       USING ERRCODE = 'object_not_in_prerequisite_state';

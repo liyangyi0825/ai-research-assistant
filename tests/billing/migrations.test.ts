@@ -160,6 +160,43 @@ test("014 persists owned Native intent expectations and atomically binds only ve
   );
 });
 
+test("014 accepts a later verified webhook for the same query-settled payment without granting twice", () => {
+  const settle = sqlFunction(
+    "billing_settle_paid_order",
+    "supabase/migrations/202608210014_wechat_native_payment_intents.sql",
+  );
+  const alreadyPaid = settle.indexOf("if v_order.status = 'paid' then");
+  const pendingGuard = settle.indexOf(
+    "if v_order.status is distinct from 'pending' then",
+  );
+
+  assert.ok(alreadyPaid >= 0, "query-settled payments need a distinct webhook replay branch");
+  assert.ok(
+    alreadyPaid < pendingGuard,
+    "the identical-payment branch must run before the pending-only settlement guard",
+  );
+  const branch = settle.slice(alreadyPaid, pendingGuard);
+  assert.match(branch, /v_intent\.payment_status is distinct from 'paid'/);
+  assert.match(
+    branch,
+    /v_intent\.provider_transaction_id is distinct from p_provider_transaction_id/,
+  );
+  assert.match(branch, /v_intent\.paid_at is distinct from p_paid_at/);
+  assert.match(
+    branch,
+    /not exists \( select 1 from public\.billing_payments[\s\S]*?order_id is not distinct from v_order\.id[\s\S]*?provider_transaction_id is not distinct from p_provider_transaction_id[\s\S]*?request_idempotency_key is not distinct from p_request_idempotency_key[\s\S]*?amount_minor is not distinct from p_amount_minor[\s\S]*?currency is not distinct from upper\(p_currency\)[\s\S]*?paid_at is not distinct from p_paid_at[\s\S]*?status is not distinct from 'paid'/,
+  );
+  assert.match(
+    branch,
+    /update public\.billing_webhook_events set order_id = v_order\.id, user_id = v_order\.user_id,[\s\S]*?status = 'processed',[\s\S]*?processed_at = now\(\)/,
+  );
+  assert.match(branch, /'status', 'already_processed'/);
+  assert.doesNotMatch(
+    branch,
+    /insert into public\.billing_(?:subscriptions|user_entitlements|credit_ledger)/,
+  );
+});
+
 const sqlFunction = (name: string, path = functionsPath) => {
   const sql = compactSql(path);
   const block = sql.match(
