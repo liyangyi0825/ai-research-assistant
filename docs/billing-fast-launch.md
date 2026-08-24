@@ -6,7 +6,7 @@
 
 - `FREE` 是默认免费套餐，不创建零元购买商品。
 - `PRO_MONTHLY` 可保留为后台配置，但必须保持 `is_active=false`，不进入首发可售目录。
-- `PRO_SEMESTER` 的后端配置为 7900 分 CNY、150 天、`pro-semester-v1` 权益；套餐额度为免费套餐对应额度的五倍。
+- `PRO_SEMESTER` 的后端配置为 7900 分 CNY、150 天、`pro-semester-v1` 权益；13 项周期额度均为停用的 `PRO_MONTHLY`（`pro-v1`）对应额度的五倍。`FREE` 只作为免费基线，不再作为学期套餐倍率基线。
 - `CREDIT_PACK_100` 的后端配置为 990 分 CNY、100 credits、`credit-v1` 权益。
 - 不创建 `PRO_YEARLY` 商品。
 - 预发布期间所有商品保持 `is_active=false`，因此公开商品接口返回空目录。
