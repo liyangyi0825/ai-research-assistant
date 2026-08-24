@@ -4,6 +4,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { AdminBillingView } from "../../app/admin/billing/AdminBillingView";
+import {
+  adminBillingActions,
+  type Action,
+} from "../../app/admin/billing/AdminBillingActions";
 import { ReconciliationReportView } from "../../components/billing/ReconciliationReportView";
 import { BillingError } from "../../lib/billing/errors";
 import type { InternalReconciliationReport } from "../../lib/billing/reconciliation";
@@ -1022,4 +1026,21 @@ test("billing admin UI exposes writer actions while reviewers remain read-only",
   assert.match(actions, /disabled=\{!canWrite/);
   const overview = await fs.readFile("app/admin/billing/page.tsx", "utf8");
   assert.match(overview, /admin\.role === "BILLING_ADMIN"/);
+});
+
+test("the catalog form permits the approved credit pack null fields", () => {
+  const productAction = adminBillingActions.find(
+    ({ title }) => title === "保存商品",
+  );
+  assert.ok(productAction);
+
+  for (const name of ["planId", "durationDays"]) {
+    const field: Action["fields"][number] | undefined =
+      productAction.fields.find((candidate) => candidate.name === name);
+    assert.equal(
+      (field as { required?: boolean } | undefined)?.required,
+      false,
+      `${name} must permit a null credit-pack value`,
+    );
+  }
 });

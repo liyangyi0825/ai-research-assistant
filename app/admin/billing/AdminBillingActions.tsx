@@ -6,7 +6,13 @@ export type Action = {
   title: string;
   endpoint: string;
   method?: "POST" | "PATCH";
-  fields: Array<{ name: string; label: string; type?: string; options?: string[] }>;
+  fields: Array<{
+    name: string;
+    label: string;
+    type?: string;
+    options?: string[];
+    required?: boolean;
+  }>;
   fixed?: Record<string, unknown>;
   requiresIdempotencyKey?: boolean;
 };
@@ -27,10 +33,12 @@ export const adminBillingActions: Action[] = [
     { name: "isActive", label: "启用", options: ["false", "true"] }, { name: "reason", label: "操作原因" },
   ] },
   { title: "保存商品", endpoint: "/api/admin/billing/catalog", method: "PATCH", fixed: { kind: "product" }, fields: [
-    { name: "productId", label: "商品 ID（新建留空）" }, { name: "planId", label: "套餐 ID" },
+    { name: "productId", label: "商品 ID（新建留空）" },
+    { name: "planId", label: "套餐 ID（额度包留空）", required: false },
     { name: "sku", label: "SKU" }, { name: "name", label: "商品名称" },
     { name: "productType", label: "类型", options: ["SUBSCRIPTION", "CREDIT_PACK"] },
-    { name: "priceMinor", label: "价格（分）", type: "number" }, { name: "durationDays", label: "有效天数", type: "number" },
+    { name: "priceMinor", label: "价格（分）", type: "number" },
+    { name: "durationDays", label: "有效天数（额度包留空）", type: "number", required: false },
     { name: "creditGrant", label: "赠送额度", type: "number" }, { name: "entitlementVersion", label: "权益版本" },
     { name: "isActive", label: "启用", options: ["false", "true"] }, { name: "reason", label: "操作原因" },
   ] },
@@ -126,7 +134,8 @@ export function AdminBillingActions({ canWrite }: { canWrite: boolean }) {
             </label>
           ) : (
             <label key={field.name} className="block text-xs text-slate-400">{field.label}
-              <input name={field.name} type={field.type ?? "text"} required={!field.label.includes("留空")}
+              <input name={field.name} type={field.type ?? "text"}
+                required={field.required ?? !field.label.includes("留空")}
                 className="mt-1 w-full rounded-lg bg-slate-800 p-2 text-slate-100" />
             </label>
           ))}
