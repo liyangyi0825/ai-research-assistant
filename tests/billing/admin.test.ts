@@ -1044,3 +1044,42 @@ test("the catalog form permits the approved credit pack null fields", () => {
     );
   }
 });
+
+test("billing admin RPC diagnostics redact secrets and never include request arguments", async () => {
+  const diagnostics: unknown[] = [];
+  const client = {
+    from() {
+      return new QueryStub("unused", { data: [], error: null }, []);
+    },
+    async rpc() {
+      return {
+        data: null,
+        error: {
+          code: "42501",
+          message: "denied sb_secret_example Authorization: Bearer aaa.bbb.ccc apikey=private-value",
+        },
+      };
+    },
+  };
+  const repositoryWithDiagnostics = createBillingAdminRepository(
+    client,
+    (diagnostic) => diagnostics.push(diagnostic),
+  );
+
+  await assert.rejects(
+    repositoryWithDiagnostics.upsertProduct({
+      p_sku: "CREDIT_PACK_100",
+      p_reason: "must not be logged",
+    }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "BILLING_ADMIN_STORAGE_UNAVAILABLE",
+  );
+
+  assert.deepEqual(diagnostics, [{
+    operation: "billing_admin_upsert_product",
+    code: "42501",
+    message: "denied [REDACTED] Authorization: [REDACTED] apikey=[REDACTED]",
+  }]);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /CREDIT_PACK_100|must not be logged|private-value/);
+});

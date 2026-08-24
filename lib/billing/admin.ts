@@ -66,6 +66,28 @@ type Client = {
   }>;
 };
 
+type StorageDiagnostic = {
+  operation: string;
+  code: string;
+  message: string;
+};
+
+type StorageDiagnosticReporter = (diagnostic: StorageDiagnostic) => void;
+
+function sanitizeStorageMessage(value: unknown): string {
+  const message = typeof value === "string" ? value : "Unknown storage error";
+  return message
+    .replace(/sb_(?:secret|publishable)_[A-Za-z0-9._-]+/gi, "[REDACTED]")
+    .replace(/Authorization:\s*Bearer\s+\S+/gi, "Authorization: [REDACTED]")
+    .replace(/apikey\s*=\s*\S+/gi, "apikey=[REDACTED]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .slice(0, 300);
+}
+
+const reportStorageDiagnostic: StorageDiagnosticReporter = (diagnostic) => {
+  console.error("[billing-admin-storage]", diagnostic);
+};
+
 function storageError(): BillingError {
   return new BillingError(
     "BILLING_ADMIN_STORAGE_UNAVAILABLE",
@@ -193,10 +215,20 @@ async function result(query: PromiseLike<{ data: unknown; error: unknown }>): Pr
   return response.data;
 }
 
-export function createBillingAdminRepository(client: Client): BillingAdminRepository {
+export function createBillingAdminRepository(
+  client: Client,
+  reportDiagnostic: StorageDiagnosticReporter = reportStorageDiagnostic,
+): BillingAdminRepository {
   async function rpc(name: string, args: Record<string, unknown>) {
     const response = await client.rpc(name, args);
-    if (response.error) throw storageError();
+    if (response.error) {
+      reportDiagnostic({
+        operation: name,
+        code: response.error.code ?? "UNKNOWN",
+        message: sanitizeStorageMessage(response.error.message),
+      });
+      throw storageError();
+    }
     return parseMutation(response.data);
   }
   return {
