@@ -36,7 +36,11 @@ function LoginForm() {
   const [showPwd,         setShowPwd]         = useState(false);
   const [showConfirm,     setShowConfirm]     = useState(false);
   const [loading,         setLoading]         = useState(false);
-  const [error,           setError]           = useState("");
+  const [error,           setError]           = useState(() =>
+    searchParams.get("error") === "auth_failed"
+      ? "链接已失效，请用验证码重新登录"
+      : "",
+  );
   const [cooldown,        setCooldown]        = useState(0);
   const [unverifiedEmail, setUnverifiedEmail] = useState("");
 
@@ -44,13 +48,6 @@ function LoginForm() {
   const [otpStep, setOtpStep] = useState<"email" | "code">("email");
   const [digits,  setDigits]  = useState<string[]>(Array(6).fill(""));
   const digitRefs = useRef<(HTMLInputElement | null)[]>(Array(6).fill(null));
-
-  // URL 里带了 error=auth_failed
-  useEffect(() => {
-    if (searchParams.get("error") === "auth_failed") {
-      setError("链接已失效，请用验证码重新登录");
-    }
-  }, [searchParams]);
 
   // 60 秒倒计时
   useEffect(() => {
@@ -121,15 +118,13 @@ function LoginForm() {
   // ── OTP：校验验证码（接收 token 字符串，避免 state 陈旧）───────────────
   async function verifyOtpToken(token: string) {
     if (token.length !== 6 || loading) return;
-    console.log("[OTP] 开始验证，token:", token, "email:", email.trim());
     setLoading(true); setError("");
     const supabase = getSupabaseBrowserClient();
-    const { data, error: err } = await supabase.auth.verifyOtp({
+    const { error: err } = await supabase.auth.verifyOtp({
       email: email.trim(),
       token,
       type: "email",
     });
-    console.log("[OTP] 验证结果 — error:", err, "session:", data?.session?.user?.email ?? null);
     setLoading(false);
     if (err) {
       if (err.message.toLowerCase().includes("expired")) {
@@ -142,7 +137,7 @@ function LoginForm() {
       setDigits(Array(6).fill(""));
       setTimeout(() => digitRefs.current[0]?.focus(), 50);
     } else {
-      window.location.href = getRedirectTarget();
+      window.location.assign(getRedirectTarget());
     }
   }
 
@@ -191,7 +186,7 @@ function LoginForm() {
         setError(err.message);
       }
     } else {
-      window.location.href = getRedirectTarget();
+      window.location.assign(getRedirectTarget());
     }
   }
 
@@ -211,7 +206,7 @@ function LoginForm() {
     if (err) {
       setError(err.message);
     } else if (data.session) {
-      window.location.href = getRedirectTarget();
+      window.location.assign(getRedirectTarget());
     } else {
       setCooldown(60); setView("registered");
     }
