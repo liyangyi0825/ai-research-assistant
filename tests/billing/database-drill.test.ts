@@ -41,6 +41,8 @@ const expectedBillingMigrationFiles = [
   "202608160012_billing_refund_execution.sql",
   "202608180013_billing_webhook_retry.sql",
   "202608210014_wechat_native_payment_intents.sql",
+  "202608240015_internal_function_acl_hardening.sql",
+  "202608240016_semester_entitlement_guard_fix.sql",
 ] as const;
 const expectedBillingMigrationVersions = expectedBillingMigrationFiles.map(
   (name) => name.slice(0, 12),
@@ -392,6 +394,7 @@ const indexVerificationGates = [
   ["access method", "access_method.amname is distinct from expected.access_method"],
   ["uniqueness", "index_meta.indisunique is distinct from expected.expected_unique"],
   ["ordered columns", ") is distinct from expected.column_names"],
+  ["text-normalized ordered columns", "array_agg(attribute.attname::text order by key_position.ordinality)"],
   ["predicate", "is distinct from expected.expected_predicate"],
   ["sort options", ") is distinct from expected.expected_indoptions"],
   ...indexAttributeCountGates,
@@ -937,7 +940,7 @@ test("manifest emits only the six safe top-level sections", async () => {
   ]);
 });
 
-test("manifest reports and verification requires the exact 001-014 migration history", async () => {
+test("manifest reports and verification requires the exact 001-016 migration history", async () => {
   const [manifest, verify] = await Promise.all([
     readDrillSql("manifest.sql"),
     readDrillSql("verify.sql"),
@@ -1156,6 +1159,12 @@ test("constraint patterns reject semantic weakening and expansion", async () => 
     status,
   );
 
+  const webhookRetry = pattern("billing_webhook_events", "retry_count");
+  assert.match(
+    "CHECK ((((retry_count >= 0) AND (retry_count <= 8)) AND (((status = 'RETRYABLE'::text) AND (retry_after IS NOT NULL)) OR ((status <> 'RETRYABLE'::text) AND (retry_after IS NULL)))))",
+    webhookRetry,
+  );
+
   for (const [table, marker, valid, weakened] of [
     ["billing_orders", "amount_minor", "CHECK ((amount_minor >= 0))", "CHECK (((amount_minor >= 0) OR true))"],
     ["billing_refunds", "refunded_amount_minor", "CHECK ((refunded_amount_minor > 0))", "CHECK ((refunded_amount_minor >= 0))"],
@@ -1169,6 +1178,9 @@ test("constraint patterns reject semantic weakening and expansion", async () => 
 
 test("verification SQL enforces structural, security, catalog, and runtime behavior gates", async () => {
   const verify = await readDrillSql("verify.sql");
+  assert.match(verify, /\('billing_webhook_events',\s*1,\s*2,\s*1,\s*7\)/i);
+  assert.match(verify, /select\s+lower\(proc\.prosrc\)[\s\S]*settlement_definition/i);
+  assert.match(verify, /for\\s\+update;\\s\+\(\?:\[\^;\]\+;\\s\+\)\{0,3\}select/i);
 
   assert.match(verify, /raise\s+exception/i);
   assert.match(verify, /relrowsecurity/i);
@@ -1375,7 +1387,7 @@ test("preflight plan fails closed when restore billing relations or migration hi
   assert.equal(emptyCheck.targetRef, restoreRef);
 });
 
-test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 014 separately", () => {
+test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 016 separately", () => {
   const plan = buildUpgradePlan(planInput());
   assert.deepEqual(plan.map(({ operation }) => operation), [
     "prepare-upgrade-009-workspace",
@@ -1399,6 +1411,12 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
     "copy-migration-014",
     "verify-upgrade-workspace-ref-before-014",
     "push-migration-014",
+    "copy-migration-015",
+    "verify-upgrade-workspace-ref-before-015",
+    "push-migration-015",
+    "copy-migration-016",
+    "verify-upgrade-workspace-ref-before-016",
+    "push-migration-016",
     "verify-upgraded-restore",
   ]);
   assert.deepEqual(plan[0].args, ["copy-migrations", "001-009", "upgrade-workspace"]);
@@ -1411,6 +1429,8 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.deepEqual(plan[12].args, ["copy-migrations", "012", "upgrade-workspace"]);
   assert.deepEqual(plan[15].args, ["copy-migrations", "013", "upgrade-workspace"]);
   assert.deepEqual(plan[18].args, ["copy-migrations", "014", "upgrade-workspace"]);
+  assert.deepEqual(plan[21].args, ["copy-migrations", "015", "upgrade-workspace"]);
+  assert.deepEqual(plan[24].args, ["copy-migrations", "016", "upgrade-workspace"]);
   assert.deepEqual(plan[1].args, ["link", "--project-ref", restoreRef]);
   assert.deepEqual(plan[3].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[4].args.slice(0, 4), ["-X", "-v", "ON_ERROR_STOP=1", "-v"]);
@@ -1420,10 +1440,12 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.deepEqual(plan[14].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[17].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[20].args, ["db", "push", "--linked"]);
+  assert.deepEqual(plan[23].args, ["db", "push", "--linked"]);
+  assert.deepEqual(plan[26].args, ["db", "push", "--linked"]);
   assert.ok(plan.every(({ targetRef }) => targetRef !== BILLING_SOURCE_PROJECT_REF));
 });
 
-test("migration copy ranges distinguish 010 through 014 and reject unknown or incomplete sets", () => {
+test("migration copy ranges distinguish 010 through 016 and reject unknown or incomplete sets", () => {
   assert.deepEqual(
     selectMigrationFiles("001-009", expectedBillingMigrationFiles),
     expectedBillingMigrationFiles.slice(0, 9),
@@ -1448,6 +1470,14 @@ test("migration copy ranges distinguish 010 through 014 and reject unknown or in
     selectMigrationFiles("014", expectedBillingMigrationFiles),
     [expectedBillingMigrationFiles[13]],
   );
+  assert.deepEqual(
+    selectMigrationFiles("015", expectedBillingMigrationFiles),
+    [expectedBillingMigrationFiles[14]],
+  );
+  assert.deepEqual(
+    selectMigrationFiles("016", expectedBillingMigrationFiles),
+    [expectedBillingMigrationFiles[15]],
+  );
   assert.throws(
     () => selectMigrationFiles("011", expectedBillingMigrationFiles.slice(0, 10)),
     /MIGRATION_SET_INVALID/,
@@ -1462,6 +1492,14 @@ test("migration copy ranges distinguish 010 through 014 and reject unknown or in
   );
   assert.throws(
     () => selectMigrationFiles("014", expectedBillingMigrationFiles.slice(0, 13)),
+    /MIGRATION_SET_INVALID/,
+  );
+  assert.throws(
+    () => selectMigrationFiles("015", expectedBillingMigrationFiles.slice(0, 14)),
+    /MIGRATION_SET_INVALID/,
+  );
+  assert.throws(
+    () => selectMigrationFiles("016", expectedBillingMigrationFiles.slice(0, 15)),
     /MIGRATION_SET_INVALID/,
   );
 });

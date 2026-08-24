@@ -94,6 +94,8 @@ const BILLING_MIGRATION_FILES_BY_RANGE = {
   "012": ["202608160012_billing_refund_execution.sql"],
   "013": ["202608180013_billing_webhook_retry.sql"],
   "014": ["202608210014_wechat_native_payment_intents.sql"],
+  "015": ["202608240015_internal_function_acl_hardening.sql"],
+  "016": ["202608240016_semester_entitlement_guard_fix.sql"],
 } as const;
 const BILLING_MIGRATION_VERSIONS = Object.values(BILLING_MIGRATION_FILES_BY_RANGE)
   .flat()
@@ -244,6 +246,16 @@ export function buildUpgradePlan(input: PlanInput): readonly PlannedCommand[] {
     planned("copy-migration-014", INTERNAL_EXECUTABLE, ["copy-migrations", "014", "upgrade-workspace"], { cwd: input.runDirectory }),
     linkedRefCheck("verify-upgrade-workspace-ref-before-014", workspace, input.restoreRef, true),
     planned("push-migration-014", "supabase", ["db", "push", "--linked"], {
+      cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
+    }),
+    planned("copy-migration-015", INTERNAL_EXECUTABLE, ["copy-migrations", "015", "upgrade-workspace"], { cwd: input.runDirectory }),
+    linkedRefCheck("verify-upgrade-workspace-ref-before-015", workspace, input.restoreRef, true),
+    planned("push-migration-015", "supabase", ["db", "push", "--linked"], {
+      cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
+    }),
+    planned("copy-migration-016", INTERNAL_EXECUTABLE, ["copy-migrations", "016", "upgrade-workspace"], { cwd: input.runDirectory }),
+    linkedRefCheck("verify-upgrade-workspace-ref-before-016", workspace, input.restoreRef, true),
+    planned("push-migration-016", "supabase", ["db", "push", "--linked"], {
       cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
     }),
     planned("verify-upgraded-restore", "psql", ["-X", "-v", "ON_ERROR_STOP=1", "-f", resolve("scripts/billing-db-drill/sql/verify.sql")], {
@@ -400,6 +412,12 @@ export function selectMigrationFiles(
       break;
     case "014":
       expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["014"];
+      break;
+    case "015":
+      expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["015"];
+      break;
+    case "016":
+      expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["016"];
       break;
     default:
       fail("MIGRATION_SET_INVALID");

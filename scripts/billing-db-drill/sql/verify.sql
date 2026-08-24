@@ -20,7 +20,9 @@ declare
     '202608120011',
     '202608160012',
     '202608180013',
-    '202608210014'
+    '202608210014',
+    '202608240015',
+    '202608240016'
   ];
   expected_tables constant text[] := array[
     'billing_plans',
@@ -112,7 +114,7 @@ begin
      or index_meta.indnkeyatts is distinct from cardinality(expected.column_names)
      or index_meta.indnatts is distinct from cardinality(expected.column_names)
      or (
-       select array_agg(attribute.attname order by key_position.ordinality)
+       select array_agg(attribute.attname::text order by key_position.ordinality)
        from unnest(index_meta.indkey) with ordinality as key_position(attnum, ordinality)
        join pg_catalog.pg_attribute as attribute
          on attribute.attrelid = index_meta.indrelid
@@ -271,7 +273,7 @@ begin
       ('public', 'billing_webhook_events', 'billing_webhook_events_status_check', 'c', '^CHECK \(\(status = ANY \(ARRAY\[''RECEIVED''::text, ''PROCESSING''::text, ''PROCESSED''::text, ''RETRYABLE''::text, ''FAILED''::text\]\)\)\)$'),
       ('public', 'billing_webhook_events', 'billing_webhook_events_error_code_check', 'c', '^CHECK \(\(\(status <> ALL \(ARRAY\[''FAILED''::text, ''RETRYABLE''::text\]\)\) OR \(NULLIF\(btrim\(error_code\), ''''::text\) IS NOT NULL\)\)\)$'),
       ('public', 'billing_webhook_events', 'billing_webhook_events_payload_state_check', 'c', '^CHECK \(\(\(\(status = ANY \(ARRAY\[''RECEIVED''::text, ''PROCESSING''::text, ''PROCESSED''::text, ''RETRYABLE''::text\]\)\) AND \(signature_valid IS TRUE\) AND \(order_number IS NOT NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(request_idempotency_key IS NOT NULL\) AND \(amount_minor IS NOT NULL\) AND \(currency IS NOT NULL\) AND \(paid_at IS NOT NULL\)\) OR \(\(status = ''FAILED''::text\) AND \(\(\(signature_valid IS TRUE\) AND \(order_number IS NOT NULL\) AND \(provider_transaction_id IS NOT NULL\) AND \(request_idempotency_key IS NOT NULL\) AND \(amount_minor IS NOT NULL\) AND \(currency IS NOT NULL\) AND \(paid_at IS NOT NULL\)\) OR \(\(order_number IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(request_idempotency_key IS NULL\) AND \(amount_minor IS NULL\) AND \(currency IS NULL\) AND \(paid_at IS NULL\)\)\)\)\)\)$'),
-      ('public', 'billing_webhook_events', 'billing_webhook_events_retry_state_check', 'c', '^CHECK \(\(\(retry_count >= 0\) AND \(retry_count <= 8\) AND \(\(\(status = ''RETRYABLE''::text\) AND \(retry_after IS NOT NULL\)\) OR \(\(status <> ''RETRYABLE''::text\) AND \(retry_after IS NULL\)\)\)\)\)$'),
+      ('public', 'billing_webhook_events', 'billing_webhook_events_retry_state_check', 'c', '^CHECK \(\(\(\(retry_count >= 0\) AND \(retry_count <= 8\)\) AND \(\(\(status = ''RETRYABLE''::text\) AND \(retry_after IS NOT NULL\)\) OR \(\(status <> ''RETRYABLE''::text\) AND \(retry_after IS NULL\)\)\)\)\)$'),
 
       ('public', 'billing_refund_requests', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_refund_requests', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),
@@ -427,7 +429,7 @@ begin
       ('billing_usage_records', 1, 3, 1, 5),
       ('billing_usage_continuations', 1, 2, 1, 3),
       ('billing_credit_ledger', 1, 3, 1, 3),
-      ('billing_webhook_events', 1, 2, 1, 6),
+      ('billing_webhook_events', 1, 2, 1, 7),
       ('billing_refund_requests', 1, 3, 1, 3),
       ('billing_refunds', 1, 4, 3, 5),
       ('billing_invoice_requests', 1, 2, 1, 3),
@@ -711,13 +713,16 @@ begin
 
   -- Verified query lock order contract: billing_orders must precede
   -- billing_payment_intents in every related mutation.
-  settlement_definition := lower(pg_catalog.pg_get_functiondef(to_regprocedure(
+  select lower(proc.prosrc)
+  into settlement_definition
+  from pg_catalog.pg_proc as proc
+  where proc.oid = to_regprocedure(
     'public.billing_settle_paid_order(text,text,text,text,text,bigint,text,timestamptz,jsonb)'
-  )));
+  );
   select count(*) into settlement_lock_order_count
   from regexp_matches(
     settlement_definition,
-    'from\s+public\.billing_orders\s+where\s+id\s*=\s*v_intent_order_id\s+for\s+update;\s+select\s+\*\s+into\s+v_intent\s+from\s+public\.billing_payment_intents[^;]+for\s+update;',
+    'from\s+public\.billing_orders\s+where\s+id\s*=\s*v_intent_order_id\s+for\s+update;\s+(?:[^;]+;\s+){0,3}select\s+\*\s+into\s+v_intent\s+from\s+public\.billing_payment_intents[^;]+for\s+update;',
     'g'
   );
   if settlement_lock_order_count is distinct from 2::bigint then

@@ -197,6 +197,42 @@ test("014 accepts a later verified webhook for the same query-settled payment wi
   );
 });
 
+test("015 revokes direct execution of the internal semester guard from every API role", () => {
+  const sql = compactSql(
+    "supabase/migrations/202608240015_internal_function_acl_hardening.sql",
+  );
+
+  assert.match(sql, /^begin;/);
+  assert.match(
+    sql,
+    /revoke all on function public\.billing_assert_semester_plan\(uuid\) from public, anon, authenticated, service_role;/,
+  );
+  assert.doesNotMatch(sql, /grant execute[\s\S]*billing_assert_semester_plan/);
+  assert.match(sql, /commit;$/);
+});
+
+test("016 validates semester entitlements against five monthly periods and remains internal", () => {
+  const sql = compactSql(
+    "supabase/migrations/202608240016_semester_entitlement_guard_fix.sql",
+  );
+
+  assert.match(sql, /^begin;/);
+  assert.match(sql, /where code = 'pro'[\s\S]*billing_period = 'monthly'[\s\S]*is_active = false/);
+  assert.match(
+    sql,
+    /semester\.periodic_limit is distinct from monthly\.periodic_limit \* 5/,
+  );
+  assert.doesNotMatch(
+    sql,
+    /semester\.periodic_limit is distinct from free\.periodic_limit \* 5/,
+  );
+  assert.match(
+    sql,
+    /revoke all on function public\.billing_assert_semester_plan\(uuid\) from public, anon, authenticated, service_role;/,
+  );
+  assert.match(sql, /commit;$/);
+});
+
 const sqlFunction = (name: string, path = functionsPath) => {
   const sql = compactSql(path);
   const block = sql.match(
