@@ -89,6 +89,9 @@ export function inspectStageFEnvironment(
   if (!PROJECT_REF_PATTERN.test(projectRef)) {
     errors.add("STAGE_F_PROJECT_REF_INVALID");
   }
+  if (productionRefs.length === 0) {
+    errors.add("PRODUCTION_PROJECT_REFS_REQUIRED");
+  }
   if (
     productionRefs.some((ref) => !PROJECT_REF_PATTERN.test(ref))
   ) {

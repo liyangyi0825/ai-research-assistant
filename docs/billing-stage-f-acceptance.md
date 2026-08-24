@@ -57,7 +57,18 @@ npm.cmd exec -- tsx scripts/billing-stage-f-preflight.ts
 
 失败输出只包含固定错误码和非敏感计数，不包含密钥值。预检失败不得继续部署预发布环境。
 
-## 3. F1：关闭态验收
+## 3. 预发布配置模板
+
+仓库中的 `deploy/staging/` 只包含未激活模板，提交模板不等于授权执行：
+
+- `environment.example`：固定测试/生产 Project Ref、测试 UUID 和关闭态开关；所有真实密钥与运营信息值留空。获批后在服务器受控填写，并保存为 `/var/www/ai-research-assistant-staging/.env.local`，权限必须为 `600` 或 `400`。
+- `ecosystem.config.cjs`：PM2 进程固定为 `ai-research-staging`，目录固定为 `/var/www/ai-research-assistant-staging`，Next 只监听 `127.0.0.1:3001`。
+- `deploy.sh`：只接受 `codex/billing-mvp` 和干净的 tracked worktree；不拉取、不重置、不切换代码，不操作生产进程；安装依赖后必须先通过环境预检和构建，才会启动或重载预发布 PM2。
+- `nginx-staging.conf.example`：未激活的 HTTP 示例，域名固定为 `staging.iyanhub.com`，只代理到 `127.0.0.1:3001`；默认仅允许服务器本机访问，不包含 SSL、证书申请或生产配置修改。
+
+在 DNS、访问来源、SSL 和服务器变更分别获批之前，不得复制或启用 Nginx 示例。当前生产 `deploy.sh` 会同步 `main` 并重启生产进程，禁止用于 Stage F。
+
+## 4. F1：关闭态验收
 
 F1 全程保持 `BILLING_FEATURE_ENABLED=false`，所有套餐与商品保持 `is_active=false`。
 
@@ -85,7 +96,7 @@ F1 全程保持 `BILLING_FEATURE_ENABLED=false`，所有套餐与商品保持 `i
 
 F1 通过只证明“代码可以在收费关闭状态安全运行”，不证明 Mock 购买链路或真实支付已经通过预发布验收。
 
-## 4. F2：受控 Mock 全链路
+## 5. F2：受控 Mock 全链路
 
 F2 不在当前授权范围内。开始前必须另行批准以下全部动作：
 
@@ -120,7 +131,7 @@ F2 不在当前授权范围内。开始前必须另行批准以下全部动作�
 - [ ] 人工调整额度和人工开通会员必须填写原因并保持幂等。
 - [ ] 验收产生的订单、回调、退款、发票和审计数据有明确清理/保留决定。
 
-## 5. 自动化门禁
+## 6. 自动化门禁
 
 每次 Stage F 候选提交执行：
 
@@ -134,7 +145,7 @@ git diff --check
 
 数据库验收只在获得具体测试项目授权后执行。必须核对 Project Ref、001–016 迁移一致、`db push --dry-run` 无待执行项、完整 `verify.sql` 最终回滚、无合成数据残留、关键触发器启用且内部函数权限关闭。不得把测试项目授权解释为生产数据库授权。
 
-## 6. 法律、监控和依赖门禁
+## 7. 法律、监控和依赖门禁
 
 以下任何一项未完成，Stage F 只能标记为 `PARTIAL`：
 
@@ -146,7 +157,7 @@ git diff --check
 - [ ] 依赖风险已修复，或由负责人书面接受并记录缓解措施和复查日期。
 - [ ] 生产迁移前备份方式、可读性验证、迁移顺序和回滚条件已批准。
 
-## 7. 停止与回滚条件
+## 8. 停止与回滚条件
 
 出现以下任一情况立即保持或恢复 `BILLING_FEATURE_ENABLED=false`：
 
@@ -161,7 +172,7 @@ git diff --check
 
 回滚不得删除账务数据或反向执行已应用迁移。应用代码回滚后仍保持收费关闭，数据库问题采用新的前向修复迁移。
 
-## 8. 签字记录
+## 9. 签字记录
 
 | 门禁 | 结果 | 证据位置 | 审核人 | 时间 |
 | --- | --- | --- | --- | --- |

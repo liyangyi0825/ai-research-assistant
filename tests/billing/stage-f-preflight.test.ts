@@ -103,6 +103,22 @@ test("Stage F preflight binds the public Supabase URL to a non-production projec
   }
 });
 
+test("Stage F preflight requires a non-empty valid production project ref list", () => {
+  for (const productionRefs of ["", "not-a-project-ref"]) {
+    const report = inspectStageFEnvironment(
+      safeEnvironment({ BILLING_PRODUCTION_PROJECT_REFS: productionRefs }),
+    );
+    assert.equal(report.ok, false, productionRefs);
+    assert.ok(
+      report.errors.includes(
+        productionRefs === ""
+          ? "PRODUCTION_PROJECT_REFS_REQUIRED"
+          : "PRODUCTION_PROJECT_REFS_INVALID",
+      ),
+    );
+  }
+});
+
 test("Stage F preflight requires legal and Supabase server configuration", () => {
   const cases: Array<[keyof StageFEnvironment, string]> = [
     ["NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_ANON_KEY_MISSING"],
