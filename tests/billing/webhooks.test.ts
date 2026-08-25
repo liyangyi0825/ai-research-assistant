@@ -77,6 +77,57 @@ test("constraint, foreign-key, unique, protocol, and unknown database failures a
   }
 });
 
+test("webhook storage normalizes equivalent PostgreSQL timestamptz values for replay checks", async () => {
+  const row = {
+    id: "event-row-1",
+    order_id: null,
+    user_id: null,
+    order_number: settlementArgs.p_order_number,
+    provider: "MOCK",
+    provider_event_id: settlementArgs.p_provider_event_id,
+    provider_transaction_id: settlementArgs.p_provider_transaction_id,
+    request_idempotency_key: settlementArgs.p_request_idempotency_key,
+    amount_minor: settlementArgs.p_amount_minor,
+    currency: "CNY",
+    paid_at: "2026-08-25T07:44:19.356+00:00",
+    signature_valid: true,
+    status: "RECEIVED",
+    payload_summary: {
+      payload_hash: "a".repeat(64),
+      event_type: "PAYMENT.PAID",
+    },
+    error_code: null,
+  };
+  const query = {
+    insert: () => query,
+    select: () => query,
+    single: () => query,
+    then: (resolve: (value: unknown) => void) =>
+      resolve({ data: row, error: null }),
+  };
+  const repository = createWebhookRepository({
+    from: () => query as never,
+    rpc: async () => ({ data: null, error: null }),
+  });
+
+  const stored = await repository.persistEvent({
+    provider: "MOCK",
+    providerEventId: settlementArgs.p_provider_event_id,
+    orderNumber: settlementArgs.p_order_number,
+    providerTransactionId: settlementArgs.p_provider_transaction_id,
+    requestIdempotencyKey: settlementArgs.p_request_idempotency_key,
+    amountMinor: settlementArgs.p_amount_minor,
+    currency: "CNY",
+    paidAt: "2026-08-25T07:44:19.356Z",
+    signatureValid: true,
+    status: "RECEIVED",
+    payloadSummary: row.payload_summary as WebhookEventInsert["payloadSummary"],
+    errorCode: null,
+  });
+
+  assert.equal(stored.paidAt, "2026-08-25T07:44:19.356Z");
+});
+
 test("SQLSTATE classification drives retryable versus terminal webhook state", async () => {
   for (const [code, expectedStatus] of [
     ["40001", "RETRYABLE"], ["40P01", "RETRYABLE"],

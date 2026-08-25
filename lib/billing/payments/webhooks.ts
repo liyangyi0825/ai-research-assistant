@@ -242,6 +242,14 @@ function payloadSummary(value: unknown): WebhookPayloadSummary {
   };
 }
 
+function nullableTimestamp(value: unknown): string | null {
+  const timestamp = nullableString(value);
+  if (timestamp === null) return null;
+  const milliseconds = Date.parse(timestamp);
+  if (!Number.isFinite(milliseconds)) throw storageError();
+  return new Date(milliseconds).toISOString();
+}
+
 function mapWebhookEvent(value: unknown): WebhookEventRecord {
   const row = record(value);
   if (
@@ -274,7 +282,7 @@ function mapWebhookEvent(value: unknown): WebhookEventRecord {
     requestIdempotencyKey: nullableString(row.request_idempotency_key),
     amountMinor: nullableAmount(row.amount_minor),
     currency: row.currency,
-    paidAt: nullableString(row.paid_at),
+    paidAt: nullableTimestamp(row.paid_at),
     signatureValid: row.signature_valid,
     status: row.status,
     payloadSummary: payloadSummary(row.payload_summary),
