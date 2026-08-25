@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import type { BillingOrder } from "@/lib/billing/repositories";
@@ -12,6 +13,7 @@ export function PaymentResult({
   orderId: string;
   mockConfirmationAllowed: boolean;
 }) {
+  const router = useRouter();
   const [order, setOrder] = useState<BillingOrder | null>(null);
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
@@ -29,7 +31,7 @@ export function PaymentResult({
         { cache: "no-store" },
       );
       if (response.status === 401) {
-        window.location.href = "/login";
+        router.push("/login");
         return;
       }
       if (!response.ok) {
@@ -43,7 +45,7 @@ export function PaymentResult({
     } finally {
       setLoading(false);
     }
-  }, [orderId]);
+  }, [orderId, router]);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,7 +67,6 @@ export function PaymentResult({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           orderId: order.id,
-          providerTransactionId: `mock-ui-${crypto.randomUUID()}`,
         }),
       });
       if (!response.ok) {

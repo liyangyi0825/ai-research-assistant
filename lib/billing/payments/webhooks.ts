@@ -23,7 +23,7 @@ import {
   createPaymentServiceRepository,
   paymentRequestIdempotencyKey,
   type PaymentServiceAdminClient,
-  type PaymentServiceRepository,
+  type MockPaymentConfirmationRepository,
 } from "./service";
 
 export type WebhookEventStatus =
@@ -875,7 +875,7 @@ export function createPaymentWebhookPostHandler(
 }
 
 export type ConfirmMockOrderPaymentDependencies = {
-  paymentRepository?: PaymentServiceRepository;
+  paymentRepository?: MockPaymentConfirmationRepository;
   webhookRepository?: WebhookRepository;
   getConfig?: () => BillingConfig;
   getProvider?: (mode: "mock", config: BillingConfig) => PaymentProvider;
@@ -906,7 +906,6 @@ function assertMockConfirmationAllowed(
 export async function confirmMockOrderPayment(
   user: BillingUser,
   orderId: string,
-  providerTransactionId: string | null,
   dependencies: ConfirmMockOrderPaymentDependencies = {},
 ): Promise<PaymentWebhookResult> {
   const config = (dependencies.getConfig ?? getBillingConfig)();
@@ -950,7 +949,25 @@ export async function confirmMockOrderPayment(
       409,
     );
   }
-  if (!providerTransactionId?.trim()) {
+  let pendingPayment;
+  try {
+    pendingPayment = await paymentRepository.findOwnedPaymentIntent(
+      user.id,
+      order.id,
+    );
+  } catch (error) {
+    throw normalizeError(error);
+  }
+  if (
+    !pendingPayment ||
+    pendingPayment.orderNumber !== order.orderNumber ||
+    !pendingPayment.providerTransactionId?.trim() ||
+    (pendingPayment.status !== "PENDING" && pendingPayment.status !== "PAID") ||
+    pendingPayment.amountMinor !== order.amountMinor ||
+    pendingPayment.currency !== order.currency ||
+    pendingPayment.expiresAt !== order.expiresAt ||
+    !pendingPayment.paymentToken?.trim()
+  ) {
     throw new BillingError(
       "PAYMENT_NOT_FOUND",
       "The payment was not found.",
@@ -969,47 +986,33 @@ export async function confirmMockOrderPayment(
       503,
     );
   }
-  let providerPayment;
-  try {
-    providerPayment = await provider.confirmPayment({
-      orderNumber: order.orderNumber,
-      providerTransactionId,
-      amountMinor: order.amountMinor,
-      currency: order.currency,
-      expiresAt: order.expiresAt,
-      paymentToken: null,
-    });
-  } catch (cause) {
-    if (
-      cause instanceof BillingError &&
-      ((cause.code === "PAYMENT_NOT_FOUND" && cause.status === 404) ||
-        (cause.code === "INVALID_PAYMENT_STATE" && cause.status === 409) ||
-        (cause.code === "PAYMENT_EXPIRED" && cause.status === 409))
-    ) {
-      throw cause;
+  let providerPayment = null;
+  if (pendingPayment.status === "PENDING") {
+    try {
+      providerPayment = await provider.confirmPayment({
+        orderNumber: order.orderNumber,
+        providerTransactionId: pendingPayment.providerTransactionId,
+        amountMinor: order.amountMinor,
+        currency: order.currency,
+        expiresAt: order.expiresAt,
+        paymentToken: pendingPayment.paymentToken,
+      });
+    } catch (cause) {
+      if (!(cause instanceof BillingError && cause.code === "PAYMENT_NOT_FOUND")) {
+        throw cause;
+      }
     }
-    warnBillingSecurity(dependencies.logger ?? billingSecurityLogger, {
-      eventCode: "MOCK_CONFIRM_FAILED",
-      provider: "MOCK",
-      orderNumber: order.orderNumber,
-      errorCode: "PAYMENT_PROVIDER_UNAVAILABLE",
-      status: "FAILED",
-    });
-    throw new BillingError(
-      "PAYMENT_PROVIDER_UNAVAILABLE",
-      "The mock payment provider could not confirm the payment.",
-      503,
-    );
   }
   if (
-    providerPayment.orderNumber !== order.orderNumber ||
-    providerPayment.providerTransactionId !== providerTransactionId ||
-    providerPayment.status !== "PAID" ||
-    providerPayment.amountMinor !== order.amountMinor ||
-    providerPayment.currency !== order.currency ||
-    providerPayment.expiresAt !== order.expiresAt ||
-    !providerPayment.paymentToken?.trim() ||
-    providerPayment.paidAt === null
+    providerPayment &&
+    (providerPayment.orderNumber !== pendingPayment.orderNumber ||
+      providerPayment.providerTransactionId !== pendingPayment.providerTransactionId ||
+      providerPayment.status !== "PAID" ||
+      providerPayment.amountMinor !== pendingPayment.amountMinor ||
+      providerPayment.currency !== pendingPayment.currency ||
+      providerPayment.paymentToken !== pendingPayment.paymentToken ||
+      providerPayment.expiresAt !== pendingPayment.expiresAt ||
+      !providerPayment.paidAt)
   ) {
     throw new BillingError(
       "PAYMENT_PROVIDER_INVALID_RESPONSE",
@@ -1017,25 +1020,29 @@ export async function confirmMockOrderPayment(
       503,
     );
   }
+  const paidAt =
+    pendingPayment.paidAt ??
+    providerPayment?.paidAt ??
+    (dependencies.now ?? (() => new Date()))().toISOString();
   let storedPayment;
   try {
     storedPayment = await paymentRepository.claimMockPaymentConfirmation({
       userId: user.id,
       orderId: order.id,
-      providerTransactionId,
-      paidAt: providerPayment.paidAt,
+      providerTransactionId: pendingPayment.providerTransactionId,
+      paidAt,
     });
   } catch (error) {
     throw normalizeError(error);
   }
   if (
-    storedPayment.providerTransactionId !== providerPayment.providerTransactionId ||
-    storedPayment.status !== providerPayment.status ||
-    storedPayment.amountMinor !== providerPayment.amountMinor ||
-    storedPayment.currency !== providerPayment.currency ||
-    storedPayment.paymentToken !== providerPayment.paymentToken ||
-    storedPayment.expiresAt !== providerPayment.expiresAt ||
-    storedPayment.paidAt !== providerPayment.paidAt
+    storedPayment.providerTransactionId !== pendingPayment.providerTransactionId ||
+    storedPayment.status !== "PAID" ||
+    storedPayment.amountMinor !== pendingPayment.amountMinor ||
+    storedPayment.currency !== pendingPayment.currency ||
+    storedPayment.paymentToken !== pendingPayment.paymentToken ||
+    storedPayment.expiresAt !== pendingPayment.expiresAt ||
+    storedPayment.paidAt !== paidAt
   ) {
     throw new BillingError(
       "PAYMENT_PROVIDER_INVALID_RESPONSE",
@@ -1058,11 +1065,10 @@ type MockConfirmHandlerDependencies = {
   confirmPayment: (
     user: BillingUser,
     orderId: string,
-    providerTransactionId: string,
   ) => Promise<PaymentWebhookResult>;
 };
 
-const MOCK_CONFIRM_KEYS = new Set(["orderId", "providerTransactionId"]);
+const MOCK_CONFIRM_KEYS = new Set(["orderId"]);
 
 async function parseMockConfirmBody(request: Request) {
   let value: unknown;
@@ -1082,9 +1088,7 @@ async function parseMockConfirmBody(request: Request) {
   if (
     Object.keys(body).some((key) => !MOCK_CONFIRM_KEYS.has(key)) ||
     typeof body.orderId !== "string" ||
-    !body.orderId.trim() ||
-    typeof body.providerTransactionId !== "string" ||
-    !body.providerTransactionId.trim()
+    !body.orderId.trim()
   ) {
     throw new BillingError(
       "INVALID_MOCK_CONFIRM_BODY",
@@ -1094,7 +1098,6 @@ async function parseMockConfirmBody(request: Request) {
   }
   return {
     orderId: body.orderId.trim(),
-    providerTransactionId: body.providerTransactionId.trim(),
   };
 }
 
@@ -1116,7 +1119,6 @@ export function createMockConfirmPostHandler(
       const result = await dependencies.confirmPayment(
         user,
         body.orderId,
-        body.providerTransactionId,
       );
       return Response.json({ webhook: result });
     } catch (error) {

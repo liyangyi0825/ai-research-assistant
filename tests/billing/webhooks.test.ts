@@ -11,7 +11,7 @@ import { createBillingSecurityLogger } from "../../lib/billing/security-logger";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
 import type {
   PaymentOrderSnapshot,
-  PaymentServiceRepository,
+  MockPaymentConfirmationRepository,
 } from "../../lib/billing/payments/service";
 import {
   confirmMockOrderPayment,
@@ -1076,13 +1076,13 @@ test("Mock confirmation creates a stable signed callback and settles only throug
   const result = await confirmMockOrderPayment(
     { id: "user-1", email: "student@example.com", isAdmin: false },
     "order-id-1",
-    payment.providerTransactionId,
     {
       paymentRepository: {
         findOwnedOrder: async (userId: string, orderId: string) =>
           userId === "user-1" && orderId === "order-id-1"
             ? paymentOrder
             : null,
+        findOwnedPaymentIntent: async () => payment,
         claimMockPaymentConfirmation: async () => ({
           orderNumber: payment.orderNumber,
           providerTransactionId: payment.providerTransactionId,
@@ -1093,7 +1093,7 @@ test("Mock confirmation creates a stable signed callback and settles only throug
           expiresAt: payment.expiresAt,
           paidAt: now.toISOString(),
         }),
-      } as unknown as PaymentServiceRepository,
+      } as unknown as MockPaymentConfirmationRepository,
       webhookRepository,
       getConfig: () => config,
       getProvider: () => creatingProvider,
@@ -1108,7 +1108,59 @@ test("Mock confirmation creates a stable signed callback and settles only throug
   assert.equal(JSON.stringify(result).includes("rawBody"), false);
 });
 
-test("Mock confirm route requires an authenticated admin or allowlisted owner and rejects PAID input", async () => {
+test("Mock confirmation uses the persisted payment intent after provider memory is lost", async () => {
+  const creatingProvider = mockProvider();
+  const payment = await creatingProvider.createPayment({
+    orderNumber: settlementOrder().orderNumber,
+    description: "Settlement Membership",
+    amountMinor: 1_990,
+    currency: "CNY",
+    expiresAt: settlementOrder().expiresAt,
+    idempotencyKey: `billing-payment:MOCK:${settlementOrder().orderNumber}`,
+  });
+  const webhookRepository = new MemoryWebhookRepository();
+  const paymentOrder: PaymentOrderSnapshot = {
+    id: "order-id-1",
+    userId: "user-1",
+    orderNumber: settlementOrder().orderNumber,
+    provider: "MOCK",
+    status: "PENDING",
+    amountMinor: 1_990,
+    currency: "CNY",
+    expiresAt: settlementOrder().expiresAt,
+    snapshotProductName: "Settlement Membership",
+  };
+  const storedPendingPayment = { ...payment, status: "PENDING" as const, paidAt: null };
+
+  const result = await confirmMockOrderPayment(
+    { id: "user-1", email: "student@example.com", isAdmin: false },
+    "order-id-1",
+    {
+      paymentRepository: {
+        findOwnedOrder: async () => paymentOrder,
+        findOwnedPaymentIntent: async () => storedPendingPayment,
+        claimMockPaymentConfirmation: async ({ providerTransactionId, paidAt }: {
+          providerTransactionId: string;
+          paidAt: string;
+        }) => ({
+          ...storedPendingPayment,
+          providerTransactionId,
+          status: "PAID" as const,
+          paidAt,
+        }),
+      } as unknown as MockPaymentConfirmationRepository,
+      webhookRepository,
+      getConfig: () => config,
+      getProvider: () => mockProvider(),
+      now: () => now,
+    },
+  );
+
+  assert.equal(result.status, "PROCESSED");
+  assert.equal(webhookRepository.grants, 1);
+});
+
+test("Mock confirm route accepts only an order ID and rejects client-supplied payment fields", async () => {
   const user: BillingUser = {
     id: "user-1",
     email: "student@example.com",
@@ -1119,7 +1171,8 @@ test("Mock confirm route requires an authenticated admin or allowlisted owner an
     requireActor: async () => user,
     getConfig: () => config,
     assertAccess: () => undefined,
-    confirmPayment: async () => {
+    confirmPayment: async (_user, orderId) => {
+      assert.equal(orderId, "order-id-1");
       confirmations += 1;
       return {
         status: "PROCESSED",
@@ -1135,7 +1188,6 @@ test("Mock confirm route requires an authenticated admin or allowlisted owner an
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         orderId: "order-id-1",
-        providerTransactionId: "mock-tx-1",
       }),
     }),
   );
@@ -1148,8 +1200,7 @@ test("Mock confirm route requires an authenticated admin or allowlisted owner an
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         orderId: "order-id-1",
-        providerTransactionId: "mock-tx-1",
-        status: "PAID",
+        providerTransactionId: "forged-client-transaction",
       }),
     }),
   );
@@ -1170,7 +1221,6 @@ test("Mock confirm route requires an authenticated admin or allowlisted owner an
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         orderId: "order-id-1",
-        providerTransactionId: "mock-tx-1",
       }),
     }),
   );
@@ -1213,7 +1263,6 @@ test("Mock confirm route elevates an authenticated database administrator before
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         orderId: "order-id-1",
-        providerTransactionId: "mock-tx-1",
       }),
     }),
   );

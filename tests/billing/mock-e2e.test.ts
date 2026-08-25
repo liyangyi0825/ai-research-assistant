@@ -16,7 +16,7 @@ import { createOrder, createOrderPostHandler } from "../../lib/billing/orders";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
 import {
   createOrderPayment,
-  type PaymentServiceRepository,
+  type MockPaymentConfirmationRepository,
 } from "../../lib/billing/payments/service";
 import { confirmMockOrderPayment } from "../../lib/billing/payments/webhooks";
 import { createListPublicProductsHandler } from "../../lib/billing/products";
@@ -44,14 +44,14 @@ class CountingMockPaymentProvider extends MockPaymentProvider {
   refundCalls = 0;
   failNextConfirmation = false;
 
-  override async confirmPayment(
-    input: Parameters<MockPaymentProvider["confirmPayment"]>[0],
+  override async createPaidPaymentWebhook(
+    input: Parameters<MockPaymentProvider["createPaidPaymentWebhook"]>[0],
   ) {
     if (this.failNextConfirmation) {
       this.failNextConfirmation = false;
       throw new BillingError("MOCK_CONFIRM_FAILED", "Mock confirmation failed.", 503);
     }
-    return super.confirmPayment(input);
+    return super.createPaidPaymentWebhook(input);
   }
 
   override async refundPayment(input: Parameters<MockPaymentProvider["refundPayment"]>[0]) {
@@ -102,7 +102,6 @@ async function purchase(
   const callback = await confirmMockOrderPayment(
     { id: TEST_USER_ID, email: null, isAdmin: false },
     order.id,
-    payment.providerTransactionId,
     {
       paymentRepository: state.paymentRepository,
       webhookRepository: state.webhookRepository,
@@ -154,12 +153,11 @@ test("unused Pro Semester completes the real mock purchase and automatic refund 
 test("Pro Semester uses backend price, grants once, settles usage, releases failures, and blocks automatic refund after use", async () => {
   const state = new MockBillingState();
   const provider = countingProvider();
-  const { order, payment } = await purchase(state, provider, SEMESTER_PRODUCT.id);
+  const { order } = await purchase(state, provider, SEMESTER_PRODUCT.id);
 
   const replay = await confirmMockOrderPayment(
     { id: TEST_USER_ID, email: null, isAdmin: false },
     order.id,
-    payment.providerTransactionId,
     {
       paymentRepository: state.paymentRepository,
       webhookRepository: state.webhookRepository,
@@ -224,12 +222,11 @@ test("Pro Semester uses backend price, grants once, settles usage, releases fail
 test("Credit Pack 100 grants exactly 100 credits once and remains manual-only for refunds", async () => {
   const state = new MockBillingState();
   const provider = countingProvider();
-  const { order, payment } = await purchase(state, provider, CREDIT_PRODUCT.id);
+  const { order } = await purchase(state, provider, CREDIT_PRODUCT.id);
 
   await confirmMockOrderPayment(
     { id: TEST_USER_ID, email: null, isAdmin: false },
     order.id,
-    payment.providerTransactionId,
     {
       paymentRepository: state.paymentRepository,
       webhookRepository: state.webhookRepository,
@@ -265,7 +262,7 @@ test("Credit Pack 100 grants exactly 100 credits once and remains manual-only fo
   assert.deepEqual(state.creditAccounts.get(TEST_USER_ID), { available: 100, reserved: 0 });
 });
 
-test("a transient provider confirmation failure never settles and is safely retryable", async () => {
+test("a transient mock webhook failure never settles and is safely retryable", async () => {
   const state = new MockBillingState();
   const provider = countingProvider();
   provider.failNextConfirmation = true;
@@ -273,14 +270,14 @@ test("a transient provider confirmation failure never settles and is safely retr
     { userId: TEST_USER_ID, productId: SEMESTER_PRODUCT.id, provider: "mock", acceptedAgreementVersion: BILLING_AGREEMENT_VERSION },
     { repository: state.billingRepository, now: () => TEST_NOW, createOrderNumber: () => "BILL-E2E-RETRY", paymentMode: "mock" },
   );
-  const payment = await createOrderPayment(TEST_USER_ID, order.id, {
+  await createOrderPayment(TEST_USER_ID, order.id, {
     repository: state.paymentRepository,
     now: () => TEST_NOW,
     getConfig: () => TEST_CONFIG,
     getProvider: () => provider,
   });
   const confirm = () => confirmMockOrderPayment(
-    { id: TEST_USER_ID, email: null, isAdmin: false }, order.id, payment.providerTransactionId,
+    { id: TEST_USER_ID, email: null, isAdmin: false }, order.id,
     { paymentRepository: state.paymentRepository, webhookRepository: state.webhookRepository, getConfig: () => TEST_CONFIG, getProvider: () => provider, now: () => TEST_NOW },
   );
 
@@ -288,10 +285,10 @@ test("a transient provider confirmation failure never settles and is safely retr
     confirm,
     (error: unknown) =>
       error instanceof BillingError &&
-      error.code === "PAYMENT_PROVIDER_UNAVAILABLE" &&
+      error.code === "MOCK_CONFIRM_FAILED" &&
       error.status === 503,
   );
-  assert.equal(state.paymentIntents.get(order.id)?.status, "PENDING");
+  assert.equal(state.paymentIntents.get(order.id)?.status, "PAID");
   assert.equal(state.orders[0]?.status, "PENDING");
   assert.equal(state.webhookEvents.size, 0);
   assert.equal(state.subscriptions.length, 0);
@@ -299,7 +296,7 @@ test("a transient provider confirmation failure never settles and is safely retr
   assert.equal(state.subscriptions.length, 1);
 });
 
-test("a database claim failure leaves provider-paid state recoverable without granting before retry", async () => {
+test("a database claim failure remains recoverable without granting before retry", async () => {
   const state = new MockBillingState();
   const provider = countingProvider();
   const order = await createOrder(
@@ -313,7 +310,7 @@ test("a database claim failure leaves provider-paid state recoverable without gr
     getProvider: () => provider,
   });
   let failClaim = true;
-  const paymentRepository: PaymentServiceRepository = {
+  const paymentRepository: MockPaymentConfirmationRepository = {
     ...state.paymentRepository,
     async claimMockPaymentConfirmation(input) {
       if (failClaim) {
@@ -324,7 +321,7 @@ test("a database claim failure leaves provider-paid state recoverable without gr
     },
   };
   const confirm = () => confirmMockOrderPayment(
-    { id: TEST_USER_ID, email: null, isAdmin: false }, order.id, payment.providerTransactionId,
+    { id: TEST_USER_ID, email: null, isAdmin: false }, order.id,
     { paymentRepository, webhookRepository: state.webhookRepository, getConfig: () => TEST_CONFIG, getProvider: () => provider, now: () => TEST_NOW },
   );
 

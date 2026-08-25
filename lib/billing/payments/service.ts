@@ -54,11 +54,14 @@ export type PaymentServiceRepository = {
   }): Promise<StoredPaymentResult>;
 };
 
-export type PaymentQueryRepository = PaymentServiceRepository & {
+export type MockPaymentConfirmationRepository = PaymentServiceRepository & {
   findOwnedPaymentIntent(
     userId: string,
     orderId: string,
   ): Promise<StoredPaymentResult | null>;
+};
+
+export type PaymentQueryRepository = MockPaymentConfirmationRepository & {
   bindVerifiedPaymentQuery(
     input: BindVerifiedPaymentQueryInput,
   ): Promise<StoredPaymentResult>;

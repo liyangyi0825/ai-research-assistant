@@ -16,7 +16,7 @@ import type {
   ClaimPaymentIntentInput,
   CompletePaymentIntentInput,
   PaymentOrderSnapshot,
-  PaymentServiceRepository,
+  MockPaymentConfirmationRepository,
   StoredPaymentResult,
 } from "../../../lib/billing/payments/service";
 import type {
@@ -222,10 +222,15 @@ export class MockBillingState {
     findUserOrder: async (userId, orderId) => structuredClone(this.orders.find((item) => item.userId === userId && item.id === orderId) ?? null),
   };
 
-  readonly paymentRepository: PaymentServiceRepository = {
+  readonly paymentRepository: MockPaymentConfirmationRepository = {
     findOwnedOrder: async (userId, orderId): Promise<PaymentOrderSnapshot | null> => {
       const order = this.orders.find((item) => item.userId === userId && item.id === orderId);
       return order ? { id: order.id, userId: order.userId, orderNumber: order.orderNumber, provider: order.provider, status: order.status, amountMinor: order.amountMinor, currency: order.currency, expiresAt: order.expiresAt, snapshotProductName: order.snapshotProductName } : null;
+    },
+    findOwnedPaymentIntent: async (userId, orderId) => {
+      const order = this.orders.find((item) => item.id === orderId && item.userId === userId);
+      const intent = this.paymentIntents.get(orderId);
+      return order && intent ? structuredClone(intent) : null;
     },
     claimPaymentIntent: async (input: ClaimPaymentIntentInput) => {
       const stored = this.paymentIntents.get(input.orderId);
