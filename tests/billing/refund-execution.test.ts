@@ -167,6 +167,56 @@ test("an approved full refund uses the locked backend payment and completes idem
   );
 });
 
+test("a mock refund completes from the durable claim when provider memory is empty", async () => {
+  const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
+  const executeApprovedRefund = refundModule.executeApprovedRefund!;
+  const claim: Claim = {
+    status: "CLAIMED",
+    refundId: "refund-durable-mock",
+    requestId: "request-durable-mock",
+    orderId: "order-durable-mock",
+    paymentId: "payment-durable-mock",
+    provider: "MOCK",
+    providerTransactionId: "mock_tx_durable",
+    amountMinor: 7_900,
+    currency: "CNY",
+    idempotencyKey: "billing-refund:request-durable-mock",
+  };
+  const completed: RefundResult[] = [];
+
+  const dependencies = {
+    repository: {
+      async claimApprovedRefund() { return claim; },
+      async completeRefund(input: {
+        refundId: string;
+        claimToken: string;
+        result: RefundResult;
+      }) {
+        completed.push(input.result);
+        return { status: "SUCCEEDED" as const, refund: input.result };
+      },
+      async failRefundClaim() {
+        assert.fail("a durable mock refund must not release its claim");
+      },
+    },
+    getConfig: () => config,
+    getProvider: () => new MockPaymentProvider({ secret: "empty-provider" }),
+    now: () => now,
+    createClaimToken: () => "claim-durable-mock",
+  };
+  const result = await executeApprovedRefund(claim.requestId, dependencies);
+  const replay = await executeApprovedRefund(claim.requestId, dependencies);
+
+  assert.equal(result.status, "SUCCEEDED");
+  assert.deepEqual(result.refund, completed[0]);
+  assert.deepEqual(replay.refund, result.refund);
+  assert.equal(completed.length, 2);
+  assert.equal(result.refund.providerTransactionId, claim.providerTransactionId);
+  assert.equal(result.refund.refundedAmountMinor, claim.amountMinor);
+  assert.equal(result.refund.currency, claim.currency);
+  assert.match(result.refund.providerRefundId, /^mock_refund_[a-f0-9]{64}$/);
+});
+
 test("a provider success followed by database failure retries with the same backend idempotency key", async () => {
   const refundModule = (await import("../../lib/billing/refunds")) as RefundModule;
   assert.equal(typeof refundModule.executeApprovedRefund, "function");

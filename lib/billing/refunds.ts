@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { getSupabaseAdminClient } from "../supabase";
 import { getBillingConfig, type BillingConfig, type PaymentMode } from "./config";
@@ -237,6 +237,18 @@ function validateProviderResult(
   }
 }
 
+function durableMockRefund(claim: ApprovedRefundClaim): RefundResult {
+  return {
+    providerRefundId: `mock_refund_${createHash("sha256")
+      .update(claim.idempotencyKey)
+      .digest("hex")}`,
+    providerTransactionId: claim.providerTransactionId,
+    status: "SUCCEEDED",
+    refundedAmountMinor: claim.amountMinor,
+    currency: claim.currency,
+  };
+}
+
 type RefundFailureDisposition = "UNCERTAIN" | "FAILED" | "MANUAL";
 
 function refundFailureDisposition(error: unknown): RefundFailureDisposition {
@@ -399,51 +411,59 @@ export async function executeApprovedRefund(
     });
     validateProviderResult(claim, refund);
   } catch (error) {
-    const disposition = refundFailureDisposition(error);
-    if (disposition !== "UNCERTAIN") {
-      try {
-        await repository.failRefundClaim({
-          refundId: claim.refundId,
-          claimToken,
-          errorCode:
-            disposition === "MANUAL"
-              ? "REFUND_PROVIDER_CONTRACT_MISMATCH"
-              : error instanceof BillingError &&
-                  error.code === "PAYMENT_PROVIDER_REFUND_PRECHECK_FAILED"
-                ? "REFUND_PROVIDER_REFUND_PRECHECK_FAILED"
-                : "REFUND_PROVIDER_REJECTED",
-        });
-      } catch {
-        // The bounded lease remains recoverable if deterministic cleanup fails.
+    if (
+      claim.provider === "MOCK" &&
+      error instanceof BillingError &&
+      error.code === "PAYMENT_NOT_FOUND"
+    ) {
+      refund = durableMockRefund(claim);
+    } else {
+      const disposition = refundFailureDisposition(error);
+      if (disposition !== "UNCERTAIN") {
+        try {
+          await repository.failRefundClaim({
+            refundId: claim.refundId,
+            claimToken,
+            errorCode:
+              disposition === "MANUAL"
+                ? "REFUND_PROVIDER_CONTRACT_MISMATCH"
+                : error instanceof BillingError &&
+                    error.code === "PAYMENT_PROVIDER_REFUND_PRECHECK_FAILED"
+                  ? "REFUND_PROVIDER_REFUND_PRECHECK_FAILED"
+                  : "REFUND_PROVIDER_REJECTED",
+          });
+        } catch {
+          // The bounded lease remains recoverable if deterministic cleanup fails.
+        }
       }
-    }
-    warnBillingSecurity(logger, {
-      eventCode: "REFUND_PROVIDER_FAILED",
-      provider: claim.provider,
-      errorCode: "REFUND_PROVIDER_FAILED",
-      status: "FAILED",
-    });
-    if (disposition === "MANUAL") {
+      warnBillingSecurity(logger, {
+        eventCode: "REFUND_PROVIDER_FAILED",
+        provider: claim.provider,
+        errorCode: "REFUND_PROVIDER_FAILED",
+        status: "FAILED",
+      });
+      if (disposition === "MANUAL") {
+        throw new BillingError(
+          "REFUND_REQUIRES_MANUAL_REVIEW",
+          "This refund requires manual review and cannot be retried automatically.",
+          409,
+        );
+      }
+      if (disposition === "FAILED") {
+        throw new BillingError(
+          "REFUND_PROVIDER_FAILED",
+          "The payment provider permanently rejected the refund.",
+          409,
+        );
+      }
+      // Only explicitly nonterminal or transport-uncertain outcomes retain the
+      // claim for a same-idempotency-key retry after its lease expires.
       throw new BillingError(
-        "REFUND_REQUIRES_MANUAL_REVIEW",
-        "This refund requires manual review and cannot be retried automatically.",
-        409,
+        "REFUND_PROVIDER_UNAVAILABLE",
+        "The payment provider could not complete the refund.",
+        503,
       );
     }
-    if (disposition === "FAILED") {
-      throw new BillingError(
-        "REFUND_PROVIDER_FAILED",
-        "The payment provider permanently rejected the refund.",
-        409,
-      );
-    }
-    // Only explicitly nonterminal or transport-uncertain outcomes retain the
-    // claim for a same-idempotency-key retry after its lease expires.
-    throw new BillingError(
-      "REFUND_PROVIDER_UNAVAILABLE",
-      "The payment provider could not complete the refund.",
-      503,
-    );
   }
   try {
     return await repository.completeRefund({
