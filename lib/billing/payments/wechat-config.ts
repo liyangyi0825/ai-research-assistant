@@ -149,7 +149,7 @@ function verifier(env: WechatEnvironment): WechatVerifierConfig {
         !publicKeyId ? "WECHAT_PAY_PUBLIC_KEY_ID" : "WECHAT_PAY_PUBLIC_KEY",
       ]);
     }
-    if (!/^PUB_KEY_ID_\d{32}$/.test(publicKeyId)) {
+    if (!/^PUB_KEY_ID_\d{32,64}$/.test(publicKeyId)) {
       throw configurationError("PROVIDER_NOT_CONFIGURED", [
         "WECHAT_PAY_PUBLIC_KEY_ID",
       ]);

@@ -68,6 +68,17 @@ test("WeChat configuration accepts one public-key verifier and a 32-byte API v3 
   assert.equal(config.verifier.keyId, "PUB_KEY_ID_00000000000000000000000000000001");
 });
 
+test("WeChat configuration accepts a 34-digit payment public key ID", () => {
+  const publicKeyId = `PUB_KEY_ID_${"1".repeat(34)}`;
+  const config = loadWechatPayConfig({
+    ...validWechatEnvironment(),
+    WECHAT_PAY_PUBLIC_KEY_ID: publicKeyId,
+  });
+
+  assert.equal(config.verifier.mode, "PUBLIC_KEY");
+  assert.equal(config.verifier.keyId, publicKeyId);
+});
+
 test("WeChat API v3 key validates and preserves the raw 32 UTF-8 bytes", () => {
   const exactMultibyteKey = `${"界".repeat(10)}xx`;
   const config = loadWechatPayConfig({
@@ -158,6 +169,8 @@ test("WeChat startup credentials require RSA-2048 keys, strict identifiers, and 
     { WECHAT_PAY_APP_ID: "app-1" },
     { WECHAT_PAY_CERT_SERIAL_NO: "serial-with-hyphens" },
     { WECHAT_PAY_PUBLIC_KEY_ID: "PUB_KEY_ID_TEST" },
+    { WECHAT_PAY_PUBLIC_KEY_ID: "1".repeat(34) },
+    { WECHAT_PAY_PUBLIC_KEY_ID: `PUB_KEY_ID_${"1".repeat(65)}` },
     {
       WECHAT_PAY_PRIVATE_KEY: weakRsa.privateKey
         .export({ type: "pkcs8", format: "pem" })
