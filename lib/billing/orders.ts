@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 import {
   assertBillingAccess,
@@ -39,7 +39,7 @@ export type CreateOrderDependencies = {
 };
 
 function createOrderNumber(): string {
-  return `BILL-${randomUUID().replaceAll("-", "").toUpperCase()}`;
+  return `BILL${randomBytes(14).toString("hex").toUpperCase()}`;
 }
 
 function normalizeProvider(value: unknown): BillingProvider {

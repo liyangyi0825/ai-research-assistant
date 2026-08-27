@@ -425,14 +425,16 @@ test("createOrder expires pending orders after thirty minutes", async () => {
   assert.equal(order.expiresAt, "2026-07-22T02:30:00.000Z");
 });
 
-test("createOrder generates a unique order number for each order", async () => {
+test("createOrder generates unique WeChat-compatible 32-character order numbers", async () => {
   const repository = new InMemoryBillingRepository();
 
   const first = await createOrder(validInput(), dependencies(repository));
   const second = await createOrder(validInput(), dependencies(repository));
 
-  assert.match(first.orderNumber, /^BILL-[A-F0-9]{32}$/);
-  assert.match(second.orderNumber, /^BILL-[A-F0-9]{32}$/);
+  assert.match(first.orderNumber, /^BILL[A-F0-9]{28}$/);
+  assert.equal(first.orderNumber.length, 32);
+  assert.match(second.orderNumber, /^BILL[A-F0-9]{28}$/);
+  assert.equal(second.orderNumber.length, 32);
   assert.notEqual(first.orderNumber, second.orderNumber);
 });
 
