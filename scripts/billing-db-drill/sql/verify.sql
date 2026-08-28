@@ -22,7 +22,8 @@ declare
     '202608180013',
     '202608210014',
     '202608240015',
-    '202608240016'
+    '202608240016',
+    '202608280017'
   ];
   expected_tables constant text[] := array[
     'billing_plans',
@@ -682,6 +683,9 @@ declare
     'public.billing_claim_approved_refund(uuid,uuid,timestamptz)',
     'public.billing_complete_refund(uuid,uuid,text,text,bigint,text,jsonb)',
     'public.billing_fail_refund_claim(uuid,uuid,text)',
+    'public.billing_claim_approved_refund_v12(uuid,uuid,timestamptz)',
+    'public.billing_complete_refund_v12(uuid,uuid,text,text,bigint,text,jsonb)',
+    'public.billing_fail_refund_claim_v12(uuid,uuid,text)',
     'public.billing_admin_upsert_plan(uuid,uuid,text,text,text,text,boolean,text,text)',
     'public.billing_admin_upsert_product(uuid,uuid,uuid,text,text,text,text,bigint,text,integer,bigint,text,boolean,text,text)',
     'public.billing_reject_audit_log_mutation()'
@@ -803,7 +807,10 @@ declare
     'public.billing_assert_semester_plan(uuid)',
     'public.billing_assert_refund_reversible(uuid)',
     'public.billing_guard_refunding_quota_usage()',
-    'public.billing_guard_refund_execution_management()'
+    'public.billing_guard_refund_execution_management()',
+    'public.billing_claim_approved_refund_v12(uuid,uuid,timestamptz)',
+    'public.billing_complete_refund_v12(uuid,uuid,text,text,bigint,text,jsonb)',
+    'public.billing_fail_refund_claim_v12(uuid,uuid,text)'
   ];
   unsafe_functions text[];
 begin

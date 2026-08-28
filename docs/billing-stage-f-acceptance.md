@@ -143,7 +143,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/fixtures/run-next-
 git diff --check
 ```
 
-数据库验收只在获得具体测试项目授权后执行。必须核对 Project Ref、001–016 迁移一致、`db push --dry-run` 无待执行项、完整 `verify.sql` 最终回滚、无合成数据残留、关键触发器启用且内部函数权限关闭。不得把测试项目授权解释为生产数据库授权。
+数据库验收只在获得具体测试项目授权后执行。必须核对 Project Ref、001–017 迁移一致、`db push --dry-run` 无待执行项、完整 `verify.sql` 最终回滚、无合成数据残留、关键触发器启用且内部函数权限关闭。不得把测试项目授权解释为生产数据库授权。
 
 ## 7. 法律、监控和依赖门禁
 

@@ -43,6 +43,7 @@ const expectedBillingMigrationFiles = [
   "202608210014_wechat_native_payment_intents.sql",
   "202608240015_internal_function_acl_hardening.sql",
   "202608240016_semester_entitlement_guard_fix.sql",
+  "202608280017_billing_credit_pack_refund.sql",
 ] as const;
 const expectedBillingMigrationVersions = expectedBillingMigrationFiles.map(
   (name) => name.slice(0, 12),
@@ -940,7 +941,7 @@ test("manifest emits only the six safe top-level sections", async () => {
   ]);
 });
 
-test("manifest reports and verification requires the exact 001-016 migration history", async () => {
+test("manifest reports and verification requires the exact 001-017 migration history", async () => {
   const [manifest, verify] = await Promise.all([
     readDrillSql("manifest.sql"),
     readDrillSql("verify.sql"),
@@ -1387,7 +1388,7 @@ test("preflight plan fails closed when restore billing relations or migration hi
   assert.equal(emptyCheck.targetRef, restoreRef);
 });
 
-test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 016 separately", () => {
+test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 017 separately", () => {
   const plan = buildUpgradePlan(planInput());
   assert.deepEqual(plan.map(({ operation }) => operation), [
     "prepare-upgrade-009-workspace",
@@ -1417,6 +1418,9 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
     "copy-migration-016",
     "verify-upgrade-workspace-ref-before-016",
     "push-migration-016",
+    "copy-migration-017",
+    "verify-upgrade-workspace-ref-before-017",
+    "push-migration-017",
     "verify-upgraded-restore",
   ]);
   assert.deepEqual(plan[0].args, ["copy-migrations", "001-009", "upgrade-workspace"]);
@@ -1431,6 +1435,7 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.deepEqual(plan[18].args, ["copy-migrations", "014", "upgrade-workspace"]);
   assert.deepEqual(plan[21].args, ["copy-migrations", "015", "upgrade-workspace"]);
   assert.deepEqual(plan[24].args, ["copy-migrations", "016", "upgrade-workspace"]);
+  assert.deepEqual(plan[27].args, ["copy-migrations", "017", "upgrade-workspace"]);
   assert.deepEqual(plan[1].args, ["link", "--project-ref", restoreRef]);
   assert.deepEqual(plan[3].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[4].args.slice(0, 4), ["-X", "-v", "ON_ERROR_STOP=1", "-v"]);
@@ -1442,10 +1447,11 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.deepEqual(plan[20].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[23].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[26].args, ["db", "push", "--linked"]);
+  assert.deepEqual(plan[29].args, ["db", "push", "--linked"]);
   assert.ok(plan.every(({ targetRef }) => targetRef !== BILLING_SOURCE_PROJECT_REF));
 });
 
-test("migration copy ranges distinguish 010 through 016 and reject unknown or incomplete sets", () => {
+test("migration copy ranges distinguish 010 through 017 and reject unknown or incomplete sets", () => {
   assert.deepEqual(
     selectMigrationFiles("001-009", expectedBillingMigrationFiles),
     expectedBillingMigrationFiles.slice(0, 9),
@@ -1478,6 +1484,10 @@ test("migration copy ranges distinguish 010 through 016 and reject unknown or in
     selectMigrationFiles("016", expectedBillingMigrationFiles),
     [expectedBillingMigrationFiles[15]],
   );
+  assert.deepEqual(
+    selectMigrationFiles("017", expectedBillingMigrationFiles),
+    [expectedBillingMigrationFiles[16]],
+  );
   assert.throws(
     () => selectMigrationFiles("011", expectedBillingMigrationFiles.slice(0, 10)),
     /MIGRATION_SET_INVALID/,
@@ -1500,6 +1510,10 @@ test("migration copy ranges distinguish 010 through 016 and reject unknown or in
   );
   assert.throws(
     () => selectMigrationFiles("016", expectedBillingMigrationFiles.slice(0, 15)),
+    /MIGRATION_SET_INVALID/,
+  );
+  assert.throws(
+    () => selectMigrationFiles("017", expectedBillingMigrationFiles.slice(0, 16)),
     /MIGRATION_SET_INVALID/,
   );
 });

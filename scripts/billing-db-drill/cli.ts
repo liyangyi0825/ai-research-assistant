@@ -96,6 +96,7 @@ const BILLING_MIGRATION_FILES_BY_RANGE = {
   "014": ["202608210014_wechat_native_payment_intents.sql"],
   "015": ["202608240015_internal_function_acl_hardening.sql"],
   "016": ["202608240016_semester_entitlement_guard_fix.sql"],
+  "017": ["202608280017_billing_credit_pack_refund.sql"],
 } as const;
 const BILLING_MIGRATION_VERSIONS = Object.values(BILLING_MIGRATION_FILES_BY_RANGE)
   .flat()
@@ -258,6 +259,11 @@ export function buildUpgradePlan(input: PlanInput): readonly PlannedCommand[] {
     planned("push-migration-016", "supabase", ["db", "push", "--linked"], {
       cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
     }),
+    planned("copy-migration-017", INTERNAL_EXECUTABLE, ["copy-migrations", "017", "upgrade-workspace"], { cwd: input.runDirectory }),
+    linkedRefCheck("verify-upgrade-workspace-ref-before-017", workspace, input.restoreRef, true),
+    planned("push-migration-017", "supabase", ["db", "push", "--linked"], {
+      cwd: workspace, env: linkEnv, targetRef: input.restoreRef,
+    }),
     planned("verify-upgraded-restore", "psql", ["-X", "-v", "ON_ERROR_STOP=1", "-f", resolve("scripts/billing-db-drill/sql/verify.sql")], {
       env: restoreEnv, targetRef: input.restoreRef,
     }),
@@ -418,6 +424,9 @@ export function selectMigrationFiles(
       break;
     case "016":
       expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["016"];
+      break;
+    case "017":
+      expectedNames = BILLING_MIGRATION_FILES_BY_RANGE["017"];
       break;
     default:
       fail("MIGRATION_SET_INVALID");

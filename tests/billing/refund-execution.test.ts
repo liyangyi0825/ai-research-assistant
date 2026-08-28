@@ -851,6 +851,42 @@ test("database types expose the durable refund lease and service-role RPC contra
   assert.match(source, /BillingRefundRow = \{[\s\S]*execution_managed: boolean;/i);
 });
 
+test("the credit-pack refund forward migration freezes, reverses, and releases unused credits idempotently", async () => {
+  const sql = await readFile(
+    "supabase/migrations/202608280017_billing_credit_pack_refund.sql",
+    "utf8",
+  ).catch(() => "");
+
+  assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_claim_approved_refund\s*\(/i);
+  assert.match(sql, /snapshot_product_type\s*<>\s*'CREDIT_PACK'[\s\S]*billing_claim_approved_refund_v12/i);
+  assert.match(sql, /entry_type\s*=\s*'PURCHASE'/i);
+  assert.match(sql, /reference_type\s*=\s*'ORDER'/i);
+  assert.match(sql, /reference_id\s*=\s*v_order\.id::TEXT/i);
+  assert.match(sql, /reserved_balance\s*=\s*reserved_balance\s*\+\s*v_credit_grant/i);
+  assert.match(sql, /available_balance\s*=\s*available_balance\s*-\s*v_credit_grant/i);
+  assert.match(sql, /'refund:'\s*\|\|\s*p_request_id::TEXT\s*\|\|\s*':reserve'/i);
+  assert.match(sql, /ON CONFLICT \(idempotency_key\) DO NOTHING/i);
+
+  assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_complete_refund\s*\(/i);
+  assert.match(sql, /reserved_balance\s*=\s*reserved_balance\s*-\s*v_credit_grant/i);
+  assert.match(sql, /entry_type[\s\S]*'CONSUME'/i);
+  assert.match(sql, /'refund:'\s*\|\|\s*v_request\.id::TEXT\s*\|\|\s*':consume'/i);
+  assert.match(sql, /status\s*=\s*'REFUNDED'[\s\S]*refund_status\s*=\s*'FULL'/i);
+
+  assert.match(sql, /CREATE OR REPLACE FUNCTION public\.billing_fail_refund_claim\s*\(/i);
+  assert.match(sql, /available_balance\s*=\s*available_balance\s*\+\s*v_credit_grant/i);
+  assert.match(sql, /reserved_balance\s*=\s*reserved_balance\s*-\s*v_credit_grant/i);
+  assert.match(sql, /entry_type[\s\S]*'RELEASE'/i);
+  assert.match(sql, /'refund:'\s*\|\|\s*v_request\.id::TEXT\s*\|\|\s*':release'/i);
+
+  assert.match(sql, /reserved_balance\s*=\s*0/i);
+  assert.match(sql, /available_balance\s*>=\s*v_credit_grant/i);
+  assert.match(sql, /RAISE EXCEPTION 'credit pack refund requires manual review'[\s\S]*ERRCODE\s*=\s*'P2102'/i);
+  assert.doesNotMatch(sql, /DELETE\s+FROM\s+public\.billing_credit_ledger/i);
+  assert.match(sql, /REVOKE ALL ON FUNCTION public\.billing_claim_approved_refund[\s\S]*FROM PUBLIC, anon, authenticated/i);
+  assert.match(sql, /GRANT EXECUTE ON FUNCTION public\.billing_complete_refund[\s\S]*TO service_role/i);
+});
+
 test("refund repository sends only server claim and provider result fields to the three RPCs", async () => {
   const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
   const client: RefundExecutionAdminClient = {
