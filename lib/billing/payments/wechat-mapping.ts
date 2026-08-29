@@ -176,15 +176,23 @@ export function parseWechatNativeTransaction(input: {
   const expectedExpiresAt = normalizeWechatRfc3339(input.expectedExpiresAt);
   const paidAt =
     status === "PAID" ? normalizeWechatRfc3339(response.success_time) : null;
+  const transactionIdMissing = response.transaction_id === undefined;
+  const transactionId =
+    typeof response.transaction_id === "string"
+      ? response.transaction_id
+      : null;
 
   if (
     response.appid !== input.expectedAppId ||
     response.mchid !== input.expectedMchId ||
     response.out_trade_no !== input.orderNumber ||
     response.trade_type !== "NATIVE" ||
-    !isSafePathIdentifier(response.transaction_id, MAX_TRANSACTION_ID_LENGTH) ||
+    (transactionIdMissing
+      ? response.trade_state !== "NOTPAY"
+      : !isSafePathIdentifier(transactionId, MAX_TRANSACTION_ID_LENGTH)) ||
     (input.providerTransactionId !== null &&
-      response.transaction_id !== input.providerTransactionId) ||
+      transactionId !== null &&
+      transactionId !== input.providerTransactionId) ||
     status === null ||
     !isRecord(amount) ||
     typeof amount.total !== "number" ||
@@ -214,7 +222,7 @@ export function parseWechatNativeTransaction(input: {
   }
 
   return {
-    providerTransactionId: response.transaction_id,
+    providerTransactionId: transactionId ?? input.providerTransactionId,
     orderNumber: response.out_trade_no,
     status,
     amountMinor: amount.total,

@@ -1057,6 +1057,43 @@ test("maps every Native query trade state from durable expectations in a fresh p
   }
 });
 
+test("accepts a NOTPAY Native query without transaction_id", async () => {
+  const transaction = nativeTransaction({ trade_state: "NOTPAY" });
+  delete transaction.transaction_id;
+  const wechat = nativeProvider([signedResponse(transaction)], []);
+
+  const result = await wechat.queryPayment({
+    ...NATIVE_REFERENCE,
+  });
+
+  assert.equal(result.status, "PENDING");
+  assert.equal(
+    result.providerTransactionId,
+    NATIVE_REFERENCE.providerTransactionId,
+  );
+  assert.equal(result.paymentToken, NATIVE_REFERENCE.paymentToken);
+});
+
+test("rejects a SUCCESS Native query without transaction_id", async () => {
+  const transaction = nativeTransaction({
+    trade_state: "SUCCESS",
+    success_time: "2026-08-19T10:00:00+08:00",
+  });
+  delete transaction.transaction_id;
+  const wechat = nativeProvider([signedResponse(transaction)], []);
+
+  await assert.rejects(
+    () =>
+      wechat.queryPayment({
+        ...NATIVE_REFERENCE,
+      }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
+});
+
 test("validates a fresh Native close before POST and recovers paid and timed-out closes by query", async () => {
   const pendingCalls: Array<{ url: string; method: string; body: unknown }> = [];
   const pending = nativeProvider(
