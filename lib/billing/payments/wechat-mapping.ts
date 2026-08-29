@@ -182,6 +182,7 @@ export function diagnoseWechatNativeTransaction(
   const paidAt =
     status === "PAID" ? normalizeWechatRfc3339(response.success_time) : null;
   const transactionIdMissing = response.transaction_id === undefined;
+  const tradeTypeMissing = response.trade_type === undefined;
   const transactionId =
     typeof response.transaction_id === "string"
       ? response.transaction_id
@@ -194,7 +195,11 @@ export function diagnoseWechatNativeTransaction(
   fail(response.appid !== input.expectedAppId, "app_id_matches");
   fail(response.mchid !== input.expectedMchId, "merchant_id_matches");
   fail(response.out_trade_no !== input.orderNumber, "order_number_matches");
-  fail(response.trade_type !== "NATIVE", "trade_type_native");
+  fail(
+    response.trade_type !== "NATIVE" &&
+      !(tradeTypeMissing && response.trade_state === "NOTPAY"),
+    "trade_type_native",
+  );
   fail(
     transactionIdMissing
       ? response.trade_state !== "NOTPAY"
@@ -268,6 +273,7 @@ export function parseWechatNativeTransaction(
   const paidAt =
     status === "PAID" ? normalizeWechatRfc3339(response.success_time) : null;
   const transactionIdMissing = response.transaction_id === undefined;
+  const tradeTypeMissing = response.trade_type === undefined;
   const transactionId =
     typeof response.transaction_id === "string"
       ? response.transaction_id
@@ -277,7 +283,8 @@ export function parseWechatNativeTransaction(
     response.appid !== input.expectedAppId ||
     response.mchid !== input.expectedMchId ||
     response.out_trade_no !== input.orderNumber ||
-    response.trade_type !== "NATIVE" ||
+    (response.trade_type !== "NATIVE" &&
+      !(tradeTypeMissing && response.trade_state === "NOTPAY")) ||
     (transactionIdMissing
       ? response.trade_state !== "NOTPAY"
       : !isSafePathIdentifier(transactionId, MAX_TRANSACTION_ID_LENGTH)) ||

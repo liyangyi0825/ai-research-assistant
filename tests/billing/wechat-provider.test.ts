@@ -1074,6 +1074,58 @@ test("accepts a NOTPAY Native query without transaction_id", async () => {
   assert.equal(result.paymentToken, NATIVE_REFERENCE.paymentToken);
 });
 
+test("accepts a NOTPAY Native query without trade_type", async () => {
+  const transaction = nativeTransaction({ trade_state: "NOTPAY" });
+  delete transaction.trade_type;
+  const wechat = nativeProvider([signedResponse(transaction)], []);
+
+  const result = await wechat.queryPayment({
+    ...NATIVE_REFERENCE,
+  });
+
+  assert.equal(result.status, "PENDING");
+  assert.equal(result.paymentToken, NATIVE_REFERENCE.paymentToken);
+});
+
+test("rejects a SUCCESS Native query without trade_type", async () => {
+  const transaction = nativeTransaction({
+    trade_state: "SUCCESS",
+    success_time: "2026-08-19T10:00:00+08:00",
+  });
+  delete transaction.trade_type;
+  const wechat = nativeProvider([signedResponse(transaction)], []);
+
+  await assert.rejects(
+    () =>
+      wechat.queryPayment({
+        ...NATIVE_REFERENCE,
+      }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
+});
+
+test("rejects a NOTPAY query with a non-Native trade_type", async () => {
+  const transaction = nativeTransaction({
+    trade_state: "NOTPAY",
+    trade_type: "JSAPI",
+  });
+  const wechat = nativeProvider([signedResponse(transaction)], []);
+
+  await assert.rejects(
+    () =>
+      wechat.queryPayment({
+        ...NATIVE_REFERENCE,
+      }),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+      error.status === 502,
+  );
+});
+
 test("rejects a SUCCESS Native query without transaction_id", async () => {
   const transaction = nativeTransaction({
     trade_state: "SUCCESS",
