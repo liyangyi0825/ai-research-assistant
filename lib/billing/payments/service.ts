@@ -546,25 +546,30 @@ function assertVerifiedQueryPayment(
   const expiresAt = normalizedTimestamp(payment.expiresAt);
   const paidAt =
     payment.paidAt === null ? null : normalizedTimestamp(payment.paidAt);
+  const hasProviderTransactionId =
+    typeof payment.providerTransactionId === "string" &&
+    payment.providerTransactionId.trim().length > 0;
   const commonValid =
     payment.orderNumber === expected.orderNumber &&
     payment.amountMinor === expected.amountMinor &&
     payment.currency === expected.currency &&
     expiresAt === normalizedTimestamp(expected.expiresAt) &&
-    typeof payment.providerTransactionId === "string" &&
-    payment.providerTransactionId.trim().length > 0;
+    (payment.providerTransactionId === null || hasProviderTransactionId);
   const stateValid =
     (payment.status === "PENDING" &&
       expected.paymentToken !== null &&
       payment.paymentToken === expected.paymentToken &&
       paidAt === null) ||
     (payment.status === "PAID" &&
+      hasProviderTransactionId &&
       payment.paymentToken === null &&
       paidAt !== null) ||
     ((payment.status === "FAILED" || payment.status === "CLOSED") &&
+      hasProviderTransactionId &&
       payment.paymentToken === null &&
       paidAt === null) ||
     (payment.status === "REQUIRES_NEW_PAYMENT" &&
+      hasProviderTransactionId &&
       payment.paymentToken === null &&
       paidAt === null);
   if (!commonValid || !stateValid) {

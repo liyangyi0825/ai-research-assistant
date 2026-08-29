@@ -1020,6 +1020,77 @@ test("verified provider query binds the complete durable payment through one ser
   assert.deepEqual(operations, ["order", "intent", "provider-query", "bind"]);
 });
 
+test("verified pending query without a provider transaction id remains payable", async () => {
+  const paymentService = (await import("../../lib/billing/payments/service")) as {
+    queryAndBindOrderPayment: (
+      userId: string,
+      orderId: string,
+      dependencies: Record<string, unknown>,
+    ) => Promise<PaymentResult>;
+  };
+  const pending: PaymentResult = {
+    orderNumber: "WX-MERCHANT-QUERY-NOTPAY",
+    providerTransactionId: null,
+    status: "PENDING",
+    amountMinor: 990,
+    currency: "CNY",
+    paymentToken: "weixin://verified-query-token",
+    expiresAt: "2026-08-19T02:30:00.000Z",
+    paidAt: null,
+  };
+  const operations: string[] = [];
+  const repository = {
+    async findOwnedOrder() {
+      operations.push("order");
+      return order({
+        provider: "WECHAT",
+        amountMinor: pending.amountMinor,
+        expiresAt: pending.expiresAt,
+      });
+    },
+    async findOwnedPaymentIntent() {
+      operations.push("intent");
+      return pending;
+    },
+    async bindVerifiedPaymentQuery(input: { payment: PaymentResult }) {
+      operations.push("bind");
+      assert.deepEqual(input.payment, pending);
+      return input.payment;
+    },
+  };
+  const provider = {
+    async queryPayment(input: PaymentReferenceInput) {
+      operations.push("provider-query");
+      assert.deepEqual(input, {
+        orderNumber: pending.orderNumber,
+        providerTransactionId: null,
+        amountMinor: 990,
+        currency: "CNY",
+        expiresAt: pending.expiresAt,
+        paymentToken: pending.paymentToken,
+      });
+      return pending;
+    },
+  };
+
+  const result = await paymentService.queryAndBindOrderPayment(
+    "user-1",
+    "order-id-1",
+    {
+      repository,
+      getConfig: () => ({
+        ...config,
+        paymentMode: "wechat",
+        wechatConfigured: true,
+      }),
+      getProvider: () => provider,
+    },
+  );
+
+  assert.deepEqual(result, pending);
+  assert.deepEqual(operations, ["order", "intent", "provider-query", "bind"]);
+});
+
 test("verified unpaid query closes from durable context before retiring the attempt", async () => {
   const paymentService = (await import("../../lib/billing/payments/service")) as {
     queryAndBindOrderPayment: (
