@@ -155,7 +155,7 @@ export function parseWechatNativeCreateResponse(value: unknown): {
   return { paymentToken: value.code_url };
 }
 
-export function parseWechatNativeTransaction(input: {
+export type WechatNativeTransactionInput = {
   response: unknown;
   expectedMchId: string;
   expectedAppId: string;
@@ -165,7 +165,98 @@ export function parseWechatNativeTransaction(input: {
   expectedCurrency: unknown;
   expectedExpiresAt: unknown;
   paymentToken: unknown;
-}): PaymentResult {
+};
+
+export function diagnoseWechatNativeTransaction(
+  input: WechatNativeTransactionInput,
+): { failedChecks: string[] } {
+  if (!isRecord(input.response)) return { failedChecks: ["response_record"] };
+
+  const response = input.response;
+  const amount = response.amount;
+  const paymentToken =
+    typeof input.paymentToken === "string" ? input.paymentToken : null;
+  const hasVerifiedPaymentToken = paymentToken !== null && paymentToken.length > 0;
+  const status = nativeStatus(response.trade_state, hasVerifiedPaymentToken);
+  const expectedExpiresAt = normalizeWechatRfc3339(input.expectedExpiresAt);
+  const paidAt =
+    status === "PAID" ? normalizeWechatRfc3339(response.success_time) : null;
+  const transactionIdMissing = response.transaction_id === undefined;
+  const transactionId =
+    typeof response.transaction_id === "string"
+      ? response.transaction_id
+      : null;
+  const failedChecks: string[] = [];
+  const fail = (condition: boolean, check: string) => {
+    if (condition) failedChecks.push(check);
+  };
+
+  fail(response.appid !== input.expectedAppId, "app_id_matches");
+  fail(response.mchid !== input.expectedMchId, "merchant_id_matches");
+  fail(response.out_trade_no !== input.orderNumber, "order_number_matches");
+  fail(response.trade_type !== "NATIVE", "trade_type_native");
+  fail(
+    transactionIdMissing
+      ? response.trade_state !== "NOTPAY"
+      : !isSafePathIdentifier(transactionId, MAX_TRANSACTION_ID_LENGTH),
+    "transaction_id_rule",
+  );
+  fail(
+    input.providerTransactionId !== null &&
+      (transactionId === null ||
+        transactionId !== input.providerTransactionId),
+    "provider_transaction_id_matches",
+  );
+  fail(status === null, "trade_state_supported");
+  fail(!isRecord(amount), "amount_record");
+  if (isRecord(amount)) {
+    fail(
+      typeof amount.total !== "number" ||
+        !Number.isSafeInteger(amount.total) ||
+        amount.total <= 0,
+      "amount_total_valid",
+    );
+    fail(amount.currency !== "CNY", "amount_currency_cny");
+    fail(!validOptionalAmountFields(amount), "optional_amount_fields_valid");
+    fail(amount.total !== input.expectedAmountMinor, "amount_matches");
+    fail(amount.currency !== input.expectedCurrency, "currency_matches");
+  }
+  fail(
+    typeof input.expectedAmountMinor !== "number" ||
+      !Number.isSafeInteger(input.expectedAmountMinor) ||
+      input.expectedAmountMinor <= 0,
+    "expected_amount_valid",
+  );
+  fail(input.expectedCurrency !== "CNY", "expected_currency_cny");
+  fail(expectedExpiresAt === null, "expected_expiry_valid");
+  fail(
+    status === "PAID" &&
+      (paidAt === null ||
+        expectedExpiresAt === null ||
+        Date.parse(paidAt) >= Date.parse(expectedExpiresAt)),
+    "paid_time_before_expiry",
+  );
+  fail(
+    !hasValidOptionalStringFields(response, [
+      "trade_state_desc",
+      "bank_type",
+      "attach",
+    ]),
+    "optional_string_fields_valid",
+  );
+  fail(!validOptionalPayer(response), "optional_payer_valid");
+  fail(
+    paymentToken !== null &&
+      !validNativeCreateResponse({ code_url: paymentToken }),
+    "payment_token_valid",
+  );
+
+  return { failedChecks };
+}
+
+export function parseWechatNativeTransaction(
+  input: WechatNativeTransactionInput,
+): PaymentResult {
   if (!isRecord(input.response)) throw invalidResponse();
   const response = input.response;
   const amount = response.amount;

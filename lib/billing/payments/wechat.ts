@@ -9,6 +9,7 @@ import {
   verifyWechatTimestamp,
 } from "./wechat-crypto";
 import {
+  diagnoseWechatNativeTransaction,
   parseWechatNativeCreateResponse,
   parseWechatNativeTransaction,
   parseWechatPaidNotification,
@@ -329,7 +330,7 @@ export class WechatPayProvider implements PaymentProvider {
       method: "GET",
       pathWithQuery,
     });
-    return parseWechatNativeTransaction({
+    const parseInput = {
       response: response.body,
       expectedMchId: dependencies.config.mchId,
       expectedAppId: dependencies.config.appId,
@@ -339,7 +340,21 @@ export class WechatPayProvider implements PaymentProvider {
       expectedCurrency: input.currency,
       expectedExpiresAt: input.expiresAt,
       paymentToken: input.paymentToken,
-    });
+    };
+    try {
+      return parseWechatNativeTransaction(parseInput);
+    } catch (error) {
+      if (
+        error instanceof BillingError &&
+        error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE"
+      ) {
+        console.error(
+          "[wechat-query-response-validation]",
+          diagnoseWechatNativeTransaction(parseInput),
+        );
+      }
+      throw error;
+    }
   }
 
   private async queryWechatRefund(

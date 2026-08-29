@@ -1094,6 +1094,60 @@ test("rejects a SUCCESS Native query without transaction_id", async () => {
   );
 });
 
+test("logs only allowlisted validation checks for an invalid Native query response", async () => {
+  const sensitiveSentinels = [
+    "wx-sensitive-app",
+    "sensitive-merchant",
+    "sensitive-order",
+    "sensitive-transaction",
+    "sensitive-openid",
+  ];
+  const transaction = nativeTransaction({
+    appid: sensitiveSentinels[0],
+    mchid: sensitiveSentinels[1],
+    out_trade_no: sensitiveSentinels[2],
+    transaction_id: sensitiveSentinels[3],
+    payer: { openid: sensitiveSentinels[4] },
+    amount: { total: 7_900, currency: "USD" },
+  });
+  const wechat = nativeProvider([signedResponse(transaction)], []);
+  const captured: unknown[][] = [];
+  const originalConsoleError = console.error;
+  console.error = (...args: unknown[]) => captured.push(args);
+
+  try {
+    await assert.rejects(
+      () => wechat.queryPayment({ ...NATIVE_REFERENCE }),
+      (error: unknown) =>
+        error instanceof BillingError &&
+        error.code === "PAYMENT_PROVIDER_INVALID_RESPONSE" &&
+        error.status === 502,
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.deepEqual(captured, [
+    [
+      "[wechat-query-response-validation]",
+      {
+        failedChecks: [
+          "app_id_matches",
+          "merchant_id_matches",
+          "order_number_matches",
+          "provider_transaction_id_matches",
+          "amount_currency_cny",
+          "currency_matches",
+        ],
+      },
+    ],
+  ]);
+  const serialized = JSON.stringify(captured);
+  for (const sentinel of sensitiveSentinels) {
+    assert.equal(serialized.includes(sentinel), false);
+  }
+});
+
 test("validates a fresh Native close before POST and recovers paid and timed-out closes by query", async () => {
   const pendingCalls: Array<{ url: string; method: string; body: unknown }> = [];
   const pending = nativeProvider(
