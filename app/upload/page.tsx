@@ -1061,7 +1061,7 @@ function UploadPageInner() {
                       <div className="text-center py-6 sm:py-8 text-gray-400 text-sm">
                         <p className="text-2xl mb-2">💡</p>
                         <p>可以问任何关于这篇论文的问题</p>
-                        <p className="mt-1 text-xs">例如："这篇论文用了什么数据集？"</p>
+                        <p className="mt-1 text-xs">例如：&ldquo;这篇论文用了什么数据集？&rdquo;</p>
                       </div>
                     )}
                     {messages.map((msg, i) => {

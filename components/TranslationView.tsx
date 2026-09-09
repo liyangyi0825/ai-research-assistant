@@ -295,6 +295,8 @@ export function TranslationView({ extractedText, onBack, backLabel = "← 返回
 
   useEffect(() => {
     const allChunks = smartChunk(extractedText);
+    // A changed source document intentionally starts a new translation workflow.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setChunks(allChunks);
     startTranslation(allChunks);
   }, [extractedText, startTranslation]);

@@ -60,6 +60,8 @@ export default function MyPapersPage() {
     finally { setLoading(false); }
   }, [page, query]);
 
+  // Loading is intentionally started by the effect-driven page/query request.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { fetchPapers(); }, [fetchPapers]);
 
   const totalPages = Math.ceil(total / PAGE_SIZE);

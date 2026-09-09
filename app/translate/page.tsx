@@ -157,26 +157,6 @@ export default function TranslatePage() {
     });
   }, []);
 
-  // userId 就绪后：先查 URL hash，没有再查 localStorage
-  useEffect(() => {
-    if (!userId) return;
-    const hash = window.location.hash.slice(1);
-    const m = hash.match(/[?&]session=([^&]+)/);
-    if (m?.[1]) {
-      loadSession(m[1], userId);
-      return;
-    }
-    try {
-      const saved = localStorage.getItem(`iyanhub_translate_${userId}`);
-      if (!saved) return;
-      const { sessionId, timestamp } = JSON.parse(saved) as { sessionId: string; timestamp: number };
-      if (sessionId && Date.now() - timestamp < SEVEN_DAYS) {
-        loadSession(sessionId, userId);
-      }
-    } catch { /* 静默 */ }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
-
   async function loadSession(id: string, uid: string | null) {
     try {
       const res  = await fetch(`/api/translation-sessions?sessionId=${encodeURIComponent(id)}`);
@@ -217,6 +197,28 @@ export default function TranslatePage() {
       window.history.replaceState(null, "", "#translate");
     }
   }
+
+  // userId 就绪后：先查 URL hash，没有再查 localStorage
+  useEffect(() => {
+    if (!userId) return;
+    const hash = window.location.hash.slice(1);
+    const m = hash.match(/[?&]session=([^&]+)/);
+    if (m?.[1]) {
+      // Restoring external session state is the synchronization performed by this effect.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      loadSession(m[1], userId);
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(`iyanhub_translate_${userId}`);
+      if (!saved) return;
+      const { sessionId, timestamp } = JSON.parse(saved) as { sessionId: string; timestamp: number };
+      if (sessionId && Date.now() - timestamp < SEVEN_DAYS) {
+        loadSession(sessionId, userId);
+      }
+    } catch { /* 静默 */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith(".pdf")) {
