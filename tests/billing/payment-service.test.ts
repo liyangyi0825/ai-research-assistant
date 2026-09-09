@@ -1052,10 +1052,9 @@ test("verified pending query without a provider transaction id remains payable",
       operations.push("intent");
       return pending;
     },
-    async bindVerifiedPaymentQuery(input: { payment: PaymentResult }) {
+    async bindVerifiedPaymentQuery() {
       operations.push("bind");
-      assert.deepEqual(input.payment, pending);
-      return input.payment;
+      throw new Error("a pending query must not invoke settlement storage");
     },
   };
   const provider = {
@@ -1088,7 +1087,7 @@ test("verified pending query without a provider transaction id remains payable",
   );
 
   assert.deepEqual(result, pending);
-  assert.deepEqual(operations, ["order", "intent", "provider-query", "bind"]);
+  assert.deepEqual(operations, ["order", "intent", "provider-query"]);
 });
 
 test("verified unpaid query closes from durable context before retiring the attempt", async () => {

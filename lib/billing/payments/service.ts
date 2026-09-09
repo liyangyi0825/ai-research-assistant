@@ -878,6 +878,9 @@ export async function queryAndBindOrderPayment(
       503,
     );
   }
+  if (verified.status === "PENDING") {
+    return paymentFromStored(verified);
+  }
   const persisted = await repository.bindVerifiedPaymentQuery({
     userId,
     orderId: order.id,
