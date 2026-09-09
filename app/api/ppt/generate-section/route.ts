@@ -3,8 +3,10 @@
 // 输出：{ slides: Slide[] } —— 只生成这一批（3-4页）幻灯片的完整正文内容
 // 分批生成的目的：避免一次性生成全部页面导致 AI 输出被截断、结构混乱
 import { NextRequest, NextResponse } from "next/server";
+import { pptSectionContinuationPolicy } from "@/lib/billing/ai-continuation";
+import { withAiUsage, type AiUsageContext } from "@/lib/billing/ai-usage";
+import { BillingError } from "@/lib/billing/errors";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 import type { PptScene, Slide } from "@/app/api/ppt/generate-content/route";
 import type { SlideOutlineItem } from "@/app/api/ppt/generate-outline/route";
 
@@ -35,14 +37,13 @@ export async function POST(req: NextRequest) {
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
 
     const {
-      paperContent, outlineSlides, allOutline, scene, userNotes, batchIndex,
+      paperContent, outlineSlides, allOutline, scene, batchIndex,
     } = (await req.json()) as {
       paperContent: string;
       outlineSlides: SlideOutlineItem[];
       allOutline: SlideOutlineItem[];
       scene: PptScene;
       templateId?: string;
-      userNotes?: string;
       batchIndex?: number;
     };
 
@@ -52,18 +53,16 @@ export async function POST(req: NextRequest) {
     }
     if (!["defense", "meeting"].includes(scene)) return NextResponse.json({ error: "场景参数错误" }, { status: 400 });
 
-    // 只在第一批时检查/计入本月用量，避免分批调用被误计为多次生成
-    let userId: string | null = null;
-    if (!batchIndex || batchIndex === 0) {
-      const usage = await checkUsageLimit("ppt_generate");
-      if (!usage.allowed) {
-        return NextResponse.json(
-          { error: `本月生成 PPT 次数已用完（${usage.used}/${usage.limit} 次），下月 1 日自动重置` },
-          { status: 429 },
-        );
-      }
-      userId = usage.userId;
-    }
+    const continuationPolicy = pptSectionContinuationPolicy({
+      paperContent,
+      outlineSlides,
+      allOutline,
+      scene,
+      batchIndex,
+    });
+    const { userNotes } = continuationPolicy;
+
+    const generateBatch = async (usage?: AiUsageContext) => {
 
     const isDefense = scene === "defense";
     const today = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
@@ -183,16 +182,33 @@ ${paperExcerpt}`;
       return NextResponse.json({ error: "AI 输出内容为空，请重试" }, { status: 500 });
     }
 
-    if (userId) {
-      insertUsageRecord({
-        userId, actionType: "ppt_generate",
-        tokensInput: inputTokens, tokensOutput: outputTokens,
-      }).catch(() => {});
-    }
+    usage?.setTokenUsage({ tokensInput: inputTokens, tokensOutput: outputTokens });
 
     return NextResponse.json({ slides });
+    };
+
+    return await withAiUsage(
+      req,
+      "ppt_generate",
+      ({ used, limit }) => NextResponse.json(
+        { error: `本月生成 PPT 次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 },
+      ),
+      generateBatch,
+      {
+        operationKey: continuationPolicy.operationKey,
+        continuation: continuationPolicy.continuation,
+        continuationStages:
+          continuationPolicy.batchIndex === 0
+            ? continuationPolicy.continuationStages
+            : undefined,
+      },
+    );
 
   } catch (error) {
+    if (error instanceof BillingError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     const msg = error instanceof Error ? error.message : String(error);
     return NextResponse.json({ error: `请求失败：${msg.slice(0, 120)}` }, { status: 500 });
   }

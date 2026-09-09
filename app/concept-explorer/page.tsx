@@ -317,11 +317,18 @@ export default function ConceptExplorerPage() {
   }
 
   // 给一批真实论文各配一句 AI 生成的关联说明（非流式，失败时原样返回不影响论文展示）
-  async function fetchRelevanceSummaries(term: string, papers: Paper[]): Promise<Paper[]> {
+  async function fetchRelevanceSummaries(
+    term: string,
+    papers: Paper[],
+    rootKey: string,
+  ): Promise<Paper[]> {
     try {
       const res = await fetch("/api/concept-explorer/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": rootKey,
+        },
         body: JSON.stringify({ concept: term, block: 2, papers }),
       });
       if (!res.ok) return papers;
@@ -340,12 +347,16 @@ export default function ConceptExplorerPage() {
     setText: (t: string) => void,
     setStatus: (s: Status) => void,
     textRef: React.MutableRefObject<string>,
+    rootKey: string,
   ) {
     setStatus("loading");
     try {
       const res = await fetch("/api/concept-explorer/ai", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": rootKey,
+        },
         body: JSON.stringify({
           concept: term,
           block,
@@ -374,6 +385,7 @@ export default function ConceptExplorerPage() {
   }
 
   // 支持 /concept-explorer?q=xxx 直接跳转；否则从 localStorage 恢复
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (autoTriggered.current) return;
     const q = new URLSearchParams(window.location.search).get("q");
@@ -411,7 +423,8 @@ export default function ConceptExplorerPage() {
         setShowRestoreBanner(true);
       }
     } catch { /* 静默 */ }
-  }, []);
+  }, [SEVEN_DAYS]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   function handleClear() {
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* 静默 */ }
@@ -424,6 +437,7 @@ export default function ConceptExplorerPage() {
   async function handleExplore() {
     const term = concept.trim();
     if (!term) return;
+    const rootKey = crypto.randomUUID();
     setShowRestoreBanner(false);
     resetAll();
     setIsExploring(true);
@@ -448,9 +462,6 @@ export default function ConceptExplorerPage() {
       setRecentPapers(papers);
       setRecentStatus("done");
       // 论文卡片先展示，AI 一句话关联说明单独异步补上，不阻塞后续区块
-      if (papers.length > 0) {
-        fetchRelevanceSummaries(term, papers).then(setRecentPapers);
-      }
       return papers;
     }).catch(() => {
       setRecentStatus("error");
@@ -460,15 +471,42 @@ export default function ConceptExplorerPage() {
     // 区块 1：AI 溯源（流式）—— 等最早论文查回来后，把真实论文传给 AI 做分析
     setOriginAIStatus("loading");
     const oldestPapersData = await oldestPromise;
-    const block1Promise = streamBlock(term, 1, oldestPapersData, setOriginAI, setOriginAIStatus, originTextRef);
+    const block1Promise = streamBlock(
+      term,
+      1,
+      oldestPapersData,
+      setOriginAI,
+      setOriginAIStatus,
+      originTextRef,
+      rootKey,
+    );
 
     // ── 区块 3：等区块 2 论文回来后开始 ─────────────────────────────────────
     const recentPapersData = await recentPromise;
-    await streamBlock(term, 3, recentPapersData, setConceptsAI, setConceptsStatus, conceptsTextRef);
+    await block1Promise;
+    if (recentPapersData.length > 0) {
+      fetchRelevanceSummaries(term, recentPapersData, rootKey).then(setRecentPapers);
+    }
+    await streamBlock(
+      term,
+      3,
+      recentPapersData,
+      setConceptsAI,
+      setConceptsStatus,
+      conceptsTextRef,
+      rootKey,
+    );
 
     // ── 区块 4：等区块 1 AI + 区块 3 都完成后开始 ────────────────────────────
-    await block1Promise;
-    await streamBlock(term, 4, recentPapersData, setIdeasAI, setIdeasStatus, { current: "" });
+    await streamBlock(
+      term,
+      4,
+      recentPapersData,
+      setIdeasAI,
+      setIdeasStatus,
+      { current: "" },
+      rootKey,
+    );
 
     setIsExploring(false);
   }

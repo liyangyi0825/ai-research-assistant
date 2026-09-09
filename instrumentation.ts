@@ -1,0 +1,9 @@
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { validateBillingRuntimeAtStartup } = await import(
+      "./lib/billing/config"
+    );
+
+    validateBillingRuntimeAtStartup();
+  }
+}

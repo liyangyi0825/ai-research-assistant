@@ -4,8 +4,9 @@
 // 流程：Semantic Scholar 搜索 → Claude 一次性批量分析相关性 + 翻译标题
 
 import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
+import { getBillingConfig } from "@/lib/billing/config";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 interface SemPaper {
   paperId: string;
@@ -35,15 +36,6 @@ export async function POST(req: NextRequest) {
   try {
     const apiKey = (process.env.DEEPSEEK_API_KEY ?? process.env.ANTHROPIC_API_KEY);
     if (!apiKey) return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
-
-    // 复用 keyword_gen 配额（AI 精准搜索消耗一次）
-    const { allowed, used, limit, userId } = await checkUsageLimit("keyword_gen");
-    if (!allowed) {
-      return NextResponse.json(
-        { error: `本月关键词/搜索次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
-        { status: 429 },
-      );
-    }
 
     const { keywords, topic } = (await req.json()) as { keywords: string; topic: string };
     if (!keywords?.trim()) return NextResponse.json({ error: "关键词不能为空" }, { status: 400 });
@@ -132,6 +124,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ papers: [], warning: "未找到相关论文，请尝试修改关键词" });
     }
 
+    return await withAiUsage(
+      req,
+      "keyword_gen",
+      ({ used, limit }) => NextResponse.json(
+        { error: `本月关键词/搜索次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
+        { status: 429 },
+      ),
+      async (usage) => {
+
     // ── 2. Claude 批量分析相关性 + 翻译标题 ───────────────────────────────
     const papersText = rawPapers
       .map((p, i) =>
@@ -183,14 +184,10 @@ ${papersText}`,
         if (Array.isArray(parsed.papers)) aiAnalysis = parsed.papers;
       } catch { /* 保留默认分析 */ }
 
-      if (userId) {
-        insertUsageRecord({
-          userId,
-          actionType: "keyword_gen",
-          tokensInput: aiData.usage?.input_tokens ?? 0,
-          tokensOutput: aiData.usage?.output_tokens ?? 0,
-        }).catch(() => {});
-      }
+      usage.setTokenUsage({
+        tokensInput: aiData.usage?.input_tokens ?? 0,
+        tokensOutput: aiData.usage?.output_tokens ?? 0,
+      });
     }
 
     const papers: AnalyzedPaper[] = rawPapers.map((p, i) => ({
@@ -208,6 +205,14 @@ ${papersText}`,
     }));
 
     return NextResponse.json({ papers });
+      },
+      getBillingConfig().featureEnabled
+        ? {
+            operationKey: "papers_search",
+            continuationStages: [{ stageKey: "recommend" }],
+          }
+        : { operationKey: "papers_search" },
+    );
   } catch (err) {
     console.error("论文搜索失败:", err);
     return NextResponse.json({ error: "搜索失败，请稍后重试" }, { status: 500 });

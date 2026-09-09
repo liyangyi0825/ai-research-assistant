@@ -1,0 +1,48 @@
+# Copy to /var/www/ai-research-assistant-staging/.env.local only after approval.
+# Set file mode to 600. Never commit the populated file.
+NODE_ENV=production
+NEXT_PUBLIC_SITE_URL=https://staging.iyanhub.com
+
+NEXT_PUBLIC_SUPABASE_URL=https://fqnpzsecalhrsqhpdaxs.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+
+ADMIN_EMAIL=
+
+BILLING_FEATURE_ENABLED=false
+PAYMENT_MODE=mock
+BILLING_REAL_PAYMENT_PUBLIC_ENABLED=false
+BILLING_STAGE_F_PROJECT_REF=fqnpzsecalhrsqhpdaxs
+BILLING_PRODUCTION_PROJECT_REFS=peuvsaxpnmqpuzyekwuj
+BILLING_TEST_USER_IDS=2b630ee1-9743-4efa-bbab-83dfe657050c
+
+LEGAL_OPERATOR_NAME=
+LEGAL_OPERATOR_CREDIT_CODE=
+LEGAL_CONTACT_EMAIL=
+
+# Existing non-billing application credentials must be copied through the
+# approved server secret channel, never through Git or chat.
+ANTHROPIC_API_KEY=
+ANTHROPIC_API_BASE_URL=https://api.deepseek.com/anthropic
+RESEND_API_KEY=
+RESEND_FROM_EMAIL=
+TENCENT_SECRET_ID=
+TENCENT_SECRET_KEY=
+TENCENT_OCR_REGION=ap-beijing
+
+# Real payment configuration must remain empty throughout Stage F1.
+WECHAT_PAY_MCH_ID=
+WECHAT_PAY_APP_ID=
+WECHAT_PAY_API_V3_KEY=
+WECHAT_PAY_PRIVATE_KEY=
+WECHAT_PAY_CERT_SERIAL_NO=
+WECHAT_PAY_PLATFORM_CERT=
+WECHAT_PAY_PUBLIC_KEY_ID=
+WECHAT_PAY_PUBLIC_KEY=
+WECHAT_PAY_NOTIFY_URL=
+
+ALIPAY_APP_ID=
+ALIPAY_PRIVATE_KEY=
+ALIPAY_PUBLIC_KEY=
+ALIPAY_NOTIFY_URL=
+ALIPAY_RETURN_URL=

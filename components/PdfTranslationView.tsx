@@ -27,7 +27,14 @@ function restoreMathFormulas(text: string, formulas: string[]): string {
   return text.replace(MATH_PLACEHOLDER_RE, (_, idx) => formulas[parseInt(idx)] ?? _);
 }
 
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
 // ── SSE 流解析（复用 translate 页面的实现）────────────────────────────────
+class TranslationProviderError extends Error {}
+
 async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
@@ -44,16 +51,22 @@ async function* streamAnthropicSSE(response: Response): AsyncGenerator<string> {
         if (!trimmed.startsWith("data: ")) continue;
         const data = trimmed.slice(6);
         if (!data || data === "[DONE]") continue;
+        let parsed: { type?: string; error?: { message?: string }; delta?: { type?: string; text?: string } };
         try {
-          const parsed = JSON.parse(data);
-          if (
-            parsed.type === "content_block_delta" &&
-            parsed.delta?.type === "text_delta" &&
-            typeof parsed.delta.text === "string"
-          ) {
-            yield parsed.delta.text;
-          }
-        } catch { /* skip */ }
+          parsed = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        if (parsed.type === "error") {
+          throw new TranslationProviderError(parsed.error?.message || "翻译失败");
+        }
+        if (
+          parsed.type === "content_block_delta" &&
+          parsed.delta?.type === "text_delta" &&
+          typeof parsed.delta.text === "string"
+        ) {
+          yield parsed.delta.text;
+        }
       }
     }
   } finally {
@@ -145,6 +158,99 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
   const leftRef    = useRef<HTMLDivElement>(null);
   const rightRef   = useRef<HTMLDivElement>(null);
   const syncingRef = useRef(false);
+  const pagesRef   = useRef<PageState[]>([]);
+  const retryingRef = useRef<Set<number>>(new Set());
+  const translationTaskKeyRef = useRef<string>(crypto.randomUUID());
+  const translationManifestRef = useRef<{ pageNum: number; textHash: string }[]>([]);
+  const safeRootRetryRef = useRef(false);
+
+  useEffect(() => { pagesRef.current = pages; }, [pages]);
+
+  // ── 失败页单独重试：不依赖主翻译流程的闭包状态，直接基于当前页面文字重新请求 ──
+  async function retryPage(i: number) {
+    if (retryingRef.current.has(i)) return;
+    retryingRef.current.add(i);
+
+    setPages(prev => {
+      const next = [...prev];
+      next[i] = { ...next[i], status: "translating", translation: "" };
+      return next;
+    });
+
+    try {
+      const pageText = pagesRef.current[i]?.text ?? "";
+      const { maskedText, formulas } = extractMathFormulas(pageText);
+      if (translationManifestRef.current[0]?.pageNum === i + 1) {
+        if (!safeRootRetryRef.current) {
+          throw new Error("根页支付状态尚未确认，请重新打开文档后再试，避免重复扣费");
+        }
+        // 只有收到服务端明确的 provider error 时才确认根预占已释放。
+        translationTaskKeyRef.current = crypto.randomUUID();
+        safeRootRetryRef.current = false;
+      }
+
+      const res = await fetch("/api/translate-page", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": translationTaskKeyRef.current,
+        },
+        body: JSON.stringify({
+          pageNum: i + 1,
+          text: maskedText,
+          documentManifest: translationManifestRef.current,
+        }),
+        signal: AbortSignal.timeout(300000),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error((data as { error?: string }).error || "翻译失败");
+      }
+
+      let rawText = "";
+      for await (const chunk of streamAnthropicSSE(res)) {
+        rawText += chunk;
+        setPages(prev => {
+          const next = [...prev];
+          next[i] = { ...next[i], translation: rawText };
+          return next;
+        });
+      }
+
+      const fullTranslation = restoreMathFormulas(rawText.trim(), formulas);
+      const updatedList = pagesRef.current.map((p, idx) =>
+        idx === i ? { text: p.text, translation: fullTranslation } : { text: p.text, translation: p.translation },
+      );
+      setPages(prev => {
+        const next = [...prev];
+        next[i] = { ...next[i], status: "done", translation: fullTranslation };
+        return next;
+      });
+      if (onPageTranslated) {
+        try {
+          await onPageTranslated(updatedList);
+        } catch (saveError) {
+          console.error("保存翻译结果失败:", saveError);
+          setGlobalError("翻译已完成，但保存失败，请勿重复翻译并稍后重试保存");
+        }
+      }
+    } catch (e) {
+      if (
+        translationManifestRef.current[0]?.pageNum === i + 1 &&
+        e instanceof TranslationProviderError
+      ) {
+        safeRootRetryRef.current = true;
+      }
+      console.error(`第 ${i + 1} 页重试翻译失败:`, e);
+      setPages(prev => {
+        const next = [...prev];
+        next[i] = { ...next[i], status: "error" };
+        return next;
+      });
+    } finally {
+      retryingRef.current.delete(i);
+    }
+  }
 
   // ── 加载、渲染 PDF，然后逐页翻译 ─────────────────────────────────────────
   useEffect(() => {
@@ -327,6 +433,14 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
           .map((_, i) => i)
           .filter(i => initialPages[i].status === "pending");
 
+        translationTaskKeyRef.current = crypto.randomUUID();
+        translationManifestRef.current = await Promise.all(
+          translatableIdxs.map(async i => {
+            const { maskedText } = extractMathFormulas(initialPages[i].text);
+            return { pageNum: i + 1, textHash: await sha256Hex(maskedText) };
+          }),
+        );
+
         setTransProgress({ done: 0, total: translatableIdxs.length });
         setPhase("translating");
 
@@ -334,7 +448,7 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
         let usageLimitError: string | null = null;
 
         // 翻译单页：提取公式占位符 → 整页发送 → 流式回填 → 还原公式
-        async function translatePage(i: number, isFirst: boolean): Promise<void> {
+        async function translatePage(i: number): Promise<void> {
           setPages(prev => {
             const next = [...prev];
             next[i] = { ...next[i], status: "translating" };
@@ -345,9 +459,16 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
 
           const res = await fetch("/api/translate-page", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pageNum: i + 1, text: maskedText, isFirst }),
-            signal: AbortSignal.timeout(120000),
+            headers: {
+              "Content-Type": "application/json",
+              "Idempotency-Key": translationTaskKeyRef.current,
+            },
+            body: JSON.stringify({
+              pageNum: i + 1,
+              text: maskedText,
+              documentManifest: translationManifestRef.current,
+            }),
+            signal: AbortSignal.timeout(300000),
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
@@ -384,7 +505,7 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
           // 必须等它完成（或因超额报错）后才能放开并发
           const [firstIdx, ...restIdxs] = translatableIdxs;
           try {
-            await translatePage(firstIdx, true);
+            await translatePage(firstIdx);
           } catch (e) {
             console.error(`第 ${firstIdx + 1} 页翻译失败:`, e);
             setPages(prev => {
@@ -392,6 +513,9 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
               next[firstIdx] = { ...next[firstIdx], status: "error" };
               return next;
             });
+            if (e instanceof TranslationProviderError) {
+              safeRootRetryRef.current = true;
+            }
             if (e instanceof Error && e.message.includes("次数已用完")) {
               usageLimitError = e.message;
             }
@@ -406,7 +530,7 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
                 if (cancelled || usageLimitError) return;
                 const idx = restIdxs[cursor++];
                 try {
-                  await translatePage(idx, false);
+                  await translatePage(idx);
                 } catch (e) {
                   console.error(`第 ${idx + 1} 页翻译失败:`, e);
                   setPages(prev => {
@@ -499,6 +623,14 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
       );
     }
     if (phase === "done" && !isScannedPdf) {
+      const errorCount = pages.filter(p => p.status === "error").length;
+      if (errorCount > 0) {
+        return (
+          <span className="text-xs text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
+            ⚠ 部分页翻译失败（{errorCount} 页），点击失败页的“重试”按钮可单独重试
+          </span>
+        );
+      }
       return (
         <span className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full">
           ✓ 翻译完成，共 {numPages} 页
@@ -644,9 +776,25 @@ export function PdfTranslationView({ file, onBack, onPageTranslated, onTranslati
                     {page.status === "done" && <TranslationText text={page.translation} />}
 
                     {page.status === "error" && (
-                      <span style={{ color: "#ef4444", fontSize: "12px", fontFamily: "system-ui" }}>
-                        第 {i + 1} 页翻译失败
-                      </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ color: "#ef4444", fontSize: "12px", fontFamily: "system-ui" }}>
+                          第 {i + 1} 页翻译失败
+                        </span>
+                        <button
+                          onClick={() => retryPage(i)}
+                          style={{
+                            fontSize: "12px",
+                            color: "#2563eb",
+                            textDecoration: "underline",
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            fontFamily: "system-ui",
+                          }}
+                        >
+                          重试
+                        </button>
+                      </div>
                     )}
 
                     {page.status === "empty" && (

@@ -5,6 +5,8 @@
 // - recent（最新进展）：Semantic Scholar API，按引用数降序
 
 import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage, type AiUsageContext } from "@/lib/billing/ai-usage";
+import { getBillingConfig } from "@/lib/billing/config";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
 import { getSupabaseAuthClient } from "@/lib/supabase";
 
@@ -19,6 +21,11 @@ export interface Paper {
   url: string | null;
   relevanceSummary?: string;
 }
+
+type ConceptPaperFallback = {
+  error?: unknown;
+  response?: Response;
+};
 
 // ── OpenAlex（用于 oldest）────────────────────────────────────────────────────
 const OA_BASE    = "https://api.openalex.org/works";
@@ -235,7 +242,11 @@ function toSSPaper(p: any): Paper {
   };
 }
 
-export async function POST(req: NextRequest) {
+async function execute(
+  req: NextRequest,
+  usage?: AiUsageContext,
+  fallback?: ConceptPaperFallback,
+) {
   try {
     const supabase = await getSupabaseAuthClient();
     const { data: { user } } = await supabase.auth.getUser();
@@ -379,6 +390,37 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "无效的 type 参数" }, { status: 400 });
   } catch (error) {
     console.error("[concept-papers] 论文搜索异常:", error);
-    return NextResponse.json({ papers: [], searchTerm: "" });
+    const response = NextResponse.json({ papers: [], searchTerm: "" });
+    usage?.markFailed(error);
+    if (fallback) {
+      fallback.error = error;
+      fallback.response = response;
+    }
+    return response;
+  }
+}
+
+export async function POST(req: NextRequest) {
+  if (!getBillingConfig().featureEnabled) {
+    return execute(req);
+  }
+  const fallback: ConceptPaperFallback = {};
+  try {
+    return await withAiUsage(
+      req,
+      "concept_explore",
+      ({ used, limit }) =>
+        NextResponse.json(
+          { error: `本月概念探索次数已用完（${used}/${limit} 次）` },
+          { status: 429 },
+        ),
+      async (usage) => execute(req, usage, fallback),
+      { operationKey: "concept_papers" },
+    );
+  } catch (error) {
+    if (fallback.error === error && fallback.response) {
+      return fallback.response;
+    }
+    throw error;
   }
 }

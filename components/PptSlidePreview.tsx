@@ -592,6 +592,8 @@ export function PptSlidePreview({ pptContent, paperContent, templateId }: { pptC
 
   // 可变 slides 状态（支持单页替换）
   const [slides, setSlides] = useState<Slide[]>(pptContent.slides || []);
+  // A newly generated presentation must replace any locally regenerated slide.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setSlides(pptContent.slides || []); }, [pptContent]);
 
   // 单页重生成状态

@@ -54,12 +54,34 @@ interface SidebarProps {
 export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
   const pathname = usePathname();
   const [email, setEmail] = useState<string | null>(null);
+  const [billingAvailable, setBillingAvailable] = useState(false);
 
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     supabase.auth.getUser().then(({ data }) => {
       setEmail(data.user?.email ?? null);
     });
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/api/billing/availability", {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        if (!response.ok) return { available: false };
+        return (await response.json()) as { available?: boolean };
+      })
+      .then((result) => {
+        if (!controller.signal.aborted) {
+          setBillingAvailable(result.available === true);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setBillingAvailable(false);
+      });
+    return () => controller.abort();
   }, []);
 
   async function handleLogout() {
@@ -167,6 +189,33 @@ export function Sidebar({ onClose, activeTab, onTabChange }: SidebarProps) {
             </ul>
           </div>
         ))}
+
+        {billingAvailable && (
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider px-3 mb-1.5" style={{ color: "#64748B" }}>
+              资源
+            </p>
+            <ul className="space-y-0.5">
+              <li>
+                <Link
+                  href="/billing"
+                  onClick={onClose}
+                  className={`relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
+                    pathname.startsWith("/billing")
+                      ? "bg-slate-700 text-white font-medium"
+                      : "text-slate-300 hover:bg-slate-700/60 hover:text-white"
+                  }`}
+                >
+                  {pathname.startsWith("/billing") && (
+                    <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-6 rounded-r" style={{ background: "#3B82F6" }} />
+                  )}
+                  <span className="text-base leading-none">📊</span>
+                  <span>账单与额度</span>
+                </Link>
+              </li>
+            </ul>
+          </div>
+        )}
 
         {/* 其他 */}
         <div>

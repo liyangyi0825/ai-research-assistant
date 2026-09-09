@@ -1,9 +1,9 @@
 ﻿// 后端接口：基于论文内容进行对话（流式输出）
 // 路径：POST /api/chat
 
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,14 +15,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 用量限额检查（每月 30 次对话），同时取得 userId
-    const { allowed, used, limit, userId } = await checkUsageLimit("chat");
-    if (!allowed) {
-      return NextResponse.json(
+    return await withAiUsage(
+      req,
+      "chat",
+      ({ used, limit }) => NextResponse.json(
         { error: `本月对话次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 }
-      );
-    }
+      ),
+      async (usage) => {
 
     const { paperContent, messages, notesContext } = await req.json();
 
@@ -82,20 +82,6 @@ ${truncatedContent}
     let inputTokens = 0, outputTokens = 0, cacheCreate = 0, cacheRead = 0;
     let sseBuffer = "";
 
-    // after() 在响应流发完后执行，Vercel 保证它能跑完再关闭函数
-    if (userId) {
-      after(async () => {
-        await insertUsageRecord({
-          userId,
-          actionType: "chat",
-          tokensInput: inputTokens,
-          tokensOutput: outputTokens,
-          cacheCreationTokens: cacheCreate,
-          cacheReadTokens: cacheRead,
-        });
-      });
-    }
-
     void (async () => {
       const reader = anthropicRes.body!.getReader();
       const thinkingBlocks = new Set<number>();
@@ -141,7 +127,15 @@ ${truncatedContent}
             } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
+      } catch (error) {
+        usage.markFailed(error);
       } finally {
+        usage.setTokenUsage({
+          tokensInput: inputTokens,
+          tokensOutput: outputTokens,
+          cacheCreationTokens: cacheCreate,
+          cacheReadTokens: cacheRead,
+        });
         writer.close().catch(() => {});
       }
     })();
@@ -153,6 +147,8 @@ ${truncatedContent}
         "X-Accel-Buffering": "no",
       },
     });
+      },
+    );
   } catch (error) {
     console.error("对话请求失败:", error);
     return NextResponse.json(

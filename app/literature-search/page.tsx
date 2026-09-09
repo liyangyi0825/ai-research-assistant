@@ -337,6 +337,7 @@ export default function LiteratureSearchPage() {
   const [recommendSaveStatus, setRecommendSaveStatus] = useState<Record<number, "idle" | "saving" | "saved" | "error">>({});
 
   const autoTriggered = useRef(false);
+  const searchOperationKeys = useRef<Record<number, string>>({});
   const [showRestoreBanner, setShowRestoreBanner] = useState(false);
 
   const STORAGE_KEY = "iyanhub_keywords";
@@ -439,6 +440,8 @@ export default function LiteratureSearchPage() {
 
   // 搜索完成后自动触发 AI 综合推荐
   async function handleAISearch(index: number, keywords: string) {
+    const operationKey = crypto.randomUUID();
+    searchOperationKeys.current[index] = operationKey;
     setSearchStatus(prev  => ({ ...prev, [index]: "loading" }));
     setSearchError(prev   => ({ ...prev, [index]: "" }));
     setRecommendStatus(prev => ({ ...prev, [index]: "idle" }));
@@ -448,7 +451,10 @@ export default function LiteratureSearchPage() {
     try {
       const res = await fetch("/api/papers/search", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": operationKey,
+        },
         body: JSON.stringify({ keywords, topic }),
       });
       const data = await res.json();
@@ -460,7 +466,7 @@ export default function LiteratureSearchPage() {
 
       // 有论文结果时自动启动推荐分析
       if (papers.length > 0) {
-        handleRecommend(index, papers, topic);
+        handleRecommend(index, papers, topic, operationKey);
       }
     } catch (err) {
       setSearchError(prev  => ({ ...prev, [index]: err instanceof Error ? err.message : "搜索失败，请重试" }));
@@ -469,13 +475,21 @@ export default function LiteratureSearchPage() {
   }
 
   // AI 综合推荐：流式 SSE 解析
-  async function handleRecommend(index: number, papers: AnalyzedPaper[], currentTopic: string) {
+  async function handleRecommend(
+    index: number,
+    papers: AnalyzedPaper[],
+    currentTopic: string,
+    operationKey = searchOperationKeys.current[index],
+  ) {
     setRecommendStatus(prev => ({ ...prev, [index]: "streaming" }));
 
     try {
       const res = await fetch("/api/papers/recommend", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(operationKey ? { "Idempotency-Key": operationKey } : {}),
+        },
         body: JSON.stringify({ papers, topic: currentTopic }),
       });
 

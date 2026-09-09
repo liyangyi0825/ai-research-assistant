@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored browser worker and standalone Node.js utilities are not
+    // application source and have their own runtime/module conventions.
+    "public/pdf.worker.min.mjs",
+    "proxy/**",
+    "test_ppt/**",
   ]),
 ]);
 

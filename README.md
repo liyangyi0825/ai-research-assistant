@@ -1,5 +1,11 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Billing MVP documentation
+
+- [Setup and provider prerequisites](docs/billing-setup.md)
+- [Security boundaries](docs/billing-security.md)
+- [Rollback procedure](docs/billing-rollback.md)
+
 ## Getting Started
 
 First, run the development server:

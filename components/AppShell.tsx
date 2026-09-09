@@ -58,6 +58,7 @@ const AUTH_PATHS   = ["/login", "/auth", "/reset-password"];
 // admin 独立：直接渲染 children，无任何 Shell
 const ADMIN_PATHS  = ["/admin"];
 const BYPASS_PATHS = ["/paper/", "/search-history"];
+const BILLING_PATHS = ["/billing", "/pricing", "/checkout"];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -75,16 +76,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isAuthPage   = AUTH_PATHS.some(p => pathname.startsWith(p));
   const isAdminPage  = ADMIN_PATHS.some(p => pathname.startsWith(p));
   const isBypassPage = BYPASS_PATHS.some(p => pathname.startsWith(p));
+  const isBillingPage = BILLING_PATHS.some(
+    p => pathname === p || pathname.startsWith(`${p}/`),
+  );
 
   // 首次加载：从 URL hash 恢复 tab（支持 #upload?paper=xxx 格式）
   useEffect(() => {
-    const raw = window.location.hash.slice(1);       // "upload?paper=xxx"
-    const tabKey = raw.split("?")[0];                // "upload"
-    if (tabKey && TAB_KEYS.includes(tabKey)) {
-      setActiveTab(tabKey);
-      setMountedTabs(prev => new Set([...prev, tabKey]));
-    }
-    // 监听浏览器前进/后退
     function onHashChange() {
       const h = window.location.hash.slice(1).split("?")[0];
       if (TAB_KEYS.includes(h)) {
@@ -92,6 +89,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setMountedTabs(prev => new Set([...prev, h]));
       }
     }
+    // 初次恢复也走异步的外部事件同步路径，避免 effect 内同步级联渲染。
+    queueMicrotask(onHashChange);
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
@@ -122,7 +121,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (isAdminPage || isAuthPage) return <>{children}</>;
 
   // 论文详情等 bypass 页面：有侧边栏但不走 SPA tab 系统
-  if (isBypassPage) {
+  if (isBypassPage || isBillingPage) {
     return (
       <div className="flex h-screen overflow-hidden" style={{ background: "#F8FAFC" }}>
         <div className="hidden md:flex h-full">

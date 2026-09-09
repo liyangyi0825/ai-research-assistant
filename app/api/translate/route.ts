@@ -3,9 +3,9 @@
 // 输入：{ paragraphs: string[] }  ← 已在客户端拆好的段落数组
 // 输出：SSE 流，翻译文字中用 [|||] 分隔每个段落的译文
 
-import { NextRequest, NextResponse, after } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,13 +14,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }
 
-    const { allowed, used, limit, userId } = await checkUsageLimit("translate");
-    if (!allowed) {
-      return NextResponse.json(
+    return await withAiUsage(
+      req,
+      "translate",
+      ({ used, limit }) => NextResponse.json(
         { error: `本月全文翻译次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 },
-      );
-    }
+      ),
+      async (usage) => {
 
     const { paragraphs } = (await req.json()) as { paragraphs: string[] };
     if (!Array.isArray(paragraphs) || paragraphs.length === 0) {
@@ -81,19 +82,6 @@ ${paragraphs.join("\n[PARA]\n")}`;
     let sseBuffer = "";
     let firstChunkLogged = false;
 
-    if (userId) {
-      after(async () => {
-        await insertUsageRecord({
-          userId,
-          actionType: "translate",
-          tokensInput: inputTokens,
-          tokensOutput: outputTokens,
-          cacheCreationTokens: cacheCreate,
-          cacheReadTokens: cacheRead,
-        });
-      });
-    }
-
     void (async () => {
       const reader = anthropicRes.body!.getReader();
       const thinkingBlocks = new Set<number>();
@@ -138,7 +126,15 @@ ${paragraphs.join("\n[PARA]\n")}`;
             } catch { await writer.write(encoder.encode(line + "\n")); }
           }
         }
+      } catch (error) {
+        usage.markFailed(error);
       } finally {
+        usage.setTokenUsage({
+          tokensInput: inputTokens,
+          tokensOutput: outputTokens,
+          cacheCreationTokens: cacheCreate,
+          cacheReadTokens: cacheRead,
+        });
         writer.close().catch(() => {});
       }
     })();
@@ -150,6 +146,8 @@ ${paragraphs.join("\n[PARA]\n")}`;
         "X-Accel-Buffering": "no",
       },
     });
+      },
+    );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "请求失败，请重试";
     return NextResponse.json({ error: msg }, { status: 500 });

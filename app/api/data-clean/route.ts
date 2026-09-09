@@ -4,9 +4,8 @@
 // 只发前 100 行样本给 Claude，清洗本身在前端执行
 
 import { NextRequest } from "next/server";
-import { after } from "next/server";
+import { withAiUsage } from "@/lib/billing/ai-usage";
 import { fetchWithProxy } from "@/lib/fetch-proxy";
-import { checkUsageLimit, insertUsageRecord } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,13 +14,14 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: "服务器未配置 API Key" }, { status: 500 });
     }
 
-    const { allowed, used, limit, userId } = await checkUsageLimit("data_clean");
-    if (!allowed) {
-      return Response.json(
+    return await withAiUsage(
+      req,
+      "data_clean",
+      ({ used, limit }) => Response.json(
         { error: `本月数据清洗次数已用完（${used}/${limit} 次），下月 1 日自动重置` },
         { status: 429 }
-      );
-    }
+      ),
+      async (usage) => {
 
     const { headers, sample, totalRows } = await req.json() as {
       headers: string[];
@@ -165,18 +165,12 @@ Excel 日期序号从 1900-01-01 = 1 开始计数，请精确换算后用"M月D�
 
     const data = await anthropicRes.json();
 
-    if (userId) {
-      after(async () => {
-        await insertUsageRecord({
-          userId,
-          actionType:          "data_clean",
-          tokensInput:         data.usage?.input_tokens ?? 0,
-          tokensOutput:        data.usage?.output_tokens ?? 0,
-          cacheCreationTokens: data.usage?.cache_creation_input_tokens ?? 0,
-          cacheReadTokens:     data.usage?.cache_read_input_tokens ?? 0,
-        });
-      });
-    }
+    usage.setTokenUsage({
+      tokensInput: data.usage?.input_tokens ?? 0,
+      tokensOutput: data.usage?.output_tokens ?? 0,
+      cacheCreationTokens: data.usage?.cache_creation_input_tokens ?? 0,
+      cacheReadTokens: data.usage?.cache_read_input_tokens ?? 0,
+    });
 
     const textBlock = data.content?.find((b: { type: string }) => b.type === "text");
     let raw: string = textBlock?.text ?? "";
@@ -198,6 +192,8 @@ Excel 日期序号从 1900-01-01 = 1 开始计数，请精确换算后用"M月D�
     }
 
     return Response.json(result);
+      },
+    );
   } catch (error) {
     console.error("[data-clean]", error);
     return Response.json({ error: "分析失败，请重试" }, { status: 500 });
