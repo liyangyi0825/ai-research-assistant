@@ -170,12 +170,25 @@ function insertedRows(sql: string): Array<{ table: string; columns: string[]; va
 }
 
 function sqlBetween(sql: string, start: string, end: string): string {
-  const startIndex = sql.indexOf(start);
+  const normalizedSql = sql.replace(/\r\n?/g, "\n");
+  const normalizedStart = start.replace(/\r\n?/g, "\n");
+  const normalizedEnd = end.replace(/\r\n?/g, "\n");
+  const startIndex = normalizedSql.indexOf(normalizedStart);
   assert.notEqual(startIndex, -1, `missing SQL start marker ${start}`);
-  const endIndex = sql.indexOf(end, startIndex + start.length);
+  const endIndex = normalizedSql.indexOf(
+    normalizedEnd,
+    startIndex + normalizedStart.length,
+  );
   assert.notEqual(endIndex, -1, `missing SQL end marker ${end}`);
-  return sql.slice(startIndex, endIndex);
+  return normalizedSql.slice(startIndex, endIndex);
 }
+
+test("database drill SQL parsing accepts CRLF deployment artifacts", () => {
+  assert.equal(
+    sqlBetween("prefix\r\nstart\r\nbody\r\nend\r\nsuffix", "start\n", "\nend"),
+    "start\nbody",
+  );
+});
 
 function skipSqlTrivia(sql: string, start: number): number {
   let index = start;
