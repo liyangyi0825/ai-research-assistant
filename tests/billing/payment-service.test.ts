@@ -1090,6 +1090,68 @@ test("verified pending query without a provider transaction id remains payable",
   assert.deepEqual(operations, ["order", "intent", "provider-query"]);
 });
 
+test("verified closed query without a provider transaction id is retired", async () => {
+  const paymentService = (await import("../../lib/billing/payments/service")) as {
+    queryAndBindOrderPayment: (
+      userId: string,
+      orderId: string,
+      dependencies: Record<string, unknown>,
+    ) => Promise<PaymentResult>;
+  };
+  const durable: PaymentResult = {
+    orderNumber: "WX-MERCHANT-QUERY-CLOSED",
+    providerTransactionId: null,
+    status: "PENDING",
+    amountMinor: 990,
+    currency: "CNY",
+    paymentToken: "weixin://verified-query-token",
+    expiresAt: "2026-08-19T02:30:00.000Z",
+    paidAt: null,
+  };
+  const closed: PaymentResult = {
+    ...durable,
+    status: "CLOSED",
+    paymentToken: null,
+  };
+  const bound: PaymentResult[] = [];
+  const repository = {
+    async findOwnedOrder() {
+      return order({
+        provider: "WECHAT",
+        amountMinor: durable.amountMinor,
+        expiresAt: durable.expiresAt,
+      });
+    },
+    async findOwnedPaymentIntent() {
+      return durable;
+    },
+    async bindVerifiedPaymentQuery(input: { payment: PaymentResult }) {
+      bound.push(input.payment);
+      return input.payment;
+    },
+  };
+  const provider = {
+    async queryPayment() {
+      return closed;
+    },
+  };
+
+  await assert.rejects(
+    () => paymentService.queryAndBindOrderPayment("user-1", "order-id-1", {
+      repository,
+      getConfig: () => ({
+        ...config,
+        paymentMode: "wechat",
+        wechatConfigured: true,
+      }),
+      getProvider: () => provider,
+    }),
+    (error: unknown) =>
+      expectBillingError(error, "PAYMENT_REQUIRES_NEW_PAYMENT", 409),
+  );
+  assert.deepEqual(bound, [closed]);
+});
+
 test("verified unpaid query closes from durable context before retiring the attempt", async () => {
   const paymentService = (await import("../../lib/billing/payments/service")) as {
     queryAndBindOrderPayment: (

@@ -787,7 +787,7 @@ export type Database = {
           p_order_id: UUID;
           p_provider: string;
           p_merchant_order_number: string;
-          p_provider_transaction_id: string;
+          p_provider_transaction_id: string | null;
           p_payment_status: string;
           p_amount_minor: number;
           p_currency: string;

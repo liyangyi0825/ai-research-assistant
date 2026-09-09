@@ -23,7 +23,8 @@ declare
     '202608210014',
     '202608240015',
     '202608240016',
-    '202608280017'
+    '202608280017',
+    '202609090018'
   ];
   expected_tables constant text[] := array[
     'billing_plans',
@@ -188,7 +189,7 @@ begin
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(amount_minor >= 0\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(currency = ''CNY''::text\)\)$'),
       ('public', 'billing_payment_intents', null::text, 'c', '^CHECK \(\(attempt_count > 0\)\)$'),
-      ('public', 'billing_payment_intents', 'billing_payment_intents_lifecycle_check', 'c', '^CHECK \(\(\(NULLIF\(btrim\(merchant_order_number\), ''''::text\) IS NOT NULL\) AND \(\(\(provider = ''WECHAT''::text\) AND \(merchant_order_number ~ ''\^\[A-Za-z0-9_\|\*-\]\{6,32\}\$''::text\)\) OR \(\(provider <> ''WECHAT''::text\) AND \(merchant_order_number ~ ''\^\[A-Za-z0-9_\|\*-\]\{1,64\}\$''::text\)\)\) AND \(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\).*\(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\).*\(payment_status = ''PENDING''::text\).*\(payment_token IS NOT NULL\).*\(paid_at IS NULL\).*\(payment_status = ''PAID''::text\).*\(provider_transaction_id IS NOT NULL\).*\(paid_at IS NOT NULL\).*\(payment_status = ANY \(ARRAY\[''FAILED''::text, ''CLOSED''::text\]\)\).*\(payment_token IS NULL\).*\(paid_at IS NULL\).*\(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)\)$'),
+      ('public', 'billing_payment_intents', 'billing_payment_intents_lifecycle_check', 'c', '^CHECK \(\(\(NULLIF\(btrim\(merchant_order_number\), ''''::text\) IS NOT NULL\) AND \(\(\(provider = ''WECHAT''::text\) AND \(merchant_order_number ~ ''\^\[A-Za-z0-9_\|\*-\]\{6,32\}\$''::text\)\) OR \(\(provider <> ''WECHAT''::text\) AND \(merchant_order_number ~ ''\^\[A-Za-z0-9_\|\*-\]\{1,64\}\$''::text\)\)\) AND \(\(\(status = ''CREATING''::text\) AND \(claim_token IS NOT NULL\) AND \(claim_expires_at IS NOT NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(last_error_code IS NULL\)\).*\(\(status = ''CREATED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(last_error_code IS NULL\).*\(payment_status = ''PENDING''::text\).*\(payment_token IS NOT NULL\).*\(paid_at IS NULL\).*\(payment_status = ''PAID''::text\).*\(provider_transaction_id IS NOT NULL\).*\(paid_at IS NOT NULL\).*\(payment_status = ''FAILED''::text\).*\(provider_transaction_id IS NOT NULL\).*\(payment_token IS NULL\).*\(paid_at IS NULL\).*\(payment_status = ''CLOSED''::text\).*\(payment_token IS NULL\).*\(paid_at IS NULL\).*\(\(status = ''FAILED''::text\) AND \(claim_token IS NULL\) AND \(claim_expires_at IS NULL\) AND \(provider_transaction_id IS NULL\) AND \(payment_token IS NULL\) AND \(payment_status IS NULL\) AND \(NULLIF\(btrim\(last_error_code\), ''''::text\) IS NOT NULL\)\)\)\)\)$'),
 
       ('public', 'billing_payments', null::text, 'p', '^PRIMARY KEY \(id\)$'),
       ('public', 'billing_payments', null::text, 'f', '^FOREIGN KEY \(order_id\) REFERENCES billing_orders\(id\) ON DELETE RESTRICT$'),

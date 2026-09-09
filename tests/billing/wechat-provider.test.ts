@@ -1087,6 +1087,30 @@ test("accepts a NOTPAY Native query without trade_type", async () => {
   assert.equal(result.paymentToken, NATIVE_REFERENCE.paymentToken);
 });
 
+test("accepts a CLOSED Native query without optional transaction fields", async () => {
+  const transaction = nativeTransaction({ trade_state: "CLOSED" });
+  delete transaction.transaction_id;
+  delete transaction.trade_type;
+  delete transaction.amount;
+  const wechat = nativeProvider([signedResponse(transaction)], []);
+
+  const result = await wechat.queryPayment({
+    ...NATIVE_REFERENCE,
+    providerTransactionId: null,
+  });
+
+  assert.deepEqual(result, {
+    providerTransactionId: null,
+    orderNumber: NATIVE_REFERENCE.orderNumber,
+    status: "CLOSED",
+    amountMinor: NATIVE_REFERENCE.amountMinor,
+    currency: "CNY",
+    paymentToken: null,
+    expiresAt: "2026-08-19T02:30:00.000Z",
+    paidAt: null,
+  });
+});
+
 test("rejects a SUCCESS Native query without trade_type", async () => {
   const transaction = nativeTransaction({
     trade_state: "SUCCESS",

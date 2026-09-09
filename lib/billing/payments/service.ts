@@ -564,8 +564,12 @@ function assertVerifiedQueryPayment(
       hasProviderTransactionId &&
       payment.paymentToken === null &&
       paidAt !== null) ||
-    ((payment.status === "FAILED" || payment.status === "CLOSED") &&
+    (payment.status === "FAILED" &&
       hasProviderTransactionId &&
+      payment.paymentToken === null &&
+      paidAt === null) ||
+    (payment.status === "CLOSED" &&
+      (payment.providerTransactionId === null || hasProviderTransactionId) &&
       payment.paymentToken === null &&
       paidAt === null) ||
     (payment.status === "REQUIRES_NEW_PAYMENT" &&

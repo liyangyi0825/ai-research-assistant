@@ -197,6 +197,52 @@ test("014 accepts a later verified webhook for the same query-settled payment wi
   );
 });
 
+test("018 persists verified CLOSED queries without a provider transaction id", () => {
+  const sql = compactSql(
+    "supabase/migrations/202609090018_wechat_closed_query_without_transaction.sql",
+  );
+  const types = projectFile("lib/billing/database.types.ts");
+
+  assert.match(sql, /^begin;/);
+  assert.match(sql, /commit;$/);
+  assert.match(
+    sql,
+    /alter table public\.billing_payment_intents drop constraint if exists billing_payment_intents_lifecycle_check/,
+  );
+  assert.match(
+    sql,
+    /payment_status = 'failed' and provider_transaction_id is not null[\s\S]*payment_status = 'closed'[\s\S]*payment_token is null[\s\S]*paid_at is null/,
+  );
+  assert.match(
+    sql,
+    /p_payment_status = 'paid' and nullif\(btrim\(p_provider_transaction_id\), ''\) is null/,
+  );
+  assert.match(
+    sql,
+    /p_provider_transaction_id is not null and \( nullif\(btrim\(p_provider_transaction_id\), ''\) is null/,
+  );
+  assert.match(
+    sql,
+    /p_payment_status in \('failed', 'closed'\)[\s\S]*p_paid_at is null/,
+  );
+  assert.match(
+    sql,
+    /set provider_transaction_id = p_provider_transaction_id,[\s\S]*payment_status = p_payment_status/,
+  );
+  assert.match(
+    sql,
+    /revoke all on function public\.billing_bind_verified_payment_query\(\s*uuid, uuid, text, text, text, text, bigint, text, timestamptz, timestamptz\s*\) from public, anon, authenticated/,
+  );
+  assert.match(
+    sql,
+    /grant execute on function public\.billing_bind_verified_payment_query\(\s*uuid, uuid, text, text, text, text, bigint, text, timestamptz, timestamptz\s*\) to service_role/,
+  );
+  assert.match(
+    types,
+    /billing_bind_verified_payment_query:[\s\S]*?p_provider_transaction_id: string \| null;/,
+  );
+});
+
 test("015 revokes direct execution of the internal semester guard from every API role", () => {
   const sql = compactSql(
     "supabase/migrations/202608240015_internal_function_acl_hardening.sql",

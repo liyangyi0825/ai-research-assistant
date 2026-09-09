@@ -44,6 +44,7 @@ const expectedBillingMigrationFiles = [
   "202608240015_internal_function_acl_hardening.sql",
   "202608240016_semester_entitlement_guard_fix.sql",
   "202608280017_billing_credit_pack_refund.sql",
+  "202609090018_wechat_closed_query_without_transaction.sql",
 ] as const;
 const expectedBillingMigrationVersions = expectedBillingMigrationFiles.map(
   (name) => name.slice(0, 12),
@@ -326,6 +327,7 @@ function migrationConstraintShape(sql: string): string[] {
     ["billing_webhook_events", "billing_webhook_events_check"],
     ["billing_webhook_events", "billing_webhook_events_check1"],
     ["billing_payment_intents", "billing_payment_intents_check"],
+    ["billing_payment_intents", "billing_payment_intents_lifecycle_check"],
   ] as const) {
     if (new RegExp(`drop\\s+constraint\\s+if\\s+exists\\s+${droppedName}`, "i").test(sql)) {
       const index = constraints.indexOf(`${table}.c`);
@@ -376,9 +378,9 @@ function verifyConstraintManifest(sql: string): Array<{
 }
 
 function migrationExplicitConstraintNames(sql: string): string[] {
-  return [...sql.matchAll(
+  return [...new Set([...sql.matchAll(
     /alter\s+table\s+public\.([a-z0-9_]+)\s+add\s+constraint\s+([a-z0-9_]+)\s+(?:primary\s+key|foreign\s+key|unique|check)\b/gi,
-  )].map((match) => `${match[1]}.${match[2]}`.toLowerCase()).sort();
+  )].map((match) => `${match[1]}.${match[2]}`.toLowerCase()))].sort();
 }
 
 const indexAttributeCountGates = [
@@ -532,8 +534,8 @@ const wideConstraintSemantics = [
   {
     table: "billing_payment_intents",
     marker: "claim_expires_at IS NOT NULL",
-    migration: /billing_payment_intents_lifecycle_check[\s\S]*merchant_order_number[\s\S]*status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_status\s*=\s*'PENDING'[\s\S]*payment_token\s+is\s+not\s+null[\s\S]*payment_status\s*=\s*'PAID'[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
-    valid: "CHECK (((NULLIF(btrim(merchant_order_number), ''::text) IS NOT NULL) AND (((provider = 'WECHAT'::text) AND (merchant_order_number ~ '^[A-Za-z0-9_|*-]{6,32}$'::text)) OR ((provider <> 'WECHAT'::text) AND (merchant_order_number ~ '^[A-Za-z0-9_|*-]{1,64}$'::text))) AND (((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (last_error_code IS NULL) AND (((payment_status = 'PENDING'::text) AND (payment_token IS NOT NULL) AND (paid_at IS NULL)) OR ((payment_status = 'PAID'::text) AND (provider_transaction_id IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((payment_status = ANY (ARRAY['FAILED'::text, 'CLOSED'::text])) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NULL) AND (paid_at IS NULL)))) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL)))))",
+    migration: /billing_payment_intents_lifecycle_check[\s\S]*merchant_order_number[\s\S]*status\s*=\s*'CREATING'[\s\S]*claim_token\s+is\s+not\s+null[\s\S]*status\s*=\s*'CREATED'[\s\S]*payment_status\s*=\s*'PENDING'[\s\S]*payment_token\s+is\s+not\s+null[\s\S]*payment_status\s*=\s*'PAID'[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*payment_status\s*=\s*'FAILED'[\s\S]*provider_transaction_id\s+is\s+not\s+null[\s\S]*payment_status\s*=\s*'CLOSED'[\s\S]*status\s*=\s*'FAILED'[\s\S]*last_error_code/i,
+    valid: "CHECK (((NULLIF(btrim(merchant_order_number), ''::text) IS NOT NULL) AND (((provider = 'WECHAT'::text) AND (merchant_order_number ~ '^[A-Za-z0-9_|*-]{6,32}$'::text)) OR ((provider <> 'WECHAT'::text) AND (merchant_order_number ~ '^[A-Za-z0-9_|*-]{1,64}$'::text))) AND (((status = 'CREATING'::text) AND (claim_token IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (last_error_code IS NULL)) OR ((status = 'CREATED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (last_error_code IS NULL) AND (((payment_status = 'PENDING'::text) AND (payment_token IS NOT NULL) AND (paid_at IS NULL)) OR ((payment_status = 'PAID'::text) AND (provider_transaction_id IS NOT NULL) AND (paid_at IS NOT NULL)) OR ((payment_status = 'FAILED'::text) AND (provider_transaction_id IS NOT NULL) AND (payment_token IS NULL) AND (paid_at IS NULL)) OR ((payment_status = 'CLOSED'::text) AND (payment_token IS NULL) AND (paid_at IS NULL)))) OR ((status = 'FAILED'::text) AND (claim_token IS NULL) AND (claim_expires_at IS NULL) AND (provider_transaction_id IS NULL) AND (payment_token IS NULL) AND (payment_status IS NULL) AND (NULLIF(btrim(last_error_code), ''::text) IS NOT NULL)))))",
     mutationLeaf: "(claim_expires_at IS NOT NULL)",
   },
   {
@@ -941,7 +943,7 @@ test("manifest emits only the six safe top-level sections", async () => {
   ]);
 });
 
-test("manifest reports and verification requires the exact 001-017 migration history", async () => {
+test("manifest reports and verification requires the exact 001-018 migration history", async () => {
   const [manifest, verify] = await Promise.all([
     readDrillSql("manifest.sql"),
     readDrillSql("verify.sql"),
@@ -1388,7 +1390,7 @@ test("preflight plan fails closed when restore billing relations or migration hi
   assert.equal(emptyCheck.targetRef, restoreRef);
 });
 
-test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 017 separately", () => {
+test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 018 separately", () => {
   const plan = buildUpgradePlan(planInput());
   assert.deepEqual(plan.map(({ operation }) => operation), [
     "prepare-upgrade-009-workspace",
@@ -1421,6 +1423,9 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
     "copy-migration-017",
     "verify-upgrade-workspace-ref-before-017",
     "push-migration-017",
+    "copy-migration-018",
+    "verify-upgrade-workspace-ref-before-018",
+    "push-migration-018",
     "verify-upgraded-restore",
   ]);
   assert.deepEqual(plan[0].args, ["copy-migrations", "001-009", "upgrade-workspace"]);
@@ -1436,6 +1441,7 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.deepEqual(plan[21].args, ["copy-migrations", "015", "upgrade-workspace"]);
   assert.deepEqual(plan[24].args, ["copy-migrations", "016", "upgrade-workspace"]);
   assert.deepEqual(plan[27].args, ["copy-migrations", "017", "upgrade-workspace"]);
+  assert.deepEqual(plan[30].args, ["copy-migrations", "018", "upgrade-workspace"]);
   assert.deepEqual(plan[1].args, ["link", "--project-ref", restoreRef]);
   assert.deepEqual(plan[3].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[4].args.slice(0, 4), ["-X", "-v", "ON_ERROR_STOP=1", "-v"]);
@@ -1448,10 +1454,11 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.deepEqual(plan[23].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[26].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[29].args, ["db", "push", "--linked"]);
+  assert.deepEqual(plan[32].args, ["db", "push", "--linked"]);
   assert.ok(plan.every(({ targetRef }) => targetRef !== BILLING_SOURCE_PROJECT_REF));
 });
 
-test("migration copy ranges distinguish 010 through 017 and reject unknown or incomplete sets", () => {
+test("migration copy ranges distinguish 010 through 018 and reject unknown or incomplete sets", () => {
   assert.deepEqual(
     selectMigrationFiles("001-009", expectedBillingMigrationFiles),
     expectedBillingMigrationFiles.slice(0, 9),
@@ -1488,6 +1495,10 @@ test("migration copy ranges distinguish 010 through 017 and reject unknown or in
     selectMigrationFiles("017", expectedBillingMigrationFiles),
     [expectedBillingMigrationFiles[16]],
   );
+  assert.deepEqual(
+    selectMigrationFiles("018", expectedBillingMigrationFiles),
+    [expectedBillingMigrationFiles[17]],
+  );
   assert.throws(
     () => selectMigrationFiles("011", expectedBillingMigrationFiles.slice(0, 10)),
     /MIGRATION_SET_INVALID/,
@@ -1514,6 +1525,10 @@ test("migration copy ranges distinguish 010 through 017 and reject unknown or in
   );
   assert.throws(
     () => selectMigrationFiles("017", expectedBillingMigrationFiles.slice(0, 16)),
+    /MIGRATION_SET_INVALID/,
+  );
+  assert.throws(
+    () => selectMigrationFiles("018", expectedBillingMigrationFiles.slice(0, 17)),
     /MIGRATION_SET_INVALID/,
   );
 });

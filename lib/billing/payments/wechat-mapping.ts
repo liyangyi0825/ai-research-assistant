@@ -183,6 +183,8 @@ export function diagnoseWechatNativeTransaction(
     status === "PAID" ? normalizeWechatRfc3339(response.success_time) : null;
   const transactionIdMissing = response.transaction_id === undefined;
   const tradeTypeMissing = response.trade_type === undefined;
+  const closedWithoutTransaction =
+    response.trade_state === "CLOSED" && input.providerTransactionId === null;
   const transactionId =
     typeof response.transaction_id === "string"
       ? response.transaction_id
@@ -197,12 +199,15 @@ export function diagnoseWechatNativeTransaction(
   fail(response.out_trade_no !== input.orderNumber, "order_number_matches");
   fail(
     response.trade_type !== "NATIVE" &&
-      !(tradeTypeMissing && response.trade_state === "NOTPAY"),
+      !(
+        tradeTypeMissing &&
+        (response.trade_state === "NOTPAY" || response.trade_state === "CLOSED")
+      ),
     "trade_type_native",
   );
   fail(
     transactionIdMissing
-      ? response.trade_state !== "NOTPAY"
+      ? response.trade_state !== "NOTPAY" && !closedWithoutTransaction
       : !isSafePathIdentifier(transactionId, MAX_TRANSACTION_ID_LENGTH),
     "transaction_id_rule",
   );
@@ -213,7 +218,7 @@ export function diagnoseWechatNativeTransaction(
     "provider_transaction_id_matches",
   );
   fail(status === null, "trade_state_supported");
-  fail(!isRecord(amount), "amount_record");
+  fail(!isRecord(amount) && response.trade_state !== "CLOSED", "amount_record");
   if (isRecord(amount)) {
     fail(
       typeof amount.total !== "number" ||
@@ -274,6 +279,8 @@ export function parseWechatNativeTransaction(
     status === "PAID" ? normalizeWechatRfc3339(response.success_time) : null;
   const transactionIdMissing = response.transaction_id === undefined;
   const tradeTypeMissing = response.trade_type === undefined;
+  const closedWithoutTransaction =
+    response.trade_state === "CLOSED" && input.providerTransactionId === null;
   const transactionId =
     typeof response.transaction_id === "string"
       ? response.transaction_id
@@ -284,26 +291,30 @@ export function parseWechatNativeTransaction(
     response.mchid !== input.expectedMchId ||
     response.out_trade_no !== input.orderNumber ||
     (response.trade_type !== "NATIVE" &&
-      !(tradeTypeMissing && response.trade_state === "NOTPAY")) ||
+      !(
+        tradeTypeMissing &&
+        (response.trade_state === "NOTPAY" || response.trade_state === "CLOSED")
+      )) ||
     (transactionIdMissing
-      ? response.trade_state !== "NOTPAY"
+      ? response.trade_state !== "NOTPAY" && !closedWithoutTransaction
       : !isSafePathIdentifier(transactionId, MAX_TRANSACTION_ID_LENGTH)) ||
     (input.providerTransactionId !== null &&
       transactionId !== null &&
       transactionId !== input.providerTransactionId) ||
     status === null ||
-    !isRecord(amount) ||
-    typeof amount.total !== "number" ||
-    !Number.isSafeInteger(amount.total) ||
-    amount.total <= 0 ||
-    amount.currency !== "CNY" ||
-    !validOptionalAmountFields(amount) ||
+    (!isRecord(amount) && response.trade_state !== "CLOSED") ||
+    (isRecord(amount) &&
+      (typeof amount.total !== "number" ||
+        !Number.isSafeInteger(amount.total) ||
+        amount.total <= 0 ||
+        amount.currency !== "CNY" ||
+        !validOptionalAmountFields(amount))) ||
     typeof input.expectedAmountMinor !== "number" ||
     !Number.isSafeInteger(input.expectedAmountMinor) ||
     input.expectedAmountMinor <= 0 ||
-    amount.total !== input.expectedAmountMinor ||
+    (isRecord(amount) && amount.total !== input.expectedAmountMinor) ||
     input.expectedCurrency !== "CNY" ||
-    amount.currency !== input.expectedCurrency ||
+    (isRecord(amount) && amount.currency !== input.expectedCurrency) ||
     expectedExpiresAt === null ||
     (paidAt === null || Date.parse(paidAt) >= Date.parse(expectedExpiresAt)) &&
       status === "PAID" ||
@@ -323,7 +334,9 @@ export function parseWechatNativeTransaction(
     providerTransactionId: transactionId ?? input.providerTransactionId,
     orderNumber: response.out_trade_no,
     status,
-    amountMinor: amount.total,
+    amountMinor: isRecord(amount)
+      ? (amount.total as number)
+      : (input.expectedAmountMinor as number),
     currency: "CNY",
     paymentToken: status === "PENDING" ? paymentToken : null,
     expiresAt: expectedExpiresAt,
