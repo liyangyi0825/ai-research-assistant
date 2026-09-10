@@ -3,7 +3,13 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useEffect, useState } from "react";
+import {
+  createContext,
+  FormEvent,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
 import type { PublicBillingProduct } from "@/lib/billing/products";
 import type {
@@ -24,6 +30,21 @@ type BillingFetch = (
   input: string,
   init?: RequestInit,
 ) => Promise<Response>;
+
+type CheckoutRouter = {
+  push(path: string): void;
+};
+
+export type CheckoutPanelDependencies = {
+  fetcher: BillingFetch;
+  router: CheckoutRouter;
+};
+
+const CheckoutPanelDependenciesContext =
+  createContext<CheckoutPanelDependencies | null>(null);
+
+export const CheckoutPanelDependenciesProvider =
+  CheckoutPanelDependenciesContext.Provider;
 
 type BillingOrderRequest = {
   productId: string;
@@ -77,7 +98,40 @@ export async function requestBillingOrder(
 }
 
 export function CheckoutPanel({ productId }: { productId: string }) {
+  const dependencies = useContext(CheckoutPanelDependenciesContext);
+  if (dependencies) {
+    return (
+      <CheckoutPanelContent
+        productId={productId}
+        fetcher={dependencies.fetcher}
+        router={dependencies.router}
+      />
+    );
+  }
+
+  return <CheckoutPanelWithRouter productId={productId} />;
+}
+
+function CheckoutPanelWithRouter({ productId }: { productId: string }) {
   const router = useRouter();
+  return (
+    <CheckoutPanelContent
+      productId={productId}
+      fetcher={fetch}
+      router={router}
+    />
+  );
+}
+
+function CheckoutPanelContent({
+  productId,
+  fetcher,
+  router,
+}: {
+  productId: string;
+  fetcher: BillingFetch;
+  router: CheckoutRouter;
+}) {
   const [product, setProduct] = useState<PublicBillingProduct | null>(null);
   const [availability, setAvailability] =
     useState<BillingAvailability | null>(null);
@@ -91,11 +145,11 @@ export function CheckoutPanel({ productId }: { productId: string }) {
   useEffect(() => {
     const controller = new AbortController();
     Promise.all([
-      fetch("/api/billing/products", {
+      fetcher("/api/billing/products", {
         signal: controller.signal,
         cache: "no-store",
       }),
-      fetch("/api/billing/availability", {
+      fetcher("/api/billing/availability", {
         signal: controller.signal,
         cache: "no-store",
       }),
@@ -124,7 +178,7 @@ export function CheckoutPanel({ productId }: { productId: string }) {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [productId]);
+  }, [fetcher, productId]);
 
   useEffect(() => {
     if (!pendingOrderId) return;
@@ -132,7 +186,7 @@ export function CheckoutPanel({ productId }: { productId: string }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
-        const response = await fetch(
+        const response = await fetcher(
           `/api/billing/orders/${encodeURIComponent(pendingOrderId)}/payment`,
           { cache: "no-store" },
         );
@@ -161,7 +215,7 @@ export function CheckoutPanel({ productId }: { productId: string }) {
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [pendingOrderId, router]);
+  }, [fetcher, pendingOrderId, router]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -178,11 +232,14 @@ export function CheckoutPanel({ productId }: { productId: string }) {
     setMessage(null);
     setWechatQrCode(null);
     try {
-      const orderResult = await requestBillingOrder({
-        productId: product.id,
-        provider: availability.paymentMode,
-        acceptedAgreementVersion: availability.agreementVersion,
-      });
+      const orderResult = await requestBillingOrder(
+        {
+          productId: product.id,
+          provider: availability.paymentMode,
+          acceptedAgreementVersion: availability.agreementVersion,
+        },
+        fetcher,
+      );
       if (orderResult.kind === "unauthorized") {
         setMessage("请先登录，再继续确认订单。");
         return;
@@ -191,7 +248,7 @@ export function CheckoutPanel({ productId }: { productId: string }) {
         setMessage(orderResult.message);
         return;
       }
-      const paymentResponse = await fetch(
+      const paymentResponse = await fetcher(
         `/api/billing/orders/${encodeURIComponent(orderResult.orderId)}/payment`,
         { method: "POST" },
       );

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { act, createElement } from "react";
 
 import {
   assertBillingAccess,
@@ -14,6 +15,7 @@ import type {
   BillingSummary,
   BillingUserPageRepository,
 } from "../../lib/billing/user-pages";
+import { createReactDomHarness } from "./helpers/react-dom-harness";
 
 async function userPagesModule() {
   try {
@@ -99,6 +101,71 @@ function summary(): BillingSummary {
     refunds: [],
     invoices: [],
   };
+}
+
+function publicProducts(): PublicBillingProduct[] {
+  return [
+    {
+      id: "monthly-product",
+      sku: "PRO_MONTHLY",
+      name: "Pro Monthly",
+      description: "30 天科研订阅",
+      productType: "SUBSCRIPTION",
+      priceMinor: 1990,
+      currency: "CNY",
+      durationDays: 30,
+      creditGrant: 0,
+      displayMetadata: {},
+    },
+    {
+      id: "semester-product",
+      sku: "PRO_SEMESTER",
+      name: "Pro Semester",
+      description: "150 天科研订阅",
+      productType: "SUBSCRIPTION",
+      priceMinor: 7900,
+      currency: "CNY",
+      durationDays: 150,
+      creditGrant: 0,
+      displayMetadata: {},
+    },
+    {
+      id: "credits-product",
+      sku: "CREDIT_PACK_100",
+      name: "100 credits",
+      description: "独立 credits 包",
+      productType: "CREDIT_PACK",
+      priceMinor: 990,
+      currency: "CNY",
+      durationDays: null,
+      creditGrant: 100,
+      displayMetadata: {},
+    },
+  ];
+}
+
+function pricingFetch(options: {
+  summaryResponse: Response;
+  available: boolean;
+  calls: string[];
+}): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    options.calls.push(url);
+    if (url === "/api/billing/products") {
+      return Response.json({ products: publicProducts() });
+    }
+    if (url === "/api/billing/availability") {
+      return Response.json({
+        available: options.available,
+        paymentMode: options.available ? "mock" : null,
+        mockConfirmationAllowed: options.available,
+        agreementVersion: options.available ? "billing-member-v1" : null,
+      });
+    }
+    if (url === "/api/billing/summary") return options.summaryResponse;
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
 }
 
 function repository(
@@ -426,6 +493,227 @@ test("subscription purchase conflict is stable and does not retry order creation
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.input, "/api/billing/orders");
   assert.equal(calls[0]?.init?.method, "POST");
+});
+
+test("PricingProducts renders subscriptions disabled, credits linked, and purchase terms", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = pricingFetch({
+    summaryResponse: Response.json({ summary: summary() }),
+    available: true,
+    calls,
+  });
+
+  try {
+    const { PricingProducts } = await import(
+      "../../components/billing/PricingProducts"
+    );
+    await harness.render(createElement(PricingProducts));
+
+    const articles = Array.from(
+      harness.container.querySelectorAll("article"),
+    );
+    assert.equal(articles.length, 3);
+    const monthly = articles.find((article) =>
+      article.textContent?.includes("Pro Monthly"),
+    );
+    const semester = articles.find((article) =>
+      article.textContent?.includes("Pro Semester"),
+    );
+    const credits = articles.find((article) =>
+      article.textContent?.includes("100 credits"),
+    );
+    assert.ok(monthly);
+    assert.ok(semester);
+    assert.ok(credits);
+
+    for (const subscription of [monthly, semester]) {
+      assert.equal(subscription.querySelector("a"), null);
+      assert.ok(subscription.querySelector('[aria-disabled="true"]'));
+      assert.match(subscription.textContent ?? "", /科研月度方案/);
+      assert.match(subscription.textContent ?? "", /2026年8月1日/);
+      assert.match(subscription.textContent ?? "", /一次性支付，不自动续费/);
+    }
+    assert.match(monthly.textContent ?? "", /完整的 30 天周期/);
+    assert.match(
+      semester.textContent ?? "",
+      /额度覆盖一个完整的 150 天周期，不按月重置/,
+    );
+    assert.equal(
+      credits.querySelector("a")?.getAttribute("href"),
+      "/checkout/credits-product",
+    );
+    assert.deepEqual(calls, [
+      "/api/billing/products",
+      "/api/billing/availability",
+      "/api/billing/summary",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("PricingProducts renders gated cards when summary returns 401", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = pricingFetch({
+    summaryResponse: Response.json(
+      { error: { code: "UNAUTHENTICATED", message: "Sign in required." } },
+      { status: 401 },
+    ),
+    available: false,
+    calls,
+  });
+
+  try {
+    const { PricingProducts } = await import(
+      "../../components/billing/PricingProducts"
+    );
+    await harness.render(createElement(PricingProducts));
+
+    assert.equal(harness.container.querySelectorAll("article").length, 3);
+    assert.equal(harness.container.querySelectorAll("article a").length, 0);
+    assert.equal(
+      harness.container.textContent?.includes("套餐信息暂时无法加载"),
+      false,
+    );
+    assert.equal(
+      harness.container.textContent?.match(/当前账号暂未开放购买/g)?.length,
+      3,
+    );
+    assert.deepEqual(calls, [
+      "/api/billing/products",
+      "/api/billing/availability",
+      "/api/billing/summary",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("PricingProducts renders its error state when summary fails outside 401", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = pricingFetch({
+    summaryResponse: Response.json(
+      { error: { code: "INTERNAL_BILLING_ERROR" } },
+      { status: 503 },
+    ),
+    available: true,
+    calls: [],
+  });
+
+  try {
+    const { PricingProducts } = await import(
+      "../../components/billing/PricingProducts"
+    );
+    await harness.render(createElement(PricingProducts));
+
+    assert.equal(harness.container.querySelectorAll("article").length, 0);
+    assert.match(
+      harness.container.textContent ?? "",
+      /套餐信息暂时无法加载。请稍后刷新页面/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("CheckoutPanel renders the active-subscription conflict after one order POST", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("CheckoutPanel must use the injected fetch port");
+  }) as typeof fetch;
+  const calls: Array<{ url: string; method: string }> = [];
+  const navigations: string[] = [];
+  const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    calls.push({ url, method });
+    if (url === "/api/billing/products") {
+      return Response.json({ products: publicProducts() });
+    }
+    if (url === "/api/billing/availability") {
+      return Response.json({
+        available: true,
+        paymentMode: "mock",
+        mockConfirmationAllowed: true,
+        agreementVersion: "billing-member-v1",
+      });
+    }
+    if (url === "/api/billing/orders" && method === "POST") {
+      return Response.json(
+        {
+          error: {
+            code: "ACTIVE_SUBSCRIPTION_EXISTS",
+            message: "unsafe repository detail",
+          },
+        },
+        { status: 409 },
+      );
+    }
+    throw new Error(`unexpected checkout request: ${method} ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const { CheckoutPanel, CheckoutPanelDependenciesProvider } = await import(
+      "../../components/billing/CheckoutPanel"
+    );
+    assert.ok(CheckoutPanelDependenciesProvider);
+    await harness.render(
+      createElement(
+        CheckoutPanelDependenciesProvider,
+        {
+          value: {
+            fetcher,
+            router: { push: (path: string) => navigations.push(path) },
+          },
+        },
+        createElement(CheckoutPanel, { productId: "semester-product" }),
+      ),
+    );
+
+    const checkbox = harness.container.querySelector<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    const form = harness.container.querySelector("form");
+    assert.ok(checkbox);
+    assert.ok(form);
+    await act(async () => {
+      checkbox.click();
+    });
+    await act(async () => {
+      form.dispatchEvent(
+        new harness.window.Event("submit", {
+          bubbles: true,
+          cancelable: true,
+        }) as unknown as Event,
+      );
+      await Promise.resolve();
+    });
+    await harness.flush();
+
+    assert.match(
+      harness.container.textContent ?? "",
+      /当前已有有效订阅，请在现有方案到期后再购买新的订阅。credits 包仍可单独购买。/,
+    );
+    assert.deepEqual(
+      calls.filter(
+        (call) => call.url === "/api/billing/orders" && call.method === "POST",
+      ),
+      [{ url: "/api/billing/orders", method: "POST" }],
+    );
+    assert.deepEqual(navigations, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
 });
 
 test("disabled billing has no purchase action and production mock confirmation is gated", async () => {
