@@ -19,6 +19,16 @@ BILLING_REAL_PAYMENT_PUBLIC_ENABLED=false
 - 根目录 `instrumentation.ts` 的 `register()` 会在 Next.js 服务实例就绪前调用 Billing 启动校验；默认关闭配置可正常构建和启动，不安全的生产 Mock 或缺少正式 Provider 配置会阻止实例就绪。
 - 不要在仓库、数据库或日志中保存真实商户密钥。
 
+## 批准目录与业务门禁
+
+迁移 `202609100019_monthly_semester_catalog.sql` 在获批并应用的目标环境中定义三个活跃商品；这里描述目标状态，不表示生产已经迁移或部署：
+
+- `PRO_MONTHLY`：1990 个 CNY 最小货币单位（19.90 元）、30 天、`pro-v1`。
+- `PRO_SEMESTER`：7900 个 CNY 最小货币单位（79.00 元）、150 天、`pro-semester-v1`。它与月套餐使用相同的 13 个功能键，所有周期额度严格为月套餐对应值的 5 倍，并在一个完整 150 天周期内共享，不按月重置。
+- `CREDIT_PACK_100`：990 个 CNY 最小货币单位（9.90 元）、100 credits、`credit-v1`。
+
+月套餐与学期套餐均使用微信 Native 一次性支付，订阅必须保持 `auto_renew=false`。用户已有尚未到期的 `ACTIVE` 订阅，或另一笔尚未过期的 `PENDING` 订阅订单时，服务端以稳定的 `409 ACTIVE_SUBSCRIPTION_EXISTS` 拒绝新的订阅订单；credits 包不受此门禁影响，仍可购买。完全未使用的订阅只允许全额原路退款；任一相关额度已经使用的订阅不得自动退款，必须进入人工审核。`PRO_YEARLY`、`FREE` 商品和其他未批准 SKU 仍禁止激活。
+
 ## 环境变量
 
 法律信息在备案和法律审核确认前应留空；页面使用中性占位符，不得擅自切换运营主体。
@@ -77,6 +87,13 @@ ALIPAY_RETURN_URL=
 12. `202608160012_billing_refund_execution.sql`
 13. `202608180013_billing_webhook_retry.sql`
 14. `202608210014_wechat_native_payment_intents.sql`
+15. `202608240015_internal_function_acl_hardening.sql`
+16. `202608240016_semester_entitlement_guard_fix.sql`
+17. `202608280017_billing_credit_pack_refund.sql`
+18. `202609090018_wechat_closed_query_without_transaction.sql`
+19. `202609100019_monthly_semester_catalog.sql`
+
+`019` 激活并校验上述三个批准商品，并为订阅订单创建与结算增加并发安全门禁。应用 `019` 必须经过目标环境、备份、执行和回滚条件的单独审批；不得把仓库中存在该文件或测试通过解释为生产已经执行。
 
 ### 2026-08-05 独立测试库验收记录
 
@@ -84,7 +101,7 @@ ALIPAY_RETURN_URL=
 
 - 已验收迁移 `001`–`010`，本地迁移目录与该测试项目的远程迁移记录一致。
 - 已在该测试库验证真实 RPC 的额度并发预占、确认、失败返还及重复请求幂等；并验证支付结算重复回调不会重复入账，金额或币种不一致会被拒绝。
-- 已验收目录数据：Free、Pro Monthly、Pro Semester、Credit Pack 100；Free 不创建零元商品，所有 Plan 与 Product 均保持 `is_active=false`，匿名用户不可见商品。
+- 已验收当时的目录数据：Free、Pro Monthly、Pro Semester、Credit Pack 100；Free 不创建零元商品，当次记录中的 Plan 与 Product 均为 `is_active=false`，匿名用户不可见商品。该历史记录早于迁移 `019`，不表示月套餐必须继续停用，也不表示 `019` 已在任何生产环境执行。
 - 此验收不构成生产迁移、生产支付或公开销售授权。生产环境须另行完成备份、变更审批、回滚演练和上线验收。
 
 本地 Supabase 可使用：

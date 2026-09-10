@@ -1,15 +1,14 @@
 # 收费快速上线验收基线
 
-当前快速上线范围仅包含一次性购买，不包含自动续费或自动扣款。
+当前快速上线范围仅包含微信 Native 一次性购买，不包含自动续费或自动扣款。月套餐与学期套餐创建的订阅必须保持 `auto_renew=false`。
 
 ## 目录契约
 
-- `FREE` 是默认免费套餐，不创建零元购买商品。
-- `PRO_MONTHLY` 可保留为后台配置，但必须保持 `is_active=false`，不进入首发可售目录。
-- `PRO_SEMESTER` 的后端配置为 7900 分 CNY、150 天、`pro-semester-v1` 权益；13 项周期额度均为停用的 `PRO_MONTHLY`（`pro-v1`）对应额度的五倍。`FREE` 只作为免费基线，不再作为学期套餐倍率基线。
-- `CREDIT_PACK_100` 的后端配置为 990 分 CNY、100 credits、`credit-v1` 权益。
-- 不创建 `PRO_YEARLY` 商品。
-- 预发布期间所有商品保持 `is_active=false`，因此公开商品接口返回空目录。
+- 迁移 `202609100019_monthly_semester_catalog.sql` 在获批并应用的目标环境中定义三个活跃商品；本文不表示该迁移已经在生产执行。
+- `PRO_MONTHLY`：1990 个 CNY 最小货币单位（19.90 元）、30 天、`pro-v1` 权益。
+- `PRO_SEMESTER`：7900 个 CNY 最小货币单位（79.00 元）、150 天、`pro-semester-v1` 权益。它与月套餐使用相同的 13 个功能键：`summarize`、`chat`、`translate`、`ppt_generate`、`concept_explore`、`keyword_gen`、`bibtex_export`、`extract_refs`、`profile_summarize`、`literature_review`、`latex_export`、`data_clean`、`polish`；每项额度严格为月套餐对应额度的 5 倍，并在一个完整的 150 天周期内共享，不按月重置。
+- `CREDIT_PACK_100`：990 个 CNY 最小货币单位（9.90 元）、100 credits、`credit-v1` 权益。
+- `FREE` 只作为免费基线，不创建或激活零元购买商品；`PRO_YEARLY`、`FREE` 商品和任何未批准 SKU 均不得激活。
 
 价格、期限、额度和权益版本由数据库及服务端目录提供，定价页和结算页不得嵌入这些业务数值。创建订单时必须重新读取可用商品，并把服务端价格、币种和权益写入不可变订单快照；客户端金额和币种不参与定价。
 
@@ -18,10 +17,17 @@
 管理员对停用商品的维护仍被允许。尝试将商品设为启用时，服务端同时要求：
 
 1. `BILLING_FEATURE_ENABLED=true`；
-2. SKU 只能是 `PRO_SEMESTER` 或 `CREDIT_PACK_100`；
+2. SKU 只能是 `PRO_MONTHLY`、`PRO_SEMESTER` 或 `CREDIT_PACK_100`；
 3. 商品类型、价格、期限、额度和权益版本与上述批准目录完全一致。
 
-`PRO_MONTHLY`、`PRO_YEARLY`、`FREE` 或其他 SKU 均不得通过管理员服务激活。前端隐藏按钮不是安全边界，激活限制由服务端执行。
+`PRO_YEARLY`、`FREE` 或其他未批准 SKU 均不得通过管理员服务激活。前端隐藏按钮不是安全边界，激活限制由服务端执行。
+
+## 订阅购买与退款门禁
+
+- 用户已有尚未到期的 `ACTIVE` 订阅，或已有另一笔尚未过期的 `PENDING` 订阅订单时，任何新的月套餐或学期套餐订单都必须以稳定的 HTTP `409` 和错误码 `ACTIVE_SUBSCRIPTION_EXISTS` 拒绝。数据库迁移 `019` 的事务级用户锁与服务端映射共同执行该门禁。
+- 该门禁不阻止 `CREDIT_PACK_100`；credits 包在已有订阅或待支付订阅订单期间仍可购买。
+- 完全未使用的月套餐或学期套餐只允许按原始支付路径全额退款；成功退款同时撤销相应订阅、权益与未使用 quota，不提供按比例或剩余天数折算。
+- 只要订阅任一相关额度已经使用，就不得自动退款，必须进入人工审核并保留既有审计、幂等和微信退款安全约束。
 
 ## 当前发布状态
 
