@@ -113,17 +113,20 @@ async function purchase(
   return { order, payment, callback };
 }
 
-test("unused Pro Semester completes the real mock purchase and automatic refund chain", async () => {
+for (const [sku, price, days] of [["PRO_MONTHLY", 1_990, 30], ["PRO_SEMESTER", 7_900, 150]] as const) {
+test(`unused ${sku} completes purchase and refunds exactly once`, async () => {
   const state = new MockBillingState();
-  const provider = mockProvider();
-  const { order, callback } = await purchase(state, provider, SEMESTER_PRODUCT.id);
+  const provider = countingProvider();
+  const product = [...state.products.values()].find((item) => item.sku === sku);
+  assert.ok(product, `${sku} must be available for lifecycle coverage`);
+  const { order, callback } = await purchase(state, provider, product.id);
 
   assert.equal(callback.status, "PROCESSED");
-  assert.equal(state.orders[0]?.amountMinor, 7_900);
-  assert.equal(state.orders[0]?.snapshotDurationDays, 150);
+  assert.equal(state.orders[0]?.amountMinor, price);
+  assert.equal(state.orders[0]?.snapshotDurationDays, days);
   assert.equal(state.subscriptions[0]?.status, "ACTIVE");
   assert.equal(state.entitlements.length, 13);
-  assert.equal(state.quotas.find((quota) => quota.featureKey === "summarize")?.limit, 500);
+  assert.equal(state.quotas.find((quota) => quota.featureKey === "summarize")?.limit, sku === "PRO_MONTHLY" ? 100 : 500);
 
   const request = await submitRefundRequest(
     { userId: TEST_USER_ID, orderId: order.id, reasonCode: "NO_LONGER_NEEDED", details: "Not used" },
@@ -148,7 +151,21 @@ test("unused Pro Semester completes the real mock purchase and automatic refund 
   assert.equal(state.subscriptions[0]?.status, "CANCELLED");
   assert.ok(state.entitlements.every((item) => item.validUntil === TEST_NOW.toISOString()));
   assert.ok(state.quotas.every((item) => item.limit === 0));
+  const revoked = structuredClone({ subscriptions: state.subscriptions, entitlements: state.entitlements, quotas: state.quotas });
+  const replay = await executeApprovedRefund(request.id, {
+    repository: state.refundExecutionRepository,
+    getConfig: () => TEST_CONFIG,
+    getProvider: () => provider,
+    now: () => TEST_NOW,
+    createClaimToken: () => "refund-claim-replay",
+  });
+  assert.deepEqual(replay, execution);
+  assert.equal(execution.refund.refundedAmountMinor, price);
+  assert.equal(provider.refundCalls, 1);
+  assert.equal(state.refunds.length, 1);
+  assert.deepEqual({ subscriptions: state.subscriptions, entitlements: state.entitlements, quotas: state.quotas }, revoked);
 });
+}
 
 test("Pro Semester uses backend price, grants once, settles usage, releases failures, and blocks automatic refund after use", async () => {
   const state = new MockBillingState();

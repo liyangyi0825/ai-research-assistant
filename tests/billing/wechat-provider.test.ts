@@ -18,7 +18,10 @@ import {
   type BillingActor,
   type BillingAdmin,
 } from "../../lib/billing/auth";
-import type { BillingConfig } from "../../lib/billing/config";
+import { BILLING_AGREEMENT_VERSION, type BillingConfig } from "../../lib/billing/config";
+import { createOrder } from "../../lib/billing/orders";
+import { submitRefundRequest } from "../../lib/billing/user-pages";
+import { MockBillingState, TEST_ADMIN, TEST_CONFIG, TEST_USER_ID } from "./helpers/mock-billing-state";
 import { BillingError } from "../../lib/billing/errors";
 import {
   createOrderPayment,
@@ -379,6 +382,125 @@ const TOO_LARGE = {
   status: 413,
   message: "The payment webhook body is too large.",
 } as const;
+
+test("monthly and semester signed WeChat lifecycle preserves snapshots, full-period quotas and replay-safe refunds", async () => {
+  const limitsBySku = new Map<string, Map<string, number | null>>();
+  for (const [sku, price, days, version] of [
+    ["PRO_MONTHLY", 1_990, 30, "pro-v1"],
+    ["PRO_SEMESTER", 7_900, 150, "pro-semester-v1"],
+  ] as const) {
+    const state = new MockBillingState(() => NOW);
+    const product = [...state.products.values()].find((item) => item.sku === sku);
+    assert.ok(product);
+    const billingConfig: BillingConfig = { ...TEST_CONFIG, paymentMode: "wechat", wechatConfigured: true };
+    const order = await createOrder({
+      userId: TEST_USER_ID, productId: product.id, provider: "wechat",
+      acceptedAgreementVersion: BILLING_AGREEMENT_VERSION,
+    }, { repository: state.billingRepository, now: () => NOW, paymentMode: "wechat", createOrderNumber: () => `BILL-${sku}` });
+    const merchantOrderNumber = `PAY-${sku}`;
+    const transaction = { ...BASE_TRANSACTION, out_trade_no: merchantOrderNumber, amount: { total: price, currency: "CNY" } };
+    const requests: Array<{ method: string; body: unknown }> = [];
+    const responses = [signedResponse({ code_url: "weixin://wxpay/bizpayurl?pr=lifecycle" }), signedResponse(transaction), signedResponse(transaction)];
+    const wechat = new WechatPayProvider({
+      config: config(), now: () => NOW,
+      httpClient: new WechatHttpClient({
+        config: config(), now: () => NOW, nonce: () => "lifecycle-nonce",
+        fetchImpl: async (_url, init) => {
+          requests.push({ method: init.method ?? "GET", body: init.body ? JSON.parse(String(init.body)) : undefined });
+          const response = responses.shift();
+          assert.ok(response, "unexpected provider request");
+          return response;
+        },
+      }),
+    });
+    // Catalog edits after creation must never alter the charged amount or grants.
+    product.priceMinor = 1;
+    product.durationDays = 1;
+    product.entitlements = [];
+    await createOrderPayment(TEST_USER_ID, order.id, {
+      repository: state.paymentRepository, getConfig: () => billingConfig,
+      getProvider: () => wechat, now: () => NOW,
+      createMerchantOrderNumber: () => merchantOrderNumber,
+    });
+    const receive = (eventId: string) => {
+      const callback = fixture({ transaction, outerOverrides: { id: eventId } });
+      return processPaymentWebhook("wechat", callback.rawBody, callback.headers, {
+        repository: state.webhookRepository, getConfig: () => billingConfig, getProvider: () => wechat,
+      });
+    };
+    const concurrent = await Promise.all([receive("LIFECYCLE-1"), receive("LIFECYCLE-1"), receive("LIFECYCLE-2")]);
+    assert.equal(concurrent.filter((result) => result.status === "PROCESSED").length, 1);
+    assert.equal(concurrent.filter((result) => result.status === "ALREADY_PROCESSED").length, 2);
+    assert.equal((await receive("LIFECYCLE-1")).status, "ALREADY_PROCESSED");
+    assert.equal((await receive("LIFECYCLE-3")).status, "ALREADY_PROCESSED");
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const queried = await queryAndBindOrderPayment(TEST_USER_ID, order.id, {
+        repository: state.paymentRepository, getConfig: () => billingConfig, getProvider: () => wechat,
+      });
+      assert.equal(queried.status, "PAID");
+    }
+    assert.equal(state.orders.length, 1);
+    assert.equal(state.orders[0].status, "PAID");
+    assert.equal(state.orders[0].snapshotEntitlementVersion, version);
+    assert.equal(state.payments.length, 1);
+    assert.equal(state.payments[0].provider, "WECHAT");
+    assert.equal(state.payments[0].amountMinor, price);
+    assert.equal(state.subscriptions.length, 1);
+    const subscription = state.subscriptions[0];
+    assert.equal(subscription.autoRenew, false);
+    assert.equal(Date.parse(subscription.endsAt) - Date.parse(subscription.startsAt), days * 86_400_000);
+    const limits = new Map(state.entitlements.map((item) => [item.featureKey, item.periodicLimit]));
+    limitsBySku.set(sku, limits);
+    assert.equal(state.entitlements.length, 13);
+    assert.equal(limits.size, 13);
+    assert.equal(state.quotas.length, 13);
+    assert.equal(new Set(state.quotas.map((item) => item.featureKey)).size, 13);
+    for (const quota of state.quotas) {
+      assert.equal(quota.limit, limits.get(quota.featureKey));
+      assert.equal(quota.periodStart, subscription.startsAt);
+      assert.equal(quota.periodEnd, subscription.endsAt);
+    }
+    assert.ok(state.entitlements.every((item) => item.validFrom === subscription.startsAt && item.validUntil === subscription.endsAt));
+    const request = await submitRefundRequest({ userId: TEST_USER_ID, orderId: order.id, reasonCode: "NO_LONGER_NEEDED", details: "Unused" }, { repository: state.userPageRepository });
+    await reviewRefundRequest(TEST_ADMIN, { requestId: request.id, decision: "APPROVED", reason: "Unused full refund", idempotencyKey: `review-${sku}` }, state.adminRepository);
+    responses.push(signedResponse(refundResponse({
+      out_refund_no: stableWechatRefundNumber(`billing-refund:${request.id}`),
+      amount: { refund: price, total: price, currency: "CNY" },
+    })));
+    let completions = 0;
+    const execute = () => executeApprovedRefund(request.id, {
+      repository: { ...state.refundExecutionRepository, completeRefund: async (input) => {
+        completions += 1;
+        return state.refundExecutionRepository.completeRefund(input);
+      } }, getConfig: () => billingConfig, getProvider: () => wechat, now: () => NOW,
+    });
+    const refunded = await execute();
+    assert.deepEqual(await execute(), refunded);
+    assert.equal(completions, 1);
+    assert.equal(refunded.refund.refundedAmountMinor, price);
+    assert.equal(state.orders[0].status, "REFUNDED");
+    assert.equal(state.orders[0].refundStatus, "FULL");
+    assert.equal(state.payments[0].status, "REFUNDED");
+    assert.equal(subscription.status, "CANCELLED");
+    assert.ok(state.entitlements.every((item) => item.validUntil === NOW.toISOString()));
+    assert.ok(state.quotas.every((item) => item.limit === 0 && item.periodEnd === NOW.toISOString()));
+    assert.equal(state.refunds.length, 1);
+    assert.equal(responses.length, 0);
+    assert.deepEqual((requests[0].body as { amount: unknown }).amount, { total: price, currency: "CNY" });
+    assert.deepEqual(requests[3].body, {
+      transaction_id: "4200000000001", out_refund_no: stableWechatRefundNumber(`billing-refund:${request.id}`),
+      reason: "USER_APPROVED_FULL_REFUND", amount: { refund: price, total: price, currency: "CNY" },
+    });
+    assert.equal(requests.length, 4);
+  }
+  const monthly = limitsBySku.get("PRO_MONTHLY")!;
+  const semester = limitsBySku.get("PRO_SEMESTER")!;
+  assert.deepEqual([...monthly.keys()].sort(), ["bibtex_export", "chat", "concept_explore", "data_clean", "extract_refs", "keyword_gen", "latex_export", "literature_review", "polish", "ppt_generate", "profile_summarize", "summarize", "translate"]);
+  assert.deepEqual([...semester.keys()].sort(), [...monthly.keys()].sort());
+  for (const [featureKey, limit] of monthly) {
+    assert.equal(semester.get(featureKey), limit === null ? null : limit * 5);
+  }
+});
 
 test("verifies exact callback bytes and maps a paid transaction DTO", async () => {
   let fetchCalls = 0;

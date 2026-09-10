@@ -10,13 +10,14 @@ import type {
   BillingOrder,
   BillingOrderInsert,
   BillingProduct,
+  BillingProvider,
   BillingRepository,
 } from "../../../lib/billing/repositories";
 import type {
   ClaimPaymentIntentInput,
   CompletePaymentIntentInput,
   PaymentOrderSnapshot,
-  MockPaymentConfirmationRepository,
+  PaymentQueryRepository,
   StoredPaymentResult,
 } from "../../../lib/billing/payments/service";
 import type {
@@ -98,6 +99,28 @@ export const SEMESTER_PRODUCT: BillingProduct = {
   })),
 };
 
+export const MONTHLY_PRODUCT: BillingProduct = {
+  ...SEMESTER_PRODUCT,
+  id: "00000000-0000-4000-8000-000000000304",
+  planId: "00000000-0000-4000-8000-000000000305",
+  sku: "PRO_MONTHLY",
+  name: "Pro Monthly",
+  description: "30 day research plan",
+  priceMinor: 1_990,
+  durationDays: 30,
+  entitlementVersion: "pro-v1",
+  entitlements: [
+    ["summarize", 100], ["chat", 1000], ["translate", 30],
+    ["ppt_generate", 30], ["concept_explore", 100], ["keyword_gen", 200],
+    ["bibtex_export", 1000], ["extract_refs", 100], ["profile_summarize", 100],
+    ["literature_review", 30], ["latex_export", 100], ["data_clean", 100],
+    ["polish", 100],
+  ].map(([featureKey, periodicLimit]) => ({
+    featureKey: String(featureKey), periodicLimit: Number(periodicLimit),
+    entitlementVersion: "pro-v1", creditGrant: 0, configuration: {},
+  })),
+};
+
 export const CREDIT_PRODUCT: BillingProduct = {
   id: "00000000-0000-4000-8000-000000000303",
   planId: null,
@@ -124,7 +147,7 @@ type PaymentRow = Omit<
   id: string;
   orderId: string;
   userId: string;
-  provider: "MOCK";
+  provider: BillingProvider;
   requestIdempotencyKey: string;
 };
 
@@ -136,6 +159,7 @@ type SubscriptionRow = {
   status: "ACTIVE" | "CANCELLED";
   startsAt: string;
   endsAt: string;
+  autoRenew: false;
 };
 
 type EntitlementRow = {
@@ -182,8 +206,10 @@ type RefundRow = {
 };
 
 export class MockBillingState {
+  constructor(private readonly now: () => Date = () => TEST_NOW) {}
+
   private sequence = 0;
-  readonly products = new Map([SEMESTER_PRODUCT, CREDIT_PRODUCT].map((item) => [item.id, structuredClone(item)]));
+  readonly products = new Map([MONTHLY_PRODUCT, SEMESTER_PRODUCT, CREDIT_PRODUCT].map((item) => [item.id, structuredClone(item)]));
   readonly orders: BillingOrder[] = [];
   readonly paymentIntents = new Map<string, StoredPaymentResult>();
   readonly payments: PaymentRow[] = [];
@@ -223,7 +249,7 @@ export class MockBillingState {
     findUserOrder: async (userId, orderId) => structuredClone(this.orders.find((item) => item.userId === userId && item.id === orderId) ?? null),
   };
 
-  readonly paymentRepository: MockPaymentConfirmationRepository = {
+  readonly paymentRepository: PaymentQueryRepository = {
     findOwnedOrder: async (userId, orderId): Promise<PaymentOrderSnapshot | null> => {
       const order = this.orders.find((item) => item.userId === userId && item.id === orderId);
       return order ? { id: order.id, userId: order.userId, orderNumber: order.orderNumber, provider: order.provider, status: order.status, amountMinor: order.amountMinor, currency: order.currency, expiresAt: order.expiresAt, snapshotProductName: order.snapshotProductName } : null;
@@ -255,6 +281,29 @@ export class MockBillingState {
       return structuredClone(stored);
     },
     failPaymentIntent: async () => undefined,
+    bindVerifiedPaymentQuery: async ({ userId, orderId, provider, payment }) => {
+      const order = this.orders.find((item) => item.id === orderId && item.userId === userId && item.provider === provider);
+      if (!order) throw new Error("query order mismatch");
+      if (payment.status === "PAID" && payment.providerTransactionId && payment.paidAt) {
+        const eventId = `merchant-query:${payment.providerTransactionId}`;
+        const requestIdempotencyKey = `billing-payment:${provider}:${payment.orderNumber}`;
+        await this.webhookRepository.persistEvent({
+          provider, providerEventId: eventId, orderNumber: payment.orderNumber,
+          providerTransactionId: payment.providerTransactionId, requestIdempotencyKey,
+          amountMinor: payment.amountMinor, currency: payment.currency, paidAt: payment.paidAt,
+          signatureValid: true, status: "RECEIVED", errorCode: null,
+          payloadSummary: { payload_hash: eventId, event_type: "PAYMENT.PAID" },
+        });
+        this.settlePaidOrder({
+          p_order_number: payment.orderNumber, p_provider: provider,
+          p_provider_transaction_id: payment.providerTransactionId, p_provider_event_id: eventId,
+          p_request_idempotency_key: requestIdempotencyKey, p_amount_minor: payment.amountMinor,
+          p_currency: payment.currency, p_paid_at: payment.paidAt, p_response_summary: { source: "merchant-query" },
+        });
+      }
+      this.paymentIntents.set(orderId, structuredClone(payment));
+      return structuredClone(payment);
+    },
     claimMockPaymentConfirmation: async ({ userId, orderId, providerTransactionId, paidAt }) => {
       const order = this.orders.find((item) => item.id === orderId && item.userId === userId);
       const intent = this.paymentIntents.get(orderId);
@@ -305,14 +354,24 @@ export class MockBillingState {
     const event = this.webhookEvents.get(`${args.p_provider}:${args.p_provider_event_id}`);
     if (!event) throw new Error("missing webhook event");
     if (event.status === "PROCESSED") return { status: "ALREADY_PROCESSED", eventStatus: "PROCESSED", orderId: event.orderId };
-    const order = this.orders.find((item) => item.orderNumber === args.p_order_number);
-    if (!order || order.status !== "PENDING" || order.provider !== args.p_provider || order.amountMinor !== args.p_amount_minor || order.currency !== args.p_currency) {
+    const order = this.orders.find((item) => this.paymentIntents.get(item.id)?.orderNumber === args.p_order_number);
+    if (!order || order.provider !== args.p_provider || order.amountMinor !== args.p_amount_minor || order.currency !== args.p_currency) {
       throw new BillingError("PAYMENT_CONTRACT_MISMATCH", "Payment settlement contract mismatch.", 400);
     }
     const intent = this.paymentIntents.get(order.id);
-    if (!intent || intent.providerTransactionId !== args.p_provider_transaction_id) throw new Error("payment intent mismatch");
+    if (!intent || (intent.providerTransactionId !== null && intent.providerTransactionId !== args.p_provider_transaction_id)) throw new Error("payment intent mismatch");
+    if (order.status === "PAID") {
+      const paid = this.payments.find((item) => item.orderId === order.id);
+      if (!paid || paid.providerTransactionId !== args.p_provider_transaction_id || paid.paidAt !== args.p_paid_at) throw new Error("settled payment mismatch");
+      event.status = "PROCESSED"; event.orderId = order.id; event.userId = order.userId;
+      return { status: "ALREADY_PROCESSED", eventStatus: "PROCESSED", orderId: order.id };
+    }
+    if (order.status !== "PENDING") throw new Error("order is not pending");
+    intent.providerTransactionId = args.p_provider_transaction_id;
+    intent.status = "PAID";
+    intent.paidAt = args.p_paid_at;
     const payment: PaymentRow = {
-      id: this.id("payment"), orderId: order.id, userId: order.userId, provider: "MOCK",
+      id: this.id("payment"), orderId: order.id, userId: order.userId, provider: order.provider,
       requestIdempotencyKey: args.p_request_idempotency_key,
       ...structuredClone(intent),
       providerTransactionId: intent.providerTransactionId,
@@ -330,7 +389,7 @@ export class MockBillingState {
   private grantSubscription(order: BillingOrder, paidAt: string) {
     const startsAt = paidAt;
     const endsAt = new Date(Date.parse(paidAt) + (order.snapshotDurationDays ?? 0) * 86_400_000).toISOString();
-    const subscription: SubscriptionRow = { id: this.id("subscription"), userId: order.userId, planId: order.snapshotPlanId!, sourceOrderId: order.id, status: "ACTIVE", startsAt, endsAt };
+    const subscription: SubscriptionRow = { id: this.id("subscription"), userId: order.userId, planId: order.snapshotPlanId!, sourceOrderId: order.id, status: "ACTIVE", startsAt, endsAt, autoRenew: false };
     this.subscriptions.push(subscription);
     for (const item of order.snapshotEntitlements) {
       this.entitlements.push({ id: this.id("entitlement"), userId: order.userId, sourceOrderId: order.id, featureKey: item.feature_key, periodicLimit: item.periodic_limit, validFrom: startsAt, validUntil: endsAt });
@@ -483,7 +542,7 @@ export class MockBillingState {
     const payment = this.payments.find((item) => item.orderId === order.id && item.status === "PAID")!;
     const row = current ?? { id: this.id("refund"), requestId, orderId: order.id, paymentId: payment.id, status: "PENDING" as const, claimToken, result: null };
     row.claimToken = claimToken; if (!current) this.refunds.push(row);
-    return { status: "CLAIMED", refundId: row.id, requestId, orderId: order.id, paymentId: payment.id, provider: "MOCK", providerTransactionId: payment.providerTransactionId, amountMinor: order.amountMinor, currency: "CNY", idempotencyKey: `billing-refund:${requestId}` };
+    return { status: "CLAIMED", refundId: row.id, requestId, orderId: order.id, paymentId: payment.id, provider: payment.provider, providerTransactionId: payment.providerTransactionId, amountMinor: order.amountMinor, currency: "CNY", idempotencyKey: `billing-refund:${requestId}` };
   }
 
   private completeRefund(refundId: string, claimToken: string, result: RefundResult) {
@@ -493,8 +552,8 @@ export class MockBillingState {
     const subscription = this.subscriptions.find((item) => item.sourceOrderId === order.id)!;
     refund.status = "SUCCEEDED"; refund.claimToken = null; refund.result = structuredClone(result);
     payment.status = "REFUNDED"; order.status = "REFUNDED"; order.refundStatus = "FULL"; subscription.status = "CANCELLED";
-    for (const entitlement of this.entitlements.filter((item) => item.sourceOrderId === order.id)) entitlement.validUntil = TEST_NOW.toISOString();
-    for (const quota of this.quotas.filter((item) => item.subscriptionId === subscription.id)) { quota.limit = 0; quota.periodEnd = TEST_NOW.toISOString(); }
+    for (const entitlement of this.entitlements.filter((item) => item.sourceOrderId === order.id)) entitlement.validUntil = this.now().toISOString();
+    for (const quota of this.quotas.filter((item) => item.subscriptionId === subscription.id)) { quota.limit = 0; quota.periodEnd = this.now().toISOString(); }
     return { status: "SUCCEEDED" as const, refund: structuredClone(result) };
   }
 

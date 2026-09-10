@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import type { BillingConfig } from "../../lib/billing/config";
+import { BILLING_AGREEMENT_VERSION, type BillingConfig } from "../../lib/billing/config";
+import { reviewRefundRequest } from "../../lib/billing/admin";
+import { createOrder } from "../../lib/billing/orders";
+import { createOrderPayment } from "../../lib/billing/payments/service";
+import { confirmMockOrderPayment } from "../../lib/billing/payments/webhooks";
+import { submitRefundRequest } from "../../lib/billing/user-pages";
+import { UsageQuotaService } from "../../lib/billing/usage-quota";
+import { MockBillingState, TEST_ADMIN, TEST_CONFIG, TEST_NOW, TEST_USER_ID } from "./helpers/mock-billing-state";
 import { BillingError } from "../../lib/billing/errors";
 import { MockPaymentProvider } from "../../lib/billing/payments/mock";
 import type { RefundResult } from "../../lib/billing/payments/types";
@@ -10,10 +17,58 @@ import { WechatPayProvider } from "../../lib/billing/payments/wechat";
 import { createBillingSecurityLogger } from "../../lib/billing/security-logger";
 import {
   createRefundExecutionRepository,
+  executeApprovedRefund,
   type RefundExecutionAdminClient,
 } from "../../lib/billing/refunds";
 
 const now = new Date("2026-08-16T02:00:00.000Z");
+
+for (const sku of ["PRO_MONTHLY", "PRO_SEMESTER"] as const) {
+  for (const usageStatus of ["RESERVED", "FINALIZED", "RELEASED"] as const) {
+    test(`${sku} ${usageStatus} usage permits full refund only after release`, async () => {
+      const state = new MockBillingState();
+      const product = [...state.products.values()].find((item) => item.sku === sku)!;
+      const provider = new MockPaymentProvider({ secret: "subscription-refund-usage-test", now: () => TEST_NOW });
+      const order = await createOrder({
+        userId: TEST_USER_ID, productId: product.id, provider: "mock", acceptedAgreementVersion: BILLING_AGREEMENT_VERSION,
+      }, { repository: state.billingRepository, now: () => TEST_NOW, paymentMode: "mock" });
+      await createOrderPayment(TEST_USER_ID, order.id, {
+        repository: state.paymentRepository, getConfig: () => TEST_CONFIG, getProvider: () => provider, now: () => TEST_NOW,
+      });
+      await confirmMockOrderPayment({ id: TEST_USER_ID, email: null, isAdmin: false }, order.id, {
+        paymentRepository: state.paymentRepository, webhookRepository: state.webhookRepository,
+        getConfig: () => TEST_CONFIG, getProvider: () => provider, now: () => TEST_NOW,
+      });
+      const usage = new UsageQuotaService(state.usageAdapter);
+      await usage.reserve({ userId: TEST_USER_ID, taskKey: "billed-task", featureKey: "summarize", quotaUnits: 1, creditAmount: 0 });
+      if (usageStatus === "FINALIZED") await usage.finalize(TEST_USER_ID, "billed-task");
+      if (usageStatus === "RELEASED") await usage.release(TEST_USER_ID, "billed-task");
+      const request = await submitRefundRequest({ userId: TEST_USER_ID, orderId: order.id, reasonCode: "SERVICE_ISSUE", details: "Retain full request for review" }, { repository: state.userPageRepository });
+      await reviewRefundRequest(TEST_ADMIN, { requestId: request.id, decision: "APPROVED", reason: "Review usage", idempotencyKey: "review-usage" }, state.adminRepository);
+      const before = structuredClone({ subscriptions: state.subscriptions, entitlements: state.entitlements, quotas: state.quotas, requests: state.refundRequests });
+      let providerConstructions = 0;
+      const execute = () => executeApprovedRefund(request.id, {
+        repository: state.refundExecutionRepository, getConfig: () => TEST_CONFIG,
+        getProvider: () => { providerConstructions += 1; return provider; }, now: () => TEST_NOW,
+      });
+      if (usageStatus === "RELEASED") {
+        const result = await execute();
+        assert.equal(result.status, "SUCCEEDED");
+        assert.equal(result.refund.refundedAmountMinor, sku === "PRO_MONTHLY" ? 1_990 : 7_900);
+        assert.equal(providerConstructions, 1);
+        assert.equal(state.subscriptions[0].status, "CANCELLED");
+      } else {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await assert.rejects(execute, (error: unknown) => error instanceof BillingError && error.code === "REFUND_REQUIRES_MANUAL_REVIEW");
+        }
+        assert.equal(providerConstructions, 0);
+        assert.equal(state.refunds.length, 0);
+        assert.equal(state.refundRequests[0].requestedAmountMinor, sku === "PRO_MONTHLY" ? 1_990 : 7_900);
+        assert.deepEqual({ subscriptions: state.subscriptions, entitlements: state.entitlements, quotas: state.quotas, requests: state.refundRequests }, before);
+      }
+    });
+  }
+}
 const config: BillingConfig = {
   featureEnabled: true,
   paymentMode: "mock",
