@@ -9,6 +9,7 @@ import {
 } from "../../lib/billing/auth";
 import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
+import type { PublicBillingProduct } from "../../lib/billing/products";
 import type {
   BillingSummary,
   BillingUserPageRepository,
@@ -184,6 +185,247 @@ test("pricing and checkout use backend products without embedded prices or quota
     /acceptedAgreementVersion:\s*availability\.agreementVersion/,
   );
   assert.doesNotMatch(checkout, /["']billing-member-v1["']/);
+});
+
+test("active subscription pricing fetches products, availability, and summary together", async () => {
+  const pricing = await source("components/billing/PricingProducts.tsx");
+
+  assert.match(pricing, /Promise\.all\(\[/);
+  assert.match(pricing, /\/api\/billing\/products/);
+  assert.match(pricing, /\/api\/billing\/availability/);
+  assert.match(pricing, /\/api\/billing\/summary/);
+  assert.match(pricing, /BillingSummary/);
+  assert.match(pricing, /setSummary/);
+});
+
+test("pricing keeps gated cards when the billing summary is unauthenticated", async () => {
+  const pricing = (await import(
+    "../../components/billing/PricingProducts"
+  )) as {
+    readPricingResponses?: (
+      responses: [Response, Response, Response],
+    ) => Promise<{
+      products: PublicBillingProduct[];
+      availability: { available: boolean };
+      summary: BillingSummary | null;
+    }>;
+  };
+  assert.equal(typeof pricing.readPricingResponses, "function");
+
+  const result = await pricing.readPricingResponses!([
+    Response.json({
+      products: [
+        {
+          id: "monthly-product",
+          sku: "PRO_MONTHLY",
+          name: "Pro Monthly",
+          description: null,
+          productType: "SUBSCRIPTION",
+          priceMinor: 1990,
+          currency: "CNY",
+          durationDays: 30,
+          creditGrant: 0,
+          displayMetadata: {},
+        },
+      ],
+    }),
+    Response.json({
+      available: false,
+      paymentMode: null,
+      mockConfirmationAllowed: false,
+      agreementVersion: null,
+    }),
+    Response.json(
+      { error: { code: "UNAUTHENTICATED", message: "Sign in required." } },
+      { status: 401 },
+    ),
+  ]);
+
+  assert.equal(result.products.length, 1);
+  assert.equal(result.availability.available, false);
+  assert.equal(result.summary, null);
+});
+
+test("active subscription blocks only subscription products and keeps credits linked", async () => {
+  const pricing = (await import(
+    "../../components/billing/PricingProducts"
+  )) as {
+    getPricingProductAction?: (
+      product: PublicBillingProduct,
+      available: boolean,
+      currentSummary: BillingSummary | null,
+    ) =>
+      | { kind: "link"; href: string }
+      | {
+          kind: "subscription-blocked";
+          planName: string;
+          endsAt: string;
+        }
+      | { kind: "unavailable" };
+  };
+  assert.equal(typeof pricing.getPricingProductAction, "function");
+
+  const products: PublicBillingProduct[] = [
+    {
+      id: "monthly-product",
+      sku: "PRO_MONTHLY",
+      name: "Pro Monthly",
+      description: null,
+      productType: "SUBSCRIPTION",
+      priceMinor: 1990,
+      currency: "CNY",
+      durationDays: 30,
+      creditGrant: 0,
+      displayMetadata: {},
+    },
+    {
+      id: "semester-product",
+      sku: "PRO_SEMESTER",
+      name: "Pro Semester",
+      description: null,
+      productType: "SUBSCRIPTION",
+      priceMinor: 7900,
+      currency: "CNY",
+      durationDays: 150,
+      creditGrant: 0,
+      displayMetadata: {},
+    },
+    {
+      id: "credits-product",
+      sku: "CREDIT_PACK_100",
+      name: "100 credits",
+      description: null,
+      productType: "CREDIT_PACK",
+      priceMinor: 990,
+      currency: "CNY",
+      durationDays: null,
+      creditGrant: 100,
+      displayMetadata: {},
+    },
+  ];
+  const actions = products.map((product) =>
+    pricing.getPricingProductAction!(product, true, summary()),
+  );
+
+  assert.deepEqual(actions, [
+    {
+      kind: "subscription-blocked",
+      planName: "科研月度方案",
+      endsAt: "2026年8月1日",
+    },
+    {
+      kind: "subscription-blocked",
+      planName: "科研月度方案",
+      endsAt: "2026年8月1日",
+    },
+    {
+      kind: "link",
+      href: "/checkout/credits-product",
+    },
+  ]);
+});
+
+test("subscription cards state one-time payment, not auto-renew, and one semester period", async () => {
+  const pricing = (await import(
+    "../../components/billing/PricingProducts"
+  )) as {
+    getProductPurchaseTerms?: (product: PublicBillingProduct) => {
+      label: string;
+      value: string;
+      payment: string;
+      periodNote: string;
+    };
+  };
+  assert.equal(typeof pricing.getProductPurchaseTerms, "function");
+
+  const monthly: PublicBillingProduct = {
+    id: "monthly-product",
+    sku: "PRO_MONTHLY",
+    name: "Pro Monthly",
+    description: null,
+    productType: "SUBSCRIPTION",
+    priceMinor: 1990,
+    currency: "CNY",
+    durationDays: 30,
+    creditGrant: 0,
+    displayMetadata: {},
+  };
+  const semester: PublicBillingProduct = {
+    ...monthly,
+    id: "semester-product",
+    sku: "PRO_SEMESTER",
+    name: "Pro Semester",
+    priceMinor: 7900,
+    durationDays: 150,
+  };
+
+  assert.deepEqual(pricing.getProductPurchaseTerms!(monthly), {
+    label: "本次使用期",
+    value: "30 天",
+    payment: "一次性支付，不自动续费",
+    periodNote: "开通后连续使用一个完整的 30 天周期。",
+  });
+  assert.deepEqual(pricing.getProductPurchaseTerms!(semester), {
+    label: "本次使用期",
+    value: "150 天",
+    payment: "一次性支付，不自动续费",
+    periodNote: "额度覆盖一个完整的 150 天周期，不按月重置。",
+  });
+
+  const sourceText = await source("components/billing/PricingProducts.tsx");
+  assert.match(sourceText, /xl:grid-cols-3/);
+  assert.doesNotMatch(sourceText, /lg:grid-cols-3/);
+  assert.match(sourceText, /aria-disabled/);
+  assert.match(sourceText, /motion-reduce:animate-none/);
+});
+
+test("subscription purchase conflict is stable and does not retry order creation", async () => {
+  const checkout = (await import(
+    "../../components/billing/CheckoutPanel"
+  )) as {
+    requestBillingOrder?: (
+      input: {
+        productId: string;
+        provider: "mock";
+        acceptedAgreementVersion: string;
+      },
+      fetcher: (
+        input: string,
+        init?: RequestInit,
+      ) => Promise<Response>,
+    ) => Promise<unknown>;
+  };
+  assert.equal(typeof checkout.requestBillingOrder, "function");
+
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const result = await checkout.requestBillingOrder!(
+    {
+      productId: "semester-product",
+      provider: "mock",
+      acceptedAgreementVersion: "agreement-v1",
+    },
+    async (input, init) => {
+      calls.push({ input, init });
+      return Response.json(
+        {
+          error: {
+            code: "ACTIVE_SUBSCRIPTION_EXISTS",
+            message: "database detail that must not be shown",
+          },
+        },
+        { status: 409 },
+      );
+    },
+  );
+
+  assert.deepEqual(result, {
+    kind: "error",
+    message:
+      "当前已有有效订阅，请在现有方案到期后再购买新的订阅。credits 包仍可单独购买。",
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.input, "/api/billing/orders");
+  assert.equal(calls[0]?.init?.method, "POST");
 });
 
 test("disabled billing has no purchase action and production mock confirmation is gated", async () => {

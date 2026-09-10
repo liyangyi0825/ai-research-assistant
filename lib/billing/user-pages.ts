@@ -927,3 +927,10 @@ export type BillingAvailability = {
   mockConfirmationAllowed: boolean;
   agreementVersion: string | null;
 };
+
+export type BillingErrorResponse = {
+  error?: {
+    code?: string;
+    message?: string;
+  };
+};

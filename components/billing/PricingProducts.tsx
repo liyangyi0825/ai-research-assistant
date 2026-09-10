@@ -5,7 +5,10 @@ import { useEffect, useState } from "react";
 
 import type { Json } from "@/lib/billing/database.types";
 import type { PublicBillingProduct } from "@/lib/billing/products";
-import type { BillingAvailability } from "@/lib/billing/user-pages";
+import type {
+  BillingAvailability,
+  BillingSummary,
+} from "@/lib/billing/user-pages";
 import { ResearchResourceScale } from "./ResearchResourceScale";
 
 function money(amountMinor: number, currency: "CNY"): string {
@@ -30,10 +33,122 @@ function highlights(metadata: Json): string[] {
     : [];
 }
 
+function subscriptionEndDate(value: string): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(new Date(value));
+}
+
+export type PricingProductAction =
+  | { kind: "link"; href: string }
+  | {
+      kind: "subscription-blocked";
+      planName: string;
+      endsAt: string;
+    }
+  | { kind: "unavailable" };
+
+export function getPricingProductAction(
+  product: PublicBillingProduct,
+  available: boolean,
+  summary: BillingSummary | null,
+): PricingProductAction {
+  if (!available) return { kind: "unavailable" };
+
+  const subscriptionBlocked =
+    product.productType === "SUBSCRIPTION" && summary?.subscription !== null;
+  if (subscriptionBlocked) {
+    if (!summary?.subscription) return { kind: "unavailable" };
+    return {
+      kind: "subscription-blocked",
+      planName: summary.subscription.planName,
+      endsAt: subscriptionEndDate(summary.subscription.endsAt),
+    };
+  }
+
+  return {
+    kind: "link",
+    href: `/checkout/${encodeURIComponent(product.id)}`,
+  };
+}
+
+export type ProductPurchaseTerms = {
+  label: string;
+  value: string;
+  payment: string;
+  periodNote: string;
+};
+
+export function getProductPurchaseTerms(
+  product: PublicBillingProduct,
+): ProductPurchaseTerms {
+  if (product.productType === "SUBSCRIPTION") {
+    const duration = product.durationDays ?? 0;
+    return {
+      label: "本次使用期",
+      value: `${duration.toLocaleString("zh-CN")} 天`,
+      payment: "一次性支付，不自动续费",
+      periodNote:
+        duration === 150
+          ? "额度覆盖一个完整的 150 天周期，不按月重置。"
+          : `开通后连续使用一个完整的 ${duration.toLocaleString("zh-CN")} 天周期。`,
+    };
+  }
+
+  return {
+    label: "独立资源",
+    value: `${product.creditGrant.toLocaleString("zh-CN")} credits`,
+    payment: "一次性购买，可与订阅分开使用",
+    periodNote: "购买 credits 不改变当前订阅的有效期。",
+  };
+}
+
+export type PricingResponseData = {
+  products: PublicBillingProduct[];
+  availability: BillingAvailability;
+  summary: BillingSummary | null;
+};
+
+export async function readPricingResponses(
+  responses: [Response, Response, Response],
+): Promise<PricingResponseData> {
+  const [productsResponse, availabilityResponse, summaryResponse] = responses;
+  const summaryIsUnauthenticated = summaryResponse.status === 401;
+  if (
+    !productsResponse.ok ||
+    !availabilityResponse.ok ||
+    (!summaryResponse.ok && !summaryIsUnauthenticated)
+  ) {
+    throw new Error("billing data unavailable");
+  }
+
+  const productsBody = (await productsResponse.json()) as {
+    products?: PublicBillingProduct[];
+  };
+  const availability =
+    (await availabilityResponse.json()) as BillingAvailability;
+  let summary: BillingSummary | null = null;
+  if (summaryResponse.ok) {
+    const summaryBody = (await summaryResponse.json()) as {
+      summary?: BillingSummary;
+    };
+    summary = summaryBody.summary ?? null;
+  }
+
+  return {
+    products: Array.isArray(productsBody.products) ? productsBody.products : [],
+    availability,
+    summary,
+  };
+}
+
 export function PricingProducts() {
   const [products, setProducts] = useState<PublicBillingProduct[]>([]);
   const [availability, setAvailability] =
     useState<BillingAvailability | null>(null);
+  const [summary, setSummary] = useState<BillingSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -48,20 +163,16 @@ export function PricingProducts() {
         signal: controller.signal,
         cache: "no-store",
       }),
+      fetch("/api/billing/summary", {
+        signal: controller.signal,
+        cache: "no-store",
+      }),
     ])
-      .then(async ([productsResponse, availabilityResponse]) => {
-        if (!productsResponse.ok || !availabilityResponse.ok) {
-          throw new Error("billing data unavailable");
-        }
-        const productsBody = (await productsResponse.json()) as {
-          products?: PublicBillingProduct[];
-        };
-        const availabilityBody =
-          (await availabilityResponse.json()) as BillingAvailability;
-        setProducts(
-          Array.isArray(productsBody.products) ? productsBody.products : [],
-        );
-        setAvailability(availabilityBody);
+      .then(readPricingResponses)
+      .then((data) => {
+        setProducts(data.products);
+        setAvailability(data.availability);
+        setSummary(data.summary);
       })
       .catch(() => {
         if (!controller.signal.aborted) setError(true);
@@ -74,8 +185,11 @@ export function PricingProducts() {
 
   if (loading) {
     return (
-      <div className="grid gap-5 lg:grid-cols-2" aria-label="正在加载套餐">
-        {[0, 1].map((item) => (
+      <div
+        className="grid gap-5 md:grid-cols-2 xl:grid-cols-3"
+        aria-label="正在加载套餐"
+      >
+        {[0, 1, 2].map((item) => (
           <div
             key={item}
             className="h-80 animate-pulse rounded-2xl border border-slate-200 bg-white motion-reduce:animate-none"
@@ -105,11 +219,17 @@ export function PricingProducts() {
   }
 
   return (
-    <div className="grid gap-5 lg:grid-cols-2">
+    <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
       {products.map((product) => {
         const productHighlights = highlights(product.displayMetadata);
         const duration = product.durationDays ?? 0;
         const scaleMax = Math.max(duration, product.creditGrant, 1);
+        const terms = getProductPurchaseTerms(product);
+        const action = getPricingProductAction(
+          product,
+          availability?.available === true,
+          summary,
+        );
         return (
           <article
             key={product.id}
@@ -119,8 +239,8 @@ export function PricingProducts() {
               <div>
                 <p className="text-xs font-semibold tracking-[0.16em] text-blue-700">
                   {product.productType === "SUBSCRIPTION"
-                    ? "RESEARCH PLAN"
-                    : "CREDIT PACK"}
+                    ? "订阅方案"
+                    : "独立 credits 包"}
                 </p>
                 <h2 className="mt-2 text-xl font-semibold text-slate-950">
                   {product.name}
@@ -135,6 +255,20 @@ export function PricingProducts() {
                 {product.description}
               </p>
             )}
+            <div className="mt-5 border-y border-slate-200 py-4">
+              <dl>
+                <dt className="text-sm text-slate-500">{terms.label}</dt>
+                <dd className="mt-1 text-2xl font-semibold tabular-nums tracking-tight text-slate-950">
+                  {terms.value}
+                </dd>
+              </dl>
+              <p className="mt-3 text-sm font-medium text-blue-800">
+                {terms.payment}
+              </p>
+              <p className="mt-1 text-sm leading-6 text-slate-600">
+                {terms.periodNote}
+              </p>
+            </div>
             <div className="mt-5">
               <ResearchResourceScale
                 label="科研资源刻度"
@@ -163,13 +297,24 @@ export function PricingProducts() {
               </ul>
             )}
             <div className="mt-auto pt-6">
-              {availability?.available ? (
+              {action.kind === "link" ? (
                 <Link
-                  href={`/checkout/${encodeURIComponent(product.id)}`}
+                  href={action.href}
                   className="inline-flex w-full items-center justify-center rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white outline-none transition hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
                 >
                   查看并确认
                 </Link>
+              ) : action.kind === "subscription-blocked" ? (
+                <div
+                  aria-disabled="true"
+                  className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm leading-5 text-blue-950"
+                >
+                  <p className="font-medium">已有有效订阅，暂不能重复购买</p>
+                  <p className="mt-1 text-blue-800">
+                    当前方案：{action.planName}
+                  </p>
+                  <p className="text-blue-800">有效期至 {action.endsAt}</p>
+                </div>
               ) : (
                 <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-center text-sm text-slate-600">
                   当前账号暂未开放购买

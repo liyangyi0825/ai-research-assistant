@@ -1,12 +1,15 @@
 "use client";
 
-import Link from "next/link";
 import Image from "next/image";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 
 import type { PublicBillingProduct } from "@/lib/billing/products";
-import type { BillingAvailability } from "@/lib/billing/user-pages";
+import type {
+  BillingAvailability,
+  BillingErrorResponse,
+} from "@/lib/billing/user-pages";
 import { ResearchResourceScale } from "./ResearchResourceScale";
 
 function money(amountMinor: number, currency: "CNY"): string {
@@ -15,6 +18,62 @@ function money(amountMinor: number, currency: "CNY"): string {
     currency,
     minimumFractionDigits: 2,
   }).format(amountMinor / 100);
+}
+
+type BillingFetch = (
+  input: string,
+  init?: RequestInit,
+) => Promise<Response>;
+
+type BillingOrderRequest = {
+  productId: string;
+  provider: NonNullable<BillingAvailability["paymentMode"]>;
+  acceptedAgreementVersion: string;
+};
+
+export type BillingOrderRequestResult =
+  | { kind: "created"; orderId: string }
+  | { kind: "unauthorized" }
+  | { kind: "error"; message: string };
+
+const ACTIVE_SUBSCRIPTION_MESSAGE =
+  "当前已有有效订阅，请在现有方案到期后再购买新的订阅。credits 包仍可单独购买。";
+const GENERIC_ORDER_MESSAGE = "订单暂时无法创建，请核对账号权限后重试。";
+
+export async function requestBillingOrder(
+  input: BillingOrderRequest,
+  fetcher: BillingFetch = fetch,
+): Promise<BillingOrderRequestResult> {
+  const response = await fetcher("/api/billing/orders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      productId: input.productId,
+      provider: input.provider,
+      acceptedAgreementVersion: input.acceptedAgreementVersion,
+    }),
+  });
+  if (response.status === 401) return { kind: "unauthorized" };
+  if (!response.ok) {
+    let body: BillingErrorResponse = {};
+    try {
+      body = (await response.json()) as BillingErrorResponse;
+    } catch {
+      // The public fallback does not depend on a parseable server body.
+    }
+    return {
+      kind: "error",
+      message:
+        body.error?.code === "ACTIVE_SUBSCRIPTION_EXISTS"
+          ? ACTIVE_SUBSCRIPTION_MESSAGE
+          : GENERIC_ORDER_MESSAGE,
+    };
+  }
+
+  const body = (await response.json()) as { order?: { id?: string } };
+  return body.order?.id
+    ? { kind: "created", orderId: body.order.id }
+    : { kind: "error", message: GENERIC_ORDER_MESSAGE };
 }
 
 export function CheckoutPanel({ productId }: { productId: string }) {
@@ -119,27 +178,21 @@ export function CheckoutPanel({ productId }: { productId: string }) {
     setMessage(null);
     setWechatQrCode(null);
     try {
-      const response = await fetch("/api/billing/orders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          productId: product.id,
-          provider: availability.paymentMode,
-          acceptedAgreementVersion: availability.agreementVersion,
-        }),
+      const orderResult = await requestBillingOrder({
+        productId: product.id,
+        provider: availability.paymentMode,
+        acceptedAgreementVersion: availability.agreementVersion,
       });
-      if (response.status === 401) {
+      if (orderResult.kind === "unauthorized") {
         setMessage("请先登录，再继续确认订单。");
         return;
       }
-      if (!response.ok) {
-        setMessage("订单暂时无法创建，请核对账号权限后重试。");
+      if (orderResult.kind === "error") {
+        setMessage(orderResult.message);
         return;
       }
-      const body = (await response.json()) as { order?: { id?: string } };
-      if (!body.order?.id) throw new Error("missing order");
       const paymentResponse = await fetch(
-        `/api/billing/orders/${encodeURIComponent(body.order.id)}/payment`,
+        `/api/billing/orders/${encodeURIComponent(orderResult.orderId)}/payment`,
         { method: "POST" },
       );
       if (!paymentResponse.ok) {
@@ -161,12 +214,12 @@ export function CheckoutPanel({ productId }: { productId: string }) {
         )
       ) {
         setWechatQrCode(paymentBody.payment.qrCodeDataUrl);
-        setPendingOrderId(body.order.id);
+        setPendingOrderId(orderResult.orderId);
         setMessage("请使用微信扫描二维码完成支付，页面会自动核验结果。");
         return;
       }
       router.push(
-        `/billing/payment-result?orderId=${encodeURIComponent(body.order.id)}`,
+        `/billing/payment-result?orderId=${encodeURIComponent(orderResult.orderId)}`,
       );
     } catch {
       setMessage("订单暂时无法创建，请稍后重试。");
