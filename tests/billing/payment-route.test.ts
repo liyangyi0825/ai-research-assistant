@@ -173,6 +173,35 @@ test("payment route rejects disabled, unauthorized, paid, expired, and foreign o
 });
 
 test("checkout renders the owner-only WeChat QR and polls the verified payment status endpoint", async () => {
+  const { requestBillingOrder } = await import(
+    "../../components/billing/CheckoutPanel"
+  );
+  const orderCalls: Array<{ input: string; init?: RequestInit }> = [];
+  const orderResult = await requestBillingOrder(
+    {
+      productId: "product-1",
+      provider: "wechat",
+      acceptedAgreementVersion: "billing-member-v1",
+    },
+    async (input, init) => {
+      orderCalls.push({ input, init });
+      return Response.json({ order: { id: "order-1" } });
+    },
+  );
+  assert.deepEqual(orderResult, { kind: "created", orderId: "order-1" });
+  assert.equal(orderCalls.length, 1);
+  assert.equal(orderCalls[0]?.input, "/api/billing/orders");
+  assert.equal(orderCalls[0]?.init?.method, "POST");
+  assert.deepEqual(JSON.parse(String(orderCalls[0]?.init?.body)), {
+    productId: "product-1",
+    provider: "wechat",
+    acceptedAgreementVersion: "billing-member-v1",
+  });
+  assert.doesNotMatch(
+    String(orderCalls[0]?.init?.body),
+    /"(?:amount|currency|userId)"\s*:/,
+  );
+
   const checkout = await readFile(
     new URL("../../components/billing/CheckoutPanel.tsx", import.meta.url),
     "utf8",
@@ -189,10 +218,10 @@ test("checkout renders the owner-only WeChat QR and polls the verified payment s
     "utf8",
   );
 
-  const createOrder = checkout.indexOf('fetch("/api/billing/orders"');
-  const createIntent = checkout.indexOf("/payment", createOrder);
-  assert.ok(createOrder >= 0);
-  assert.ok(createIntent > createOrder);
+  const submit = checkout.indexOf("async function submit");
+  const createIntent = checkout.indexOf("/payment", submit);
+  assert.ok(submit >= 0);
+  assert.ok(createIntent > submit);
   assert.match(checkout.slice(createIntent), /method:\s*"POST"/);
   assert.doesNotMatch(
     checkout.slice(createIntent),
