@@ -615,6 +615,20 @@ test("plan activation requires enabled billing and an exact approved subscriptio
   }
 });
 
+test("monthly plan identity rejects a non-monthly billing period", async () => {
+  await assert.rejects(
+    () => upsertBillingPlan(admin, {
+      code: "PRO",
+      name: "Pro",
+      billingPeriod: "SEMESTER",
+      isActive: true,
+      reason: "reject mismatched monthly period",
+      idempotencyKey: "reject-pro-semester-period",
+    }, repository(), enabledBillingConfig),
+    (error: BillingError) => error.code === "PLAN_ACTIVATION_NOT_APPROVED",
+  );
+});
+
 test("inactive plan maintenance remains allowed while billing is disabled", async () => {
   let received: Record<string, unknown> | undefined;
   await upsertBillingPlan(admin, {
