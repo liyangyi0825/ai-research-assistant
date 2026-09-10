@@ -49,8 +49,15 @@ function product(overrides: Partial<BillingProduct> = {}): BillingProduct {
 
 class InMemoryBillingRepository implements BillingRepository {
   readonly orders: BillingOrder[] = [];
-  failOperation: "list" | "find-product" | "insert" | "find-order" | null =
-    null;
+  readonly activeSubscriptionChecks: Array<{ userId: string; nowIso: string }> = [];
+  activeSubscriptionEndsAt: string[] = [];
+  failOperation:
+    | "list"
+    | "find-product"
+    | "active-subscription"
+    | "insert"
+    | "find-order"
+    | null = null;
 
   constructor(readonly products: BillingProduct[] = [product()]) {}
 
@@ -68,6 +75,15 @@ class InMemoryBillingRepository implements BillingRepository {
     }
 
     return this.products.find((item) => item.id === productId) ?? null;
+  }
+
+  async hasActiveSubscription(userId: string, nowIso: string): Promise<boolean> {
+    if (this.failOperation === "active-subscription") {
+      throw new Error("database unavailable");
+    }
+
+    this.activeSubscriptionChecks.push({ userId, nowIso });
+    return this.activeSubscriptionEndsAt.some((endsAt) => endsAt > nowIso);
   }
 
   async insertOrder(input: BillingOrderInsert): Promise<BillingOrder> {
@@ -131,6 +147,16 @@ class InMemorySupabaseQuery {
 
   eq(...args: unknown[]): this {
     this.operations.push({ operation: "eq", args });
+    return this;
+  }
+
+  gt(...args: unknown[]): this {
+    this.operations.push({ operation: "gt", args });
+    return this;
+  }
+
+  limit(...args: unknown[]): this {
+    this.operations.push({ operation: "limit", args });
     return this;
   }
 
@@ -425,6 +451,87 @@ test("createOrder expires pending orders after thirty minutes", async () => {
   assert.equal(order.expiresAt, "2026-07-22T02:30:00.000Z");
 });
 
+test("createOrder rejects an overlapping active subscription before generating or inserting an order", async () => {
+  const repository = new InMemoryBillingRepository();
+  repository.activeSubscriptionEndsAt = ["2026-07-22T02:00:01.000Z"];
+  let orderNumberCalls = 0;
+
+  await assert.rejects(
+    () =>
+      createOrder(validInput(), {
+        ...dependencies(repository),
+        createOrderNumber: () => {
+          orderNumberCalls += 1;
+          return "BILL-UNUSED";
+        },
+      }),
+    (error: unknown) =>
+      expectBillingError(error, "ACTIVE_SUBSCRIPTION_EXISTS", 409),
+  );
+
+  assert.deepEqual(repository.activeSubscriptionChecks, [
+    { userId: "user-1", nowIso: now.toISOString() },
+  ]);
+  assert.equal(orderNumberCalls, 0);
+  assert.equal(repository.orders.length, 0);
+});
+
+test("createOrder permits subscriptions when the current subscription is expired or absent", async () => {
+  for (const activeSubscriptionEndsAt of [
+    ["2026-07-22T02:00:00.000Z"],
+    [],
+  ]) {
+    const repository = new InMemoryBillingRepository();
+    repository.activeSubscriptionEndsAt = activeSubscriptionEndsAt;
+
+    const order = await createOrder(validInput(), dependencies(repository));
+
+    assert.equal(order.status, "PENDING");
+    assert.equal(repository.orders.length, 1);
+  }
+});
+
+test("createOrder maps active subscription lookup failures to a safe storage failure", async () => {
+  const repository = new InMemoryBillingRepository();
+  repository.failOperation = "active-subscription";
+
+  await assert.rejects(
+    () => createOrder(validInput(), dependencies(repository)),
+    (error: unknown) =>
+      error instanceof BillingError &&
+      expectBillingError(error, "BILLING_STORAGE_UNAVAILABLE", 503) &&
+      error.message === "Billing data is temporarily unavailable.",
+  );
+  assert.equal(repository.orders.length, 0);
+});
+
+test("createOrder does not apply the active subscription gate to credit packs", async () => {
+  const repository = new InMemoryBillingRepository([
+    product({
+      id: "product-credit-pack-100",
+      sku: "CREDIT_PACK_100",
+      productType: "CREDIT_PACK",
+      planId: null,
+      name: "100 额度包",
+      priceMinor: 990,
+      durationDays: null,
+      creditGrant: 100,
+      entitlementVersion: "credits-v1",
+      entitlements: [],
+    }),
+  ]);
+  repository.activeSubscriptionEndsAt = ["2026-07-22T02:00:01.000Z"];
+
+  const order = await createOrder(
+    validInput({ productId: "product-credit-pack-100" }),
+    dependencies(repository),
+  );
+
+  assert.equal(order.snapshotProductType, "CREDIT_PACK");
+  assert.equal(repository.activeSubscriptionChecks.length, 0);
+  assert.equal(repository.orders.length, 1);
+});
+
 test("createOrder generates unique WeChat-compatible 32-character order numbers", async () => {
   const repository = new InMemoryBillingRepository();
 
@@ -517,6 +624,32 @@ test("the Supabase repository reads the matching entitlement version for an orde
       ["entitlement_version", "pro-v1"],
     ],
   );
+});
+
+test("the Supabase repository finds at most one unexpired active subscription for the same user", async () => {
+  const client = new InMemorySupabaseClient([
+    { data: { id: "subscription-id-1" }, error: null },
+    { data: null, error: null },
+  ]);
+  const repository = createBillingRepository(client);
+
+  assert.equal(
+    await repository.hasActiveSubscription("user-1", now.toISOString()),
+    true,
+  );
+  assert.equal(
+    await repository.hasActiveSubscription("user-1", now.toISOString()),
+    false,
+  );
+  assert.equal(client.queries[0].table, "billing_subscriptions");
+  assert.deepEqual(client.queries[0].query.operations, [
+    { operation: "select", args: ["id"] },
+    { operation: "eq", args: ["user_id", "user-1"] },
+    { operation: "eq", args: ["status", "ACTIVE"] },
+    { operation: "gt", args: ["ends_at", now.toISOString()] },
+    { operation: "limit", args: [1] },
+    { operation: "maybeSingle", args: [] },
+  ]);
 });
 
 test("the Supabase repository fails closed on a blank entitlement feature key", async () => {

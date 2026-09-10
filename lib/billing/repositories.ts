@@ -75,6 +75,7 @@ export type BillingOrder = BillingOrderInsert & {
 export type BillingRepository = {
   listActiveProducts(): Promise<BillingProduct[]>;
   findActiveProduct(productId: string): Promise<BillingProduct | null>;
+  hasActiveSubscription(userId: string, nowIso: string): Promise<boolean>;
   insertOrder(input: BillingOrderInsert): Promise<BillingOrder>;
   findUserOrder(userId: string, orderId: string): Promise<BillingOrder | null>;
 };
@@ -88,6 +89,8 @@ export type BillingSupabaseQuery = PromiseLike<BillingDatabaseResult> & {
   select(columns: string): BillingSupabaseQuery;
   insert(values: Record<string, unknown>): BillingSupabaseQuery;
   eq(column: string, value: unknown): BillingSupabaseQuery;
+  gt(column: string, value: unknown): BillingSupabaseQuery;
+  limit(count: number): BillingSupabaseQuery;
   order(
     column: string,
     options?: { ascending?: boolean },
@@ -429,6 +432,27 @@ export function createBillingRepository(
       });
     },
 
+    hasActiveSubscription(userId, nowIso) {
+      return failClosed(async () => {
+        const result = await client
+          .from("billing_subscriptions")
+          .select("id")
+          .eq("user_id", userId)
+          .eq("status", "ACTIVE")
+          .gt("ends_at", nowIso)
+          .limit(1)
+          .maybeSingle();
+        const data = assertDatabaseResult(result);
+
+        if (data === null) {
+          return false;
+        }
+
+        record(data);
+        return true;
+      });
+    },
+
     insertOrder(input) {
       return failClosed(async () => {
         const result = await client
@@ -489,6 +513,9 @@ export const billingRepository: BillingRepository = {
   },
   findActiveProduct(productId) {
     return getDefaultRepository().findActiveProduct(productId);
+  },
+  hasActiveSubscription(userId, nowIso) {
+    return getDefaultRepository().hasActiveSubscription(userId, nowIso);
   },
   insertOrder(input) {
     return getDefaultRepository().insertOrder(input);

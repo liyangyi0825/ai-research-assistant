@@ -210,6 +210,7 @@ export class MockBillingState {
       const item = this.products.get(id);
       return item?.isActive ? structuredClone(item) : null;
     },
+    hasActiveSubscription: async () => false,
     insertOrder: async (input: BillingOrderInsert) => {
       const timestamp = TEST_NOW.toISOString();
       const order: BillingOrder = {

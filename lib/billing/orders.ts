@@ -146,6 +146,27 @@ export async function createOrder(
 
   const createdAt = clock();
 
+  if (product.productType === "SUBSCRIPTION") {
+    let hasActiveSubscription: boolean;
+
+    try {
+      hasActiveSubscription = await repository.hasActiveSubscription(
+        input.userId,
+        createdAt.toISOString(),
+      );
+    } catch (error) {
+      storageFailure(error);
+    }
+
+    if (hasActiveSubscription) {
+      throw new BillingError(
+        "ACTIVE_SUBSCRIPTION_EXISTS",
+        "An active subscription already exists.",
+        409,
+      );
+    }
+  }
+
   try {
     return await repository.insertOrder({
       orderNumber: numberFactory(),

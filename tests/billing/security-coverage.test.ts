@@ -324,6 +324,10 @@ class CapturingOrderRepository implements BillingRepository {
     return product();
   }
 
+  async hasActiveSubscription() {
+    return false;
+  }
+
   async insertOrder(input: BillingOrderInsert): Promise<BillingOrder> {
     this.inserted = input;
     return {
