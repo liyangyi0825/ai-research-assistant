@@ -348,6 +348,17 @@ function billingOrder(value: unknown): BillingOrder {
 
 function assertDatabaseResult(result: BillingDatabaseResult): unknown {
   if (result.error) {
+    if (
+      typeof result.error === "object" && result.error !== null &&
+      "code" in result.error && result.error.code === "P2201" &&
+      "message" in result.error && result.error.message === "ACTIVE_SUBSCRIPTION_EXISTS"
+    ) {
+      throw new BillingError(
+        "ACTIVE_SUBSCRIPTION_EXISTS",
+        "An active subscription or pending subscription order already exists.",
+        409,
+      );
+    }
     throw storageError();
   }
 
@@ -360,7 +371,7 @@ async function failClosed<T>(operation: () => Promise<T>): Promise<T> {
   } catch (error) {
     if (
       error instanceof BillingError &&
-      error.code === "BILLING_STORAGE_UNAVAILABLE"
+      (error.code === "BILLING_STORAGE_UNAVAILABLE" || error.code === "ACTIVE_SUBSCRIPTION_EXISTS")
     ) {
       throw error;
     }

@@ -24,7 +24,8 @@ declare
     '202608240015',
     '202608240016',
     '202608280017',
-    '202609090018'
+    '202609090018',
+    '202609100019'
   ];
   expected_tables constant text[] := array[
     'billing_plans',
@@ -805,6 +806,9 @@ declare
     'public.billing_admin_upsert_product(uuid,uuid,uuid,text,text,text,text,bigint,text,integer,bigint,text,boolean,text,text)'
   ];
   expected_internal_functions constant text[] := array[
+    'public.billing_assert_subscription_available(uuid,uuid)',
+    'public.billing_guard_subscription_order()',
+    'public.billing_guard_subscription_activation()',
     'public.billing_assert_semester_plan(uuid)',
     'public.billing_assert_refund_reversible(uuid)',
     'public.billing_guard_refunding_quota_usage()',
@@ -890,6 +894,9 @@ declare
   actual_products jsonb;
   semester_plan_id uuid;
   guard_rejected boolean := false;
+  catalog_row record;
+  admin_result jsonb;
+  denied_code text;
 begin
   select jsonb_agg(
     jsonb_build_array(code, name, billing_period, is_active)
@@ -900,8 +907,8 @@ begin
 
   if actual_plans is distinct from '[
     ["FREE", "Free", "FREE", false],
-    ["PRO", "Pro", "MONTHLY", false],
-    ["PRO_SEMESTER", "Pro Semester", "SEMESTER", false]
+    ["PRO", "Pro", "MONTHLY", true],
+    ["PRO_SEMESTER", "Pro Semester", "SEMESTER", true]
   ]'::jsonb then
     raise exception 'billing plan catalog differs from the approved catalog';
   end if;
@@ -917,9 +924,9 @@ begin
   from public.billing_products;
 
   if actual_products is distinct from '[
-    ["CREDIT_PACK_100", "Credit Pack 100", "CREDIT_PACK", 990, "CNY", null, 100, "credit-v1", false],
-    ["PRO_MONTHLY", "Pro Monthly", "SUBSCRIPTION", 1990, "CNY", 30, 0, "pro-v1", false],
-    ["PRO_SEMESTER", "Pro Semester", "SUBSCRIPTION", 7900, "CNY", 150, 0, "pro-semester-v1", false]
+    ["CREDIT_PACK_100", "Credit Pack 100", "CREDIT_PACK", 990, "CNY", null, 100, "credit-v1", true],
+    ["PRO_MONTHLY", "Pro Monthly", "SUBSCRIPTION", 1990, "CNY", 30, 0, "pro-v1", true],
+    ["PRO_SEMESTER", "Pro Semester", "SUBSCRIPTION", 7900, "CNY", 150, 0, "pro-semester-v1", true]
   ]'::jsonb then
     raise exception 'billing product catalog differs from the approved catalog';
   end if;
@@ -933,9 +940,9 @@ begin
     raise exception 'Free must not have a billing product';
   end if;
 
-  if exists (select 1 from public.billing_plans where is_active = true)
-    or exists (select 1 from public.billing_products where is_active = true) then
-    raise exception 'active billing plan or product found';
+  if exists (select 1 from public.billing_plans where is_active = true and code not in ('PRO','PRO_SEMESTER'))
+    or exists (select 1 from public.billing_products where is_active = true and sku not in ('PRO_MONTHLY','PRO_SEMESTER','CREDIT_PACK_100')) then
+    raise exception 'unapproved active billing plan or product found';
   end if;
 
   select id
@@ -943,6 +950,30 @@ begin
   from public.billing_plans
   where code = 'PRO_SEMESTER';
   perform public.billing_assert_semester_plan(semester_plan_id);
+
+  if (select count(*) from public.billing_plan_entitlements e join public.billing_plans p on p.id=e.plan_id where p.code='PRO' and e.entitlement_version='pro-v1') <> 13
+    or (select count(*) from public.billing_plan_entitlements e where e.plan_id=semester_plan_id and e.entitlement_version='pro-semester-v1') <> 13
+    or exists (
+      select 1 from public.billing_plan_entitlements monthly
+      join public.billing_plans p on p.id=monthly.plan_id and p.code='PRO'
+      left join public.billing_plan_entitlements semester on semester.plan_id=semester_plan_id
+        and semester.feature_key=monthly.feature_key and semester.entitlement_version='pro-semester-v1'
+      where monthly.entitlement_version='pro-v1'
+        and (semester.id is null or semester.periodic_limit is distinct from monthly.periodic_limit * 5)
+  ) then raise exception 'monthly and semester 13-key or fivefold quota mismatch'; end if;
+
+  if (select count(*) from pg_catalog.pg_trigger t
+    join pg_catalog.pg_proc f on f.oid=t.tgfoid
+    join pg_catalog.pg_roles owner on owner.oid=f.proowner
+    where (t.tgrelid='public.billing_orders'::regclass and t.tgname='billing_subscription_order_gate'
+      and f.oid='public.billing_guard_subscription_order()'::regprocedure
+      or t.tgrelid='public.billing_subscriptions'::regclass and t.tgname='billing_subscription_activation_gate'
+      and f.oid='public.billing_guard_subscription_activation()'::regprocedure)
+      and t.tgtype=7 and t.tgenabled='O' and not t.tgisinternal
+      and f.prosecdef and f.proconfig @> array['search_path=pg_catalog, public']
+      and owner.rolname not in ('anon','authenticated','service_role')) <> 2 then
+    raise exception 'subscription gates missing or unsafe';
+  end if;
 
   begin
     update public.billing_plan_entitlements
@@ -963,6 +994,42 @@ begin
   if guard_rejected is not true then
     raise exception 'fast-launch entitlement drift was accepted';
   end if;
+
+  for catalog_row in select * from public.billing_plans where code in ('PRO','PRO_SEMESTER') loop
+    admin_result := public.billing_admin_upsert_plan(
+      '00000000-0000-4000-8000-00000000b002', catalog_row.id, catalog_row.code,
+      catalog_row.name, catalog_row.description, catalog_row.billing_period, true,
+      'Synthetic catalog activation', 'drill-plan-019-'||catalog_row.code);
+    if admin_result->>'status' is distinct from 'APPLIED' then raise exception 'approved plan activation failed'; end if;
+  end loop;
+  for catalog_row in select * from public.billing_products loop
+    admin_result := public.billing_admin_upsert_product(
+      '00000000-0000-4000-8000-00000000b002', catalog_row.id, catalog_row.plan_id,
+      catalog_row.sku, catalog_row.name, catalog_row.description, catalog_row.product_type,
+      catalog_row.price_minor, catalog_row.currency, catalog_row.duration_days,
+      catalog_row.credit_grant, catalog_row.entitlement_version, true,
+      'Synthetic catalog activation', 'drill-product-019-'||catalog_row.sku);
+    if admin_result->>'status' is distinct from 'APPLIED' then raise exception 'approved product activation failed'; end if;
+  end loop;
+  foreach denied_code in array array['PRO_YEARLY','FREE','UNKNOWN'] loop
+    guard_rejected := false;
+    begin
+      perform public.billing_admin_upsert_plan(
+        '00000000-0000-4000-8000-00000000b002', semester_plan_id, denied_code,
+        denied_code, null, 'YEARLY', true, 'Synthetic rejection', 'drill-denied-plan-'||denied_code);
+    exception when sqlstate '23514' then guard_rejected := true;
+    end;
+    if not guard_rejected then raise exception 'unapproved plan activation was accepted'; end if;
+    guard_rejected := false;
+    begin
+      perform public.billing_admin_upsert_product(
+        '00000000-0000-4000-8000-00000000b002', null, null, denied_code,
+        denied_code, null, 'CREDIT_PACK', 990, 'CNY', null, 100, 'credit-v1', true,
+        'Synthetic rejection', 'drill-denied-product-'||denied_code);
+    exception when sqlstate '23514' then guard_rejected := true;
+    end;
+    if not guard_rejected then raise exception 'unapproved product activation was accepted'; end if;
+  end loop;
 end;
 $verify$;
 
@@ -1214,10 +1281,10 @@ begin
       '00000000-0000-4000-8000-00000000b001',
       990,
       'CNY',
-      'Synthetic credit pack manual refund verification',
+      'Synthetic credit pack refund hold verification',
       'APPROVED',
       '00000000-0000-4000-8000-00000000b002',
-      'Manual only',
+      'Approved unused credits',
       clock_timestamp()
     );
     update public.billing_orders
@@ -1228,12 +1295,17 @@ begin
       '00000000-0000-4000-8000-00000000b082',
       clock_timestamp()
     );
-    if result ->> 'status' is distinct from 'MANUAL_REVIEW_REQUIRED'
-       or exists (
+    if result ->> 'status' is distinct from 'CLAIMED'
+       or not exists (
          select 1 from public.billing_refunds
          where refund_request_id = '00000000-0000-4000-8000-00000000b062'
+           and status = 'PENDING'
+       ) or not exists (
+         select 1 from public.billing_credit_ledger
+         where idempotency_key = 'refund:00000000-0000-4000-8000-00000000b062:reserve'
+           and delta_available = -100 and delta_reserved = 100
        ) then
-      raise exception 'credit pack automatic refund was not rejected';
+      raise exception 'credit pack refund claim or hold mismatch';
     end if;
 
     raise exception 'refund execution rollback sentinel' using errcode = 'P1200';
@@ -1812,6 +1884,163 @@ begin
   ) then
     raise exception 'administrator review persisted state mismatch';
   end if;
+end;
+$verify$;
+
+
+-- Synthetic runtime checks for the 019 subscription gates. All writes roll back.
+CREATE FUNCTION pg_temp.drill_subscription_order(p_sku text, p_number text, p_expired boolean DEFAULT false)
+RETURNS uuid LANGUAGE sql AS $$
+  INSERT INTO public.billing_orders (
+    order_number, user_id, product_id, provider, amount_minor, currency,
+    snapshot_product_name, snapshot_product_type, snapshot_plan_id,
+    snapshot_duration_days, snapshot_credit_grant, snapshot_entitlement_version,
+    snapshot_entitlements, accepted_agreement_version, expires_at, created_at
+  )
+  SELECT p_number, '00000000-0000-4000-8000-00000000b002', p.id, 'MOCK',
+    p.price_minor, p.currency, p.name, p.product_type, p.plan_id,
+    p.duration_days, p.credit_grant, p.entitlement_version,
+    COALESCE((SELECT jsonb_agg(jsonb_build_object(
+      'feature_key', e.feature_key, 'periodic_limit', e.periodic_limit,
+      'credit_grant', e.credit_grant, 'configuration', e.configuration))
+      FROM public.billing_plan_entitlements e
+      WHERE e.plan_id=p.plan_id AND e.entitlement_version=p.entitlement_version), '[]'::jsonb),
+    'drill-019', clock_timestamp() + CASE WHEN p_expired THEN interval '-1 day' ELSE interval '1 hour' END,
+    clock_timestamp() - interval '2 days'
+  FROM public.billing_products p WHERE p.sku=p_sku
+  RETURNING id;
+$$;
+
+do $verify$
+declare
+  v_order_id uuid;
+  v_expired_order_id uuid;
+  v_subscription_id uuid;
+  payment_time timestamptz := clock_timestamp();
+  result jsonb;
+  rejected boolean;
+  sku text;
+begin
+  v_expired_order_id := pg_temp.drill_subscription_order('PRO_MONTHLY','DRILL-EXPIRED-019',true);
+  v_order_id := pg_temp.drill_subscription_order('PRO_SEMESTER','DRILL-SEMESTER-019');
+  if v_order_id is null then raise exception 'first subscription order was not accepted'; end if;
+
+  foreach sku in array array['PRO_MONTHLY','PRO_SEMESTER'] loop
+    rejected := false;
+    begin
+      perform pg_temp.drill_subscription_order(sku,'DRILL-PENDING-CONFLICT-'||sku);
+    exception when sqlstate 'P2201' then rejected := true;
+    end;
+    if not rejected then raise exception 'second pending subscription order was accepted'; end if;
+  end loop;
+  perform pg_temp.drill_subscription_order('CREDIT_PACK_100','DRILL-CREDIT-PENDING-019');
+
+  -- An expired order paid in time cannot compete with a newer live pending order.
+  rejected := false;
+  begin
+    insert into public.billing_subscriptions(user_id,plan_id,source_order_id,status,starts_at,ends_at,auto_renew)
+    select user_id,snapshot_plan_id,id,'ACTIVE',payment_time,payment_time+interval '30 days',false
+    from public.billing_orders where id=v_expired_order_id;
+  exception when sqlstate 'P2201' then rejected := true;
+  end;
+  if not rejected then raise exception 'competing unsettled subscription was accepted'; end if;
+
+  insert into public.billing_payment_intents (
+    order_id,user_id,provider,merchant_order_number,request_idempotency_key,status,
+    payment_token,payment_status,amount_minor,currency,expires_at
+  ) select id,user_id,'MOCK',order_number,'drill-settlement-019','CREATED',
+    'mock-drill-token','PENDING',amount_minor,currency,expires_at
+    from public.billing_orders where id=v_order_id;
+  insert into public.billing_webhook_events (
+    provider,provider_event_id,order_number,provider_transaction_id,
+    request_idempotency_key,amount_minor,currency,paid_at,signature_valid,status,payload_summary
+  ) values ('MOCK','DRILL-EVENT-019','DRILL-SEMESTER-019','DRILL-TXN-019',
+    'drill-settlement-019',7900,'CNY',payment_time,true,'RECEIVED','{}');
+  result := public.billing_settle_paid_order('DRILL-SEMESTER-019','MOCK','DRILL-TXN-019',
+    'DRILL-EVENT-019','drill-settlement-019',7900,'CNY',payment_time,'{}');
+  if result->>'status' is distinct from 'PROCESSED' then raise exception 'semester settlement failed'; end if;
+  select id into strict v_subscription_id from public.billing_subscriptions where source_order_id=v_order_id;
+  if not exists (
+    select 1 from public.billing_subscriptions where id=v_subscription_id
+      and starts_at=payment_time and ends_at=payment_time+interval '150 days' and auto_renew=false
+  ) or (select count(*) from public.billing_usage_quotas q where q.subscription_id=v_subscription_id) = 0 then
+    raise exception 'semester subscription period or auto renewal mismatch';
+  end if;
+  if (select count(*) from public.billing_usage_quotas q where q.subscription_id=v_subscription_id) <> 13
+    or (select count(*) from public.billing_user_entitlements e where e.source_order_id=v_order_id) <> 13
+    or exists (
+      select 1 from public.billing_usage_quotas q where q.subscription_id=v_subscription_id
+      and (q.period_start<>payment_time or q.period_end<>payment_time+interval '150 days')
+    ) then raise exception 'semester quotas do not cover exactly one full 150 day period'; end if;
+
+  -- Both replay paths must return before the new subscription INSERT gate.
+  result := public.billing_settle_paid_order('DRILL-SEMESTER-019','MOCK','DRILL-TXN-019',
+    'DRILL-EVENT-019','drill-settlement-019',7900,'CNY',payment_time,'{}');
+  if result->>'status' is distinct from 'ALREADY_PROCESSED' then raise exception 'duplicate settlement was not idempotent'; end if;
+  insert into public.billing_webhook_events (
+    provider,provider_event_id,order_number,provider_transaction_id,
+    request_idempotency_key,amount_minor,currency,paid_at,signature_valid,status,payload_summary
+  ) values ('MOCK','DRILL-LATER-EVENT-019','DRILL-SEMESTER-019','DRILL-TXN-019',
+    'drill-settlement-019',7900,'CNY',payment_time,true,'RECEIVED','{}');
+  result := public.billing_settle_paid_order('DRILL-SEMESTER-019','MOCK','DRILL-TXN-019',
+    'DRILL-LATER-EVENT-019','drill-settlement-019',7900,'CNY',payment_time,'{}');
+  if result->>'status' is distinct from 'ALREADY_PROCESSED'
+    or (select count(*) from public.billing_subscriptions s where s.source_order_id=v_order_id) <> 1
+    or (select count(*) from public.billing_payments p where p.order_id=v_order_id) <> 1 then
+    raise exception 'later webhook granted subscription twice';
+  end if;
+  result := public.billing_bind_verified_payment_query(
+    '00000000-0000-4000-8000-00000000b002', v_order_id, 'MOCK', 'DRILL-SEMESTER-019',
+    'DRILL-TXN-019', 'PAID', 7900, 'CNY',
+    (select o.expires_at from public.billing_orders o where o.id=v_order_id), payment_time);
+  if result->>'payment_status' is distinct from 'PAID' then raise exception 'settled query replay was blocked'; end if;
+
+  foreach sku in array array['PRO_MONTHLY','PRO_SEMESTER'] loop
+    rejected := false;
+    begin
+      perform pg_temp.drill_subscription_order(sku,'DRILL-ACTIVE-CONFLICT-'||sku);
+    exception when sqlstate 'P2201' then rejected := true;
+    end;
+    if not rejected then raise exception 'active subscription was accepted'; end if;
+  end loop;
+  perform pg_temp.drill_subscription_order('CREDIT_PACK_100','DRILL-CREDIT-ACTIVE-019');
+
+  rejected := false;
+  begin
+    insert into public.billing_subscriptions(user_id,plan_id,source_order_id,status,starts_at,ends_at,auto_renew)
+    select user_id,snapshot_plan_id,id,'ACTIVE',payment_time,payment_time+interval '30 days',false
+    from public.billing_orders where id=v_expired_order_id;
+  exception when sqlstate 'P2201' then rejected := true;
+  end;
+  if not rejected then raise exception 'competing settlement with active subscription was accepted'; end if;
+
+  insert into public.billing_payment_intents (
+    order_id,user_id,provider,merchant_order_number,request_idempotency_key,status,
+    payment_token,payment_status,amount_minor,currency,expires_at
+  ) select id,user_id,'MOCK',order_number,'drill-old-settlement-019','CREATED',
+    'mock-drill-token','PENDING',amount_minor,currency,expires_at
+    from public.billing_orders where id=v_expired_order_id;
+  insert into public.billing_webhook_events (
+    provider,provider_event_id,order_number,provider_transaction_id,
+    request_idempotency_key,amount_minor,currency,paid_at,signature_valid,status,payload_summary
+  ) values ('MOCK','DRILL-OLD-EVENT-019','DRILL-EXPIRED-019','DRILL-OLD-TXN-019',
+    'drill-old-settlement-019',1990,'CNY',payment_time-interval '36 hours',true,'RECEIVED','{}');
+  rejected := false;
+  begin
+    perform public.billing_settle_paid_order('DRILL-EXPIRED-019','MOCK','DRILL-OLD-TXN-019',
+      'DRILL-OLD-EVENT-019','drill-old-settlement-019',1990,'CNY',payment_time-interval '36 hours','{}');
+  exception when sqlstate 'P2201' then rejected := true;
+  end;
+  if not rejected or exists (select 1 from public.billing_payments p where p.order_id=v_expired_order_id)
+    or exists (select 1 from public.billing_subscriptions s where s.source_order_id=v_expired_order_id)
+    or not exists (select 1 from public.billing_webhook_events where provider_event_id='DRILL-OLD-EVENT-019' and status='RECEIVED')
+    or not exists (select 1 from public.billing_payment_intents p where p.order_id=v_expired_order_id and p.payment_status='PENDING') then
+    raise exception 'conflicting settlement was not atomically rolled back';
+  end if;
+
+  update public.billing_subscriptions set starts_at=payment_time-interval '151 days',
+    ends_at=payment_time-interval '1 day' where id=v_subscription_id;
+  perform pg_temp.drill_subscription_order('PRO_MONTHLY','DRILL-AFTER-EXPIRY-019');
 end;
 $verify$;
 

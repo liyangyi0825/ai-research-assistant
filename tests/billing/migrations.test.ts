@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
+import { createBillingRepository, type BillingAdminClient } from "../../lib/billing/repositories";
 
 const projectFile = (path: string) => {
   const url = new URL(`../../${path}`, import.meta.url);
@@ -14,6 +15,48 @@ const compactSql = (path: string) =>
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+
+test("subscription insertion maps only the exact database conflict to safe 409", async () => {
+  for (const [error, code, status] of [
+    [{ code: "P2201", message: "ACTIVE_SUBSCRIPTION_EXISTS" }, "ACTIVE_SUBSCRIPTION_EXISTS", 409],
+    [{ code: "23514", message: "ACTIVE_SUBSCRIPTION_EXISTS" }, "BILLING_STORAGE_UNAVAILABLE", 503],
+    [{ code: "P2201", message: "private database detail" }, "BILLING_STORAGE_UNAVAILABLE", 503],
+  ] as const) {
+    const query = { insert: () => query, select: () => query, single: async () => ({ data: null, error }) };
+    const repository = createBillingRepository({ from: () => query } as unknown as BillingAdminClient);
+    await assert.rejects(repository.insertOrder({} as never), (failure: unknown) => {
+      assert.equal((failure as { code: string }).code, code);
+      assert.equal((failure as { status: number }).status, status);
+      assert.doesNotMatch((failure as Error).message, /private database detail/);
+      return true;
+    });
+  }
+});
+
+test("019 activates the exact catalog and serializes subscription insertion and settlement", () => {
+  const sql = compactSql("supabase/migrations/202609100019_monthly_semester_catalog.sql");
+  assert.match(sql, /^begin;/);
+  assert.match(sql, /commit;$/);
+  assert.doesNotMatch(sql, /\('free', 'free', 'free', false\)/, "019 must preserve the existing Free plan definition");
+  assert.doesNotMatch(sql, /\('free', '[^']+', 'free-v1', \d+\)/, "019 must preserve existing Free quota configuration");
+  assert.match(sql, /'pro_monthly', 'pro monthly', 'subscription', 'pro', 1990, 'cny', 30, 0, 'pro-v1', true/);
+  assert.match(sql, /'pro_semester', 'pro semester', 'subscription', 'pro_semester', 7900, 'cny', 150, 0, 'pro-semester-v1', true/);
+  assert.match(sql, /'credit_pack_100', 'credit pack 100', 'credit_pack', null, 990, 'cny', null, 100, 'credit-v1', true/);
+  assert.match(sql, /semester.periodic_limit is distinct from monthly.periodic_limit \* 5/);
+  assert.doesNotMatch(sql, /billing_period = 'monthly' and is_active = false/);
+  assert.match(sql, /pg_advisory_xact_lock\(hashtextextended\('billing-subscription:' \|\| p_user_id::text, 0\)\)/);
+  assert.match(sql, /status = 'active' and ends_at > clock_timestamp\(\)/);
+  assert.match(sql, /status = 'pending' and expires_at > clock_timestamp\(\)/);
+  assert.match(sql, /id is distinct from p_order_id/);
+  assert.match(sql, /raise exception 'active_subscription_exists' using errcode = 'p2201'/);
+  assert.match(sql, /before insert on public.billing_orders/);
+  assert.match(sql, /before insert on public.billing_subscriptions/);
+  assert.match(sql, /billing_assert_subscription_available\(new.user_id, new.id\)/);
+  assert.match(sql, /billing_assert_subscription_available\(new.user_id, new.source_order_id\)/);
+  assert.match(sql, /revoke all on function public.billing_assert_subscription_available\(uuid, uuid\) from public, anon, authenticated, service_role/);
+  // Preserve the existing replay branches and every payment/refund validation.
+  assert.doesNotMatch(sql, /create or replace function public.billing_(settle_paid_order|bind_verified_payment_query|complete_refund)/);
+});
 
 test("013 webhook retries are bounded, server-timed, immutable, and service-role only", () => {
   const sql = compactSql("supabase/migrations/202608180013_billing_webhook_retry.sql");

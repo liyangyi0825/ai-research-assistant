@@ -45,6 +45,7 @@ const expectedBillingMigrationFiles = [
   "202608240016_semester_entitlement_guard_fix.sql",
   "202608280017_billing_credit_pack_refund.sql",
   "202609090018_wechat_closed_query_without_transaction.sql",
+  "202609100019_monthly_semester_catalog.sql",
 ] as const;
 const expectedBillingMigrationVersions = expectedBillingMigrationFiles.map(
   (name) => name.slice(0, 12),
@@ -956,7 +957,7 @@ test("manifest emits only the six safe top-level sections", async () => {
   ]);
 });
 
-test("manifest reports and verification requires the exact 001-018 migration history", async () => {
+test("manifest reports and verification requires the exact 001-019 migration history", async () => {
   const [manifest, verify] = await Promise.all([
     readDrillSql("manifest.sql"),
     readDrillSql("verify.sql"),
@@ -1007,14 +1008,14 @@ test("manifest reports and verification requires the exact 001-018 migration his
   );
 });
 
-test("verification SQL contains nine balanced dollar-quoted DO statements", async () => {
+test("verification SQL contains ten balanced dollar-quoted DO statements", async () => {
   const verify = await readDrillSql("verify.sql");
-  assertDollarQuotedDoBlocks(verify, 9);
+  assertDollarQuotedDoBlocks(verify, 10);
 
   const brokenDelimiter = verify.replace(/do\s+\$(?:[a-z_][a-z0-9_]*)?\$/i, "do $");
   assert.notEqual(brokenDelimiter, verify, "failed to construct delimiter mutation");
   assert.throws(
-    () => assertDollarQuotedDoBlocks(brokenDelimiter, 9),
+    () => assertDollarQuotedDoBlocks(brokenDelimiter, 10),
     /lacks a dollar-quote delimiter/,
   );
 });
@@ -1261,7 +1262,7 @@ test("verification SQL enforces structural, security, catalog, and runtime behav
     verify,
     /REFUND_PROVIDER_REJECTED[\s\S]*billing_claim_approved_refund[\s\S]*sqlstate\s+'P2101'[\s\S]*permanent refund failure was automatically retried/i,
   );
-  assert.match(verify, /MANUAL_REVIEW_REQUIRED[\s\S]*credit pack automatic refund was not rejected/i);
+  assert.match(verify, /CLAIMED[\s\S]*credit pack refund claim or hold mismatch/i);
   assert.match(verify, /refund execution rollback sentinel[\s\S]*refund execution rollback failed/i);
   assert.match(
     verify,
@@ -1403,7 +1404,7 @@ test("preflight plan fails closed when restore billing relations or migration hi
   assert.equal(emptyCheck.targetRef, restoreRef);
 });
 
-test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 018 separately", () => {
+test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 019 separately", () => {
   const plan = buildUpgradePlan(planInput());
   assert.deepEqual(plan.map(({ operation }) => operation), [
     "prepare-upgrade-009-workspace",
@@ -1439,6 +1440,9 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
     "copy-migration-018",
     "verify-upgrade-workspace-ref-before-018",
     "push-migration-018",
+    "copy-migration-019",
+    "verify-upgrade-workspace-ref-before-019",
+    "push-migration-019",
     "verify-upgraded-restore",
   ]);
   assert.deepEqual(plan[0].args, ["copy-migrations", "001-009", "upgrade-workspace"]);
@@ -1455,6 +1459,7 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.deepEqual(plan[24].args, ["copy-migrations", "016", "upgrade-workspace"]);
   assert.deepEqual(plan[27].args, ["copy-migrations", "017", "upgrade-workspace"]);
   assert.deepEqual(plan[30].args, ["copy-migrations", "018", "upgrade-workspace"]);
+  assert.deepEqual(plan[33].args, ["copy-migrations", "019", "upgrade-workspace"]);
   assert.deepEqual(plan[1].args, ["link", "--project-ref", restoreRef]);
   assert.deepEqual(plan[3].args, ["db", "push", "--linked"]);
   assert.deepEqual(plan[4].args.slice(0, 4), ["-X", "-v", "ON_ERROR_STOP=1", "-v"]);
@@ -1471,7 +1476,7 @@ test("upgrade plan preserves the 009 fixture checkpoint then pushes 010 through 
   assert.ok(plan.every(({ targetRef }) => targetRef !== BILLING_SOURCE_PROJECT_REF));
 });
 
-test("migration copy ranges distinguish 010 through 018 and reject unknown or incomplete sets", () => {
+test("migration copy ranges distinguish 010 through 019 and reject unknown or incomplete sets", () => {
   assert.deepEqual(
     selectMigrationFiles("001-009", expectedBillingMigrationFiles),
     expectedBillingMigrationFiles.slice(0, 9),
@@ -1512,6 +1517,8 @@ test("migration copy ranges distinguish 010 through 018 and reject unknown or in
     selectMigrationFiles("018", expectedBillingMigrationFiles),
     [expectedBillingMigrationFiles[17]],
   );
+  assert.deepEqual(selectMigrationFiles("019", expectedBillingMigrationFiles), [expectedBillingMigrationFiles[18]]);
+  assert.throws(() => selectMigrationFiles("019", expectedBillingMigrationFiles.slice(0, 18)), /MIGRATION_SET_INVALID/);
   assert.throws(
     () => selectMigrationFiles("011", expectedBillingMigrationFiles.slice(0, 10)),
     /MIGRATION_SET_INVALID/,
