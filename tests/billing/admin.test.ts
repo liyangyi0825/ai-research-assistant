@@ -576,7 +576,7 @@ test("admin catalog accepts a semester billing period and exposes it in the writ
   assert.match(source, /options: \["FREE", "MONTHLY", "YEARLY", "SEMESTER"\]/);
 });
 
-test("plan activation requires enabled billing and the approved semester identity", async () => {
+test("plan activation requires enabled billing and an exact approved subscription identity", async () => {
   const approved = {
     code: "PRO_SEMESTER",
     name: "Pro Semester",
@@ -589,11 +589,24 @@ test("plan activation requires enabled billing and the approved semester identit
     () => upsertBillingPlan(admin, approved, repository(), disabledBillingConfig),
     (error: BillingError) => error.code === "BILLING_FEATURE_DISABLED",
   );
+  let monthlyReceived: Record<string, unknown> | undefined;
+  await upsertBillingPlan(admin, {
+    ...approved,
+    code: "PRO",
+    name: "Pro",
+    billingPeriod: "MONTHLY",
+    idempotencyKey: "activate-plan-monthly",
+  }, repository({ upsertPlan: async (input) => {
+    monthlyReceived = input;
+    return { status: "APPLIED", auditId: "audit-plan", resourceId: "plan-pro" };
+  }}), enabledBillingConfig);
+  assert.equal(monthlyReceived?.p_code, "PRO");
+  assert.equal(monthlyReceived?.p_billing_period, "MONTHLY");
   for (const drift of [
     { code: "FREE" },
-    { code: "PRO", billingPeriod: "MONTHLY" },
     { code: "PRO_YEARLY", billingPeriod: "YEARLY" },
     { code: "PRO_SEMESTER", name: "Wrong name" },
+    { code: "PRO", name: "Wrong name", billingPeriod: "MONTHLY" },
   ]) {
     await assert.rejects(
       () => upsertBillingPlan(admin, { ...approved, ...drift }, repository(), enabledBillingConfig),
@@ -677,7 +690,7 @@ test("admin cannot activate any product while the billing feature is disabled", 
 });
 
 test("admin cannot activate products outside the approved fast-launch catalog", async () => {
-  for (const sku of ["PRO_MONTHLY", "PRO_YEARLY", "FREE"]) {
+  for (const sku of ["PRO_YEARLY", "FREE", "UNAPPROVED"]) {
     let written = false;
 
     await assert.rejects(
@@ -716,21 +729,20 @@ test("admin cannot activate products outside the approved fast-launch catalog", 
 });
 
 test("approved fast-launch products may be activated only through the admin service gate", async () => {
-  for (const sku of ["PRO_SEMESTER", "CREDIT_PACK_100"]) {
+  for (const sku of ["PRO_MONTHLY", "PRO_SEMESTER", "CREDIT_PACK_100"]) {
     let received: Record<string, unknown> | undefined;
 
     await upsertBillingProduct(
       admin,
       {
         sku,
-        name: sku === "PRO_SEMESTER" ? "Pro Semester" : "Credit Pack 100",
-        productType: sku === "PRO_SEMESTER" ? "SUBSCRIPTION" : "CREDIT_PACK",
-        planId: sku === "PRO_SEMESTER" ? "00000000-0000-4000-8000-000000000001" : null,
-        priceMinor: sku === "PRO_SEMESTER" ? 7_900 : 990,
-        durationDays: sku === "PRO_SEMESTER" ? 150 : null,
-        creditGrant: sku === "PRO_SEMESTER" ? 0 : 100,
-        entitlementVersion:
-          sku === "PRO_SEMESTER" ? "pro-semester-v1" : "credit-v1",
+        name: sku === "PRO_MONTHLY" ? "Pro Monthly" : sku === "PRO_SEMESTER" ? "Pro Semester" : "Credit Pack 100",
+        productType: sku === "CREDIT_PACK_100" ? "CREDIT_PACK" : "SUBSCRIPTION",
+        planId: sku === "CREDIT_PACK_100" ? null : "00000000-0000-4000-8000-000000000001",
+        priceMinor: sku === "PRO_MONTHLY" ? 1_990 : sku === "PRO_SEMESTER" ? 7_900 : 990,
+        durationDays: sku === "PRO_MONTHLY" ? 30 : sku === "PRO_SEMESTER" ? 150 : null,
+        creditGrant: sku === "CREDIT_PACK_100" ? 100 : 0,
+        entitlementVersion: sku === "PRO_MONTHLY" ? "pro-v1" : sku === "PRO_SEMESTER" ? "pro-semester-v1" : "credit-v1",
         isActive: true,
         reason: "approved activation",
         idempotencyKey: `activate-${sku.toLowerCase()}`,
@@ -755,6 +767,24 @@ test("approved fast-launch products may be activated only through the admin serv
 
 test("admin cannot activate an approved SKU with drifted price or benefits", async () => {
   for (const product of [
+    ...[
+      { priceMinor: 1_991 },
+      { name: "Wrong Monthly" },
+      { productType: "CREDIT_PACK" },
+      { durationDays: 31 },
+      { creditGrant: 1 },
+      { entitlementVersion: "wrong-v1" },
+    ].map((drift) => ({
+      sku: "PRO_MONTHLY",
+      name: "Pro Monthly",
+      planId: "00000000-0000-4000-8000-000000000001",
+      productType: "SUBSCRIPTION",
+      priceMinor: 1_990,
+      durationDays: 30,
+      creditGrant: 0,
+      entitlementVersion: "pro-v1",
+      ...drift,
+    })),
     {
       sku: "PRO_SEMESTER",
       name: "Pro Semester",
@@ -789,6 +819,34 @@ test("admin cannot activate an approved SKU with drifted price or benefits", asy
           repository(),
           enabledBillingConfig,
         ),
+      (error: BillingError) => error.code === "PRODUCT_ACTIVATION_CONFIG_MISMATCH",
+    );
+  }
+});
+
+test("active subscription products require a plan ID and the credit pack forbids one", async () => {
+  for (const product of [
+    {
+      sku: "PRO_MONTHLY", name: "Pro Monthly", productType: "SUBSCRIPTION",
+      planId: null, priceMinor: 1_990, durationDays: 30, creditGrant: 0,
+      entitlementVersion: "pro-v1",
+    },
+    {
+      sku: "PRO_SEMESTER", name: "Pro Semester", productType: "SUBSCRIPTION",
+      planId: null, priceMinor: 7_900, durationDays: 150, creditGrant: 0,
+      entitlementVersion: "pro-semester-v1",
+    },
+    {
+      sku: "CREDIT_PACK_100", name: "Credit Pack 100", productType: "CREDIT_PACK",
+      planId: "00000000-0000-4000-8000-000000000001", priceMinor: 990,
+      durationDays: null, creditGrant: 100, entitlementVersion: "credit-v1",
+    },
+  ]) {
+    await assert.rejects(
+      () => upsertBillingProduct(admin, {
+        ...product, isActive: true, reason: "reject plan mismatch",
+        idempotencyKey: `reject-plan-${product.sku.toLowerCase()}`,
+      }, repository(), enabledBillingConfig),
       (error: BillingError) => error.code === "PRODUCT_ACTIVATION_CONFIG_MISMATCH",
     );
   }

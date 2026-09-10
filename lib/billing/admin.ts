@@ -362,7 +362,12 @@ export async function upsertBillingPlan(admin: BillingAdmin, input: Record<strin
     if (!(config ?? getBillingConfig()).featureEnabled) {
       throw new BillingError("BILLING_FEATURE_DISABLED", "Billing must be enabled before a plan can be activated.", 409);
     }
-    if (input.code !== "PRO_SEMESTER" || input.name !== "Pro Semester" || input.billingPeriod !== "SEMESTER") {
+    const approvedPlans = {
+      PRO: { name: "Pro", billingPeriod: "MONTHLY" },
+      PRO_SEMESTER: { name: "Pro Semester", billingPeriod: "SEMESTER" },
+    } as const;
+    const approved = approvedPlans[input.code as keyof typeof approvedPlans];
+    if (!approved || input.name !== approved.name || input.billingPeriod !== approved.billingPeriod) {
       throw new BillingError("PLAN_ACTIVATION_NOT_APPROVED", "This plan is not approved for the fast-launch catalog.", 409);
     }
   }
@@ -380,6 +385,15 @@ export async function upsertBillingPlan(admin: BillingAdmin, input: Record<strin
 }
 
 const FAST_LAUNCH_PRODUCTS = {
+  PRO_MONTHLY: {
+    name: "Pro Monthly",
+    productType: "SUBSCRIPTION",
+    priceMinor: 1_990,
+    durationDays: 30,
+    creditGrant: 0,
+    entitlementVersion: "pro-v1",
+    requiresPlanId: true,
+  },
   PRO_SEMESTER: {
     name: "Pro Semester",
     productType: "SUBSCRIPTION",
@@ -387,6 +401,7 @@ const FAST_LAUNCH_PRODUCTS = {
     durationDays: 150,
     creditGrant: 0,
     entitlementVersion: "pro-semester-v1",
+    requiresPlanId: true,
   },
   CREDIT_PACK_100: {
     name: "Credit Pack 100",
@@ -395,6 +410,7 @@ const FAST_LAUNCH_PRODUCTS = {
     durationDays: null,
     creditGrant: 100,
     entitlementVersion: "credit-v1",
+    requiresPlanId: false,
   },
 } as const;
 
@@ -427,8 +443,9 @@ function assertFastLaunchActivation(
     (input.durationDays ?? null) !== approved.durationDays ||
     input.creditGrant !== approved.creditGrant ||
     input.entitlementVersion !== approved.entitlementVersion ||
-    (sku === "PRO_SEMESTER" && !optionalString(input.planId)) ||
-    (sku === "CREDIT_PACK_100" && optionalString(input.planId) !== null)
+    (approved.requiresPlanId
+      ? !optionalString(input.planId)
+      : optionalString(input.planId) !== null)
   ) {
     throw new BillingError(
       "PRODUCT_ACTIVATION_CONFIG_MISMATCH",
