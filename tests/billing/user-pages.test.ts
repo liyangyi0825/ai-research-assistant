@@ -854,9 +854,15 @@ test("CheckoutPanel keeps the pending QR when the user clicks submit again", asy
 });
 
 for (const failure of ["response", "network"] as const) {
-  test(`CheckoutPanel preserves the created order after a payment ${failure} failure`, async () => {
+  test(`CheckoutPanel retries payment on the same created order after a ${failure} failure`, async () => {
     const harness = createReactDomHarness();
     let orderPosts = 0;
+    const paymentPosts: string[] = [];
+    const qrCode = `data:image/svg+xml;base64,${Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"></svg>',
+    ).toString("base64")}`;
+    let resolveRetry!: (response: Response) => void;
+    const retryResponse = new Promise<Response>((resolve) => { resolveRetry = resolve; });
     const fetcher = async (url: string, init?: RequestInit) => {
       if (url === "/api/billing/products") {
         return Response.json({ products: publicProducts() });
@@ -873,7 +879,9 @@ for (const failure of ["response", "network"] as const) {
         orderPosts++;
         return Response.json({ order: { id: "created-order" } }, { status: 201 });
       }
-      if (url === "/api/billing/orders/created-order/payment") {
+      if (url === "/api/billing/orders/created-order/payment" && init?.method === "POST") {
+        paymentPosts.push(url);
+        if (paymentPosts.length > 1) return retryResponse;
         if (failure === "network") throw new Error("provider unavailable");
         return Response.json({ error: { code: "PAYMENT_PROVIDER_UNAVAILABLE" } }, { status: 503 });
       }
@@ -902,6 +910,46 @@ for (const failure of ["response", "network"] as const) {
       await act(async () => { button.click(); });
       await harness.flush();
       assert.equal(orderPosts, 1);
+      assert.doesNotMatch(harness.container.textContent ?? "", /当前已有有效订阅/);
+
+      const retryButton = Array.from(harness.container.querySelectorAll("button"))
+        .find((candidate) => candidate.textContent?.includes("重试支付"));
+      assert.ok(retryButton, "payment preparation failure must offer an explicit retry on the existing order");
+      assert.equal(retryButton.disabled, false);
+      await act(async () => {
+        retryButton.dispatchEvent(new harness.window.MouseEvent("click", { bubbles: true }) as unknown as Event);
+        retryButton.dispatchEvent(new harness.window.MouseEvent("click", { bubbles: true }) as unknown as Event);
+      });
+      assert.equal(retryButton.disabled, true, "an in-flight retry must disable the retry action");
+      assert.deepEqual(paymentPosts, [
+        "/api/billing/orders/created-order/payment",
+        "/api/billing/orders/created-order/payment",
+      ], "concurrent clicks must prepare payment only once on the same order");
+      assert.equal(orderPosts, 1);
+      assert.ok(harness.container.querySelector('a[href="/billing/orders/created-order"]'));
+
+      await act(async () => {
+        resolveRetry(Response.json({ payment: {
+          status: "PENDING",
+          expiresAt: "2026-09-11T12:30:00.000Z",
+          qrCodeDataUrl: qrCode,
+        } }, { status: 201 }));
+      });
+      await harness.flush();
+      assert.equal(harness.container.querySelector('img[alt="微信支付二维码"]')?.getAttribute("src"), qrCode);
+      assert.doesNotMatch(harness.container.textContent ?? "", /当前已有有效订阅|支付准备未完成/);
+
+      // Re-submitting after recovery must preserve the QR and never start another order.
+      const form = harness.container.querySelector("form");
+      assert.ok(form);
+      await act(async () => {
+        button.click();
+        form.dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+      });
+      await harness.flush();
+      assert.equal(orderPosts, 1);
+      assert.equal(paymentPosts.length, 2);
+      assert.equal(harness.container.querySelector('img[alt="微信支付二维码"]')?.getAttribute("src"), qrCode);
       assert.doesNotMatch(harness.container.textContent ?? "", /当前已有有效订阅/);
     } finally {
       await harness.cleanup();
