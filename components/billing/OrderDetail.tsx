@@ -149,7 +149,9 @@ export function OrderDetail({ orderId }: { orderId: string }) {
 
   if (loading) {
     return (
-      <div aria-label="正在加载订单信息" className="h-96 animate-pulse rounded-2xl border border-slate-200 bg-white motion-reduce:animate-none" />
+      <div role="status" className="h-96 animate-pulse rounded-2xl border border-slate-200 bg-white motion-reduce:animate-none">
+        <span className="sr-only">正在加载订单信息</span>
+      </div>
     );
   }
 

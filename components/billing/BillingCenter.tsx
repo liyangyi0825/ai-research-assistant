@@ -217,9 +217,9 @@ export function BillingCenter() {
             暂无订单记录。
           </div>
         ) : (
-          <table role="table" className="block w-full text-left text-sm md:table md:table-fixed">
+          <table role="table" className="block w-full text-left text-sm xl:table xl:table-fixed">
             <caption className="sr-only">最近订单及支付状态</caption>
-            <thead role="rowgroup" className="sr-only md:not-sr-only md:table-header-group">
+            <thead role="rowgroup" className="sr-only xl:not-sr-only xl:table-header-group">
               <tr role="row" className="bg-slate-50 text-xs text-slate-500">
                 <th role="columnheader" scope="col" className="w-[24%] px-7 py-3 font-medium">产品</th>
                 <th role="columnheader" scope="col" className="w-[30%] px-3 py-3 font-medium">订单 / 日期</th>
@@ -228,21 +228,21 @@ export function BillingCenter() {
                 <th role="columnheader" scope="col" className="px-5 py-3 text-right font-medium"><span className="sr-only">操作</span></th>
               </tr>
             </thead>
-            <tbody role="rowgroup" className="block divide-y divide-slate-100 md:table-row-group">
+            <tbody role="rowgroup" className="block divide-y divide-slate-100 xl:table-row-group">
               {summary.orders.map((item) => (
                 <tr
                   role="row"
                   key={item.id}
-                  className="grid grid-cols-2 items-center gap-x-3 gap-y-3 px-5 py-5 md:table-row md:hover:bg-slate-50/60"
+                  className="grid grid-cols-2 items-center gap-x-3 gap-y-3 px-5 py-5 xl:table-row xl:hover:bg-slate-50/60"
                 >
-                  <td role="cell" className="col-span-2 break-words font-medium text-slate-900 md:px-7 md:py-5">{item.productName}</td>
-                  <td role="cell" className="col-span-2 min-w-0 md:px-3 md:py-5">
+                  <td role="cell" className="col-span-2 break-words font-medium text-slate-900 xl:px-7 xl:py-5">{item.productName}</td>
+                  <td role="cell" className="col-span-2 min-w-0 xl:px-3 xl:py-5">
                     <p className="break-all text-xs text-slate-600 tabular-nums">{item.orderNumber}</p>
                     <p className="mt-1 text-xs text-slate-500 tabular-nums">{date(item.createdAt)}</p>
                   </td>
-                  <td role="cell" className="md:px-3 md:py-5"><BillingStatusBadge status={item.status} /></td>
-                  <td role="cell" className="text-right font-medium text-slate-900 tabular-nums md:px-3 md:py-5">{money(item.amountMinor, item.currency)}</td>
-                  <td role="cell" className="col-span-2 text-right md:px-5 md:py-5">
+                  <td role="cell" className="xl:px-3 xl:py-5"><BillingStatusBadge status={item.status} /></td>
+                  <td role="cell" className="text-right font-medium text-slate-900 tabular-nums xl:px-3 xl:py-5">{money(item.amountMinor, item.currency)}</td>
+                  <td role="cell" className="col-span-2 text-right xl:px-5 xl:py-5">
                     <Link
                       href={`/billing/orders/${encodeURIComponent(item.id)}`}
                       className="inline-flex min-h-10 items-center rounded-md px-2 font-medium whitespace-nowrap text-blue-700 outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"

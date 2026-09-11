@@ -174,6 +174,33 @@ test("Billing dashboard renders resource overview, localized quota details and e
   }
 });
 
+test("Billing dashboard keeps orders stacked below the sidebar-safe xl breakpoint", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = dashboardFetch(summary());
+  try {
+    const { BillingCenter } = await import("../../components/billing/BillingCenter");
+    await harness.render(createElement(BillingCenter));
+    const table = harness.container.querySelector("table");
+    assert.ok(table);
+    assert.ok(table.classList.contains("block"));
+    assert.ok(table.classList.contains("xl:table"));
+    assert.ok(table.classList.contains("xl:table-fixed"));
+    assert.ok(table.querySelector("thead")?.classList.contains("xl:table-header-group"));
+    assert.ok(table.querySelector("tbody")?.classList.contains("xl:table-row-group"));
+    const row = table.querySelector("tbody tr");
+    assert.ok(row);
+    assert.ok(row.classList.contains("grid"));
+    assert.ok(row.classList.contains("xl:table-row"));
+    for (const element of [table, ...table.querySelectorAll("[class]")]) {
+      assert.doesNotMatch(element.className, /(?:^|\s)(?:sm|md|lg):(?:table(?:-\S+)?|not-sr-only)(?=\s|$)/);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 test("Billing dashboard renders no-plan and empty states without a gated purchase link", async () => {
   const harness = createReactDomHarness();
   const originalFetch = globalThis.fetch;
@@ -229,7 +256,9 @@ test("Billing dashboard and order detail retain loading and unavailable states",
     await harness.render(createElement(BillingCenter));
     assert.ok(harness.container.querySelector('[aria-label="正在加载账单信息"]'));
     await harness.render(createElement(OrderDetail, { orderId: "order-1" }));
-    assert.ok(harness.container.querySelector('[aria-label="正在加载订单信息"]'));
+    const loadingStatus = harness.container.querySelector('[role="status"]');
+    assert.ok(loadingStatus);
+    assert.equal(loadingStatus.textContent?.trim(), "正在加载订单信息");
     globalThis.fetch = (async () => Response.json({}, { status: 503 })) as typeof fetch;
     await harness.render(createElement(BillingCenter));
     assert.match(harness.container.textContent ?? "", /账单信息暂时无法加载/);
