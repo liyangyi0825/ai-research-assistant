@@ -716,6 +716,148 @@ test("CheckoutPanel renders the active-subscription conflict after one order POS
   }
 });
 
+test("CheckoutPanel keeps the pending QR when the user clicks submit again", async () => {
+  const harness = createReactDomHarness();
+  const calls: Array<{ url: string; method: string }> = [];
+  const navigations: string[] = [];
+  const qrCode = `data:image/svg+xml;base64,${Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"></svg>',
+  ).toString("base64")}`;
+  const fetcher = async (url: string, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    calls.push({ url, method });
+    if (url === "/api/billing/products") {
+      return Response.json({ products: publicProducts() });
+    }
+    if (url === "/api/billing/availability") {
+      return Response.json({
+        available: true,
+        paymentMode: "wechat",
+        mockConfirmationAllowed: false,
+        agreementVersion: "billing-member-v1",
+      });
+    }
+    if (url === "/api/billing/orders" && method === "POST") {
+      const orderPosts = calls.filter((call) =>
+        call.url === "/api/billing/orders" && call.method === "POST",
+      );
+      return orderPosts.length === 1
+        ? Response.json({ order: { id: "pending-subscription-order" } }, { status: 201 })
+        : Response.json(
+            { error: { code: "ACTIVE_SUBSCRIPTION_EXISTS", message: "Pending order conflict." } },
+            { status: 409 },
+          );
+    }
+    if (url === "/api/billing/orders/pending-subscription-order/payment") {
+      return Response.json({
+        payment: {
+          status: "PENDING",
+          expiresAt: "2026-09-11T12:30:00.000Z",
+          ...(method === "POST" ? { qrCodeDataUrl: qrCode } : {}),
+        },
+      });
+    }
+    throw new Error(`unexpected checkout request: ${method} ${url}`);
+  };
+
+  try {
+    const { CheckoutPanel, CheckoutPanelDependenciesProvider } = await import(
+      "../../components/billing/CheckoutPanel"
+    );
+    await harness.render(createElement(
+      CheckoutPanelDependenciesProvider,
+      { value: { fetcher, router: { push: (path: string) => navigations.push(path) } } },
+      createElement(CheckoutPanel, { productId: "semester-product" }),
+    ));
+    const checkbox = harness.container.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    const button = harness.container.querySelector<HTMLButtonElement>('button[type="submit"]');
+    const form = harness.container.querySelector("form");
+    assert.ok(checkbox);
+    assert.ok(button);
+    assert.ok(form);
+    await act(async () => { checkbox.click(); });
+    await act(async () => { button.click(); });
+    await harness.flush();
+    assert.equal(harness.container.querySelector('img[alt="微信支付二维码"]')?.getAttribute("src"), qrCode);
+
+    await act(async () => { button.click(); });
+    await harness.flush();
+    assert.deepEqual({
+      orderPosts: calls.filter((call) => call.url === "/api/billing/orders" && call.method === "POST").length,
+      qrCode: harness.container.querySelector('img[alt="微信支付二维码"]')?.getAttribute("src"),
+      falseActiveMessage: harness.container.textContent?.includes("当前已有有效订阅"),
+    }, { orderPosts: 1, qrCode, falseActiveMessage: false });
+    assert.equal(button.disabled, true);
+
+    // A submit event must also be guarded independently of the disabled button.
+    await act(async () => {
+      form.dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+    });
+    await harness.flush();
+    assert.equal(calls.filter((call) => call.method === "POST").length, 2);
+    assert.equal(harness.container.querySelector('img[alt="微信支付二维码"]')?.getAttribute("src"), qrCode);
+    assert.deepEqual(navigations, []);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+for (const failure of ["response", "network"] as const) {
+  test(`CheckoutPanel preserves the created order after a payment ${failure} failure`, async () => {
+    const harness = createReactDomHarness();
+    let orderPosts = 0;
+    const fetcher = async (url: string, init?: RequestInit) => {
+      if (url === "/api/billing/products") {
+        return Response.json({ products: publicProducts() });
+      }
+      if (url === "/api/billing/availability") {
+        return Response.json({
+          available: true,
+          paymentMode: "wechat",
+          mockConfirmationAllowed: false,
+          agreementVersion: "billing-member-v1",
+        });
+      }
+      if (url === "/api/billing/orders" && init?.method === "POST") {
+        orderPosts++;
+        return Response.json({ order: { id: "created-order" } }, { status: 201 });
+      }
+      if (url === "/api/billing/orders/created-order/payment") {
+        if (failure === "network") throw new Error("provider unavailable");
+        return Response.json({ error: { code: "PAYMENT_PROVIDER_UNAVAILABLE" } }, { status: 503 });
+      }
+      throw new Error(`unexpected checkout request: ${url}`);
+    };
+
+    try {
+      const { CheckoutPanel, CheckoutPanelDependenciesProvider } = await import(
+        "../../components/billing/CheckoutPanel"
+      );
+      await harness.render(createElement(
+        CheckoutPanelDependenciesProvider,
+        { value: { fetcher, router: { push: () => assert.fail("failed payment must keep the order visible") } } },
+        createElement(CheckoutPanel, { productId: "monthly-product" }),
+      ));
+      const checkbox = harness.container.querySelector<HTMLInputElement>('input[type="checkbox"]');
+      const button = harness.container.querySelector<HTMLButtonElement>('button[type="submit"]');
+      assert.ok(checkbox);
+      assert.ok(button);
+      await act(async () => { checkbox.click(); });
+      await act(async () => { button.click(); });
+      await harness.flush();
+      assert.ok(harness.container.querySelector('a[href="/billing/orders/created-order"]'), "the created order must remain accessible after payment failure");
+      assert.match(harness.container.textContent ?? "", /订单已创建，但支付准备未完成/);
+      assert.equal(button.disabled, true);
+      await act(async () => { button.click(); });
+      await harness.flush();
+      assert.equal(orderPosts, 1);
+      assert.doesNotMatch(harness.container.textContent ?? "", /当前已有有效订阅/);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+}
+
 test("disabled billing has no purchase action and production mock confirmation is gated", async () => {
   const pricingPage = await source("app/pricing/page.tsx");
   const checkoutPage = await source("app/checkout/[productId]/page.tsx");

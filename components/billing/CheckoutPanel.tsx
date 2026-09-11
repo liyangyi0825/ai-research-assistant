@@ -60,6 +60,8 @@ export type BillingOrderRequestResult =
 const ACTIVE_SUBSCRIPTION_MESSAGE =
   "当前已有有效订阅，请在现有方案到期后再购买新的订阅。credits 包仍可单独购买。";
 const GENERIC_ORDER_MESSAGE = "订单暂时无法创建，请核对账号权限后重试。";
+const PAYMENT_PREPARATION_MESSAGE =
+  "订单已创建，但支付准备未完成，请查看订单详情。";
 
 export async function requestBillingOrder(
   input: BillingOrderRequest,
@@ -181,7 +183,7 @@ function CheckoutPanelContent({
   }, [fetcher, productId]);
 
   useEffect(() => {
-    if (!pendingOrderId) return;
+    if (!pendingOrderId || !wechatQrCode) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
@@ -215,11 +217,13 @@ function CheckoutPanelContent({
       cancelled = true;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [fetcher, pendingOrderId, router]);
+  }, [fetcher, pendingOrderId, router, wechatQrCode]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (
+      submitting ||
+      pendingOrderId ||
       !acceptedAgreement ||
       !product ||
       !availability?.available ||
@@ -230,7 +234,7 @@ function CheckoutPanelContent({
     }
     setSubmitting(true);
     setMessage(null);
-    setWechatQrCode(null);
+    let createdOrderId: string | null = null;
     try {
       const orderResult = await requestBillingOrder(
         {
@@ -248,14 +252,14 @@ function CheckoutPanelContent({
         setMessage(orderResult.message);
         return;
       }
+      createdOrderId = orderResult.orderId;
+      setPendingOrderId(createdOrderId);
       const paymentResponse = await fetcher(
         `/api/billing/orders/${encodeURIComponent(orderResult.orderId)}/payment`,
         { method: "POST" },
       );
       if (!paymentResponse.ok) {
-        setMessage(
-          "璁㈠崟宸插垱寤猴紝浣嗘敮浠樺噯澶囨湭瀹屾垚锛岃浠庤处鍗曚腑蹇冮噸璇曘€?",
-        );
+        setMessage(PAYMENT_PREPARATION_MESSAGE);
         return;
       }
       const paymentBody = (await paymentResponse.json()) as {
@@ -271,7 +275,6 @@ function CheckoutPanelContent({
         )
       ) {
         setWechatQrCode(paymentBody.payment.qrCodeDataUrl);
-        setPendingOrderId(orderResult.orderId);
         setMessage("请使用微信扫描二维码完成支付，页面会自动核验结果。");
         return;
       }
@@ -279,7 +282,11 @@ function CheckoutPanelContent({
         `/billing/payment-result?orderId=${encodeURIComponent(orderResult.orderId)}`,
       );
     } catch {
-      setMessage("订单暂时无法创建，请稍后重试。");
+      setMessage(
+        createdOrderId
+          ? PAYMENT_PREPARATION_MESSAGE
+          : "订单暂时无法创建，请稍后重试。",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -387,15 +394,27 @@ function CheckoutPanelContent({
         {availability?.available ? (
           <button
             type="submit"
-            disabled={!acceptedAgreement || submitting}
+            disabled={!acceptedAgreement || submitting || pendingOrderId !== null}
             className="mt-6 w-full rounded-lg bg-blue-500 px-4 py-2.5 text-sm font-semibold text-white outline-none transition hover:bg-blue-400 focus-visible:ring-2 focus-visible:ring-blue-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
           >
-            {submitting ? "正在创建订单…" : "确认并创建订单"}
+            {submitting
+              ? "正在创建订单…"
+              : pendingOrderId
+                ? "订单已创建"
+                : "确认并创建订单"}
           </button>
         ) : (
           <div className="mt-6 rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-center text-sm text-slate-300">
             当前账号暂未开放购买
           </div>
+        )}
+        {pendingOrderId && (
+          <Link
+            href={`/billing/orders/${encodeURIComponent(pendingOrderId)}`}
+            className="mt-4 inline-flex text-sm text-blue-200 underline outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
+          >
+            查看订单详情
+          </Link>
         )}
         {message && (
           <p className="mt-4 text-sm leading-6 text-amber-200" aria-live="polite">
