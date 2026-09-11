@@ -801,6 +801,24 @@ test("the offline font build wrapper restores both present and absent caller env
   );
 });
 
+test("migration 019 rollout documents the public-sales pause and ordinary-user maintenance impact", () => {
+  const fastLaunch = readProjectFile("docs/billing-fast-launch.md");
+  const runbook = readProjectFile("docs/billing-operations-runbook.md");
+
+  assert.match(fastLaunch, /迁移前停售[\s\S]*billing-operations-runbook\.md/);
+  const rollout = runbook.split("## 迁移 019：迁移前停售与恢复门禁")[1]?.split("\n## ")[0];
+  assert.ok(rollout, "operators need a dedicated migration-first rollout gate");
+  assert.match(rollout, /旧应用[\s\S]*活跃商品[\s\S]*订阅/);
+  assert.match(rollout, /BILLING_REAL_PAYMENT_PUBLIC_ENABLED=false/);
+  for (const affectedOperation of ["支付 GET\/查询", "退款申请", "发票申请"]) {
+    assert.ok(rollout.includes(affectedOperation), `missing maintenance impact: ${affectedOperation}`);
+  }
+  assert.match(rollout, /已验签[\s\S]*回调[\s\S]*继续/);
+  assert.match(rollout, /无进行中的普通用户支付、退款或发票操作[\s\S]*维护窗口/);
+  assert.match(rollout, /新代码[\s\S]*canary[\s\S]*受控[\s\S]*公开销售[\s\S]*批准/);
+  assert.match(rollout, /staging[\s\S]*不得/);
+});
+
 test("client graph classification permits type-only imports but follows static, dynamic, and require edges", () => {
   assert.deepEqual(
     runtimeModuleSpecifiers(
