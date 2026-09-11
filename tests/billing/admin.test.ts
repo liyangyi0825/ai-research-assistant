@@ -760,6 +760,7 @@ test("approved fast-launch products may be activated only through the admin serv
         isActive: true,
         reason: "approved activation",
         idempotencyKey: `activate-${sku.toLowerCase()}`,
+        displayMetadata: { highlights: ["forged unlimited quota"] },
       },
       repository({
         upsertProduct: async (input) => {
@@ -776,6 +777,8 @@ test("approved fast-launch products may be activated only through the admin serv
 
     assert.equal(received?.p_sku, sku);
     assert.equal(received?.p_is_active, true);
+    assert.equal(received !== undefined && "p_display_metadata" in received, false);
+    assert.doesNotMatch(JSON.stringify(received), /forged unlimited quota/);
   }
 });
 

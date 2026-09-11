@@ -16,6 +16,8 @@ import type {
   BillingUserPageRepository,
 } from "../../lib/billing/user-pages";
 import { createReactDomHarness } from "./helpers/react-dom-harness";
+import { subscriptionDisplayCatalog } from "./helpers/subscription-display-catalog";
+import { listPublicProducts } from "../../lib/billing/products";
 
 async function userPagesModule() {
   try {
@@ -549,6 +551,55 @@ test("PricingProducts renders subscriptions disabled, credits linked, and purcha
       "/api/billing/availability",
       "/api/billing/summary",
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("PricingProducts visibly renders server catalog principal quotas for each full subscription period", async () => {
+  const metadata = subscriptionDisplayCatalog();
+  const products = await listPublicProducts({
+    listActiveProducts: async () => publicProducts().map((product) => ({
+      ...product,
+      planId: product.productType === "SUBSCRIPTION" ? `plan-${product.id}` : null,
+      entitlementVersion: "private-version",
+      isActive: true,
+      entitlements: [{ featureKey: "private-feature", entitlementVersion: "private-version", periodicLimit: 999, creditGrant: 0, configuration: { internal: "must-not-leak" } }],
+      displayMetadata: metadata.get(product.sku) ?? product.displayMetadata,
+    })),
+    findActiveProduct: async () => assert.fail("pricing must only list products"),
+    hasActiveSubscription: async () => assert.fail("pricing must only list products"),
+    insertOrder: async () => assert.fail("pricing must not create orders"),
+    findUserOrder: async () => assert.fail("pricing must only list products"),
+  });
+  assert.doesNotMatch(JSON.stringify(products), /private-version|private-feature|must-not-leak/);
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  const fallback = pricingFetch({ summaryResponse: Response.json({ summary: { ...summary(), subscription: null } }), available: true, calls: [] });
+  globalThis.fetch = (async (input: RequestInfo | URL) => String(input) === "/api/billing/products"
+    ? Response.json({ products }) : fallback(input)) as typeof fetch;
+  try {
+    const { PricingProducts } = await import("../../components/billing/PricingProducts");
+    await harness.render(createElement(PricingProducts));
+    const articles = [...harness.container.querySelectorAll("article")];
+    for (const [name, expected, price, duration] of [
+      ["Pro Monthly", ["论文总结：100 次", "论文问答：1000 次", "论文翻译：30 次", "PPT 生成：30 次"], "19.90", "30 天"],
+      ["Pro Semester", ["论文总结：500 次", "论文问答：5000 次", "论文翻译：150 次", "PPT 生成：150 次"], "79.00", "150 天"],
+    ] as const) {
+      const card = articles.find((article) => article.querySelector("h2")?.textContent === name);
+      assert.ok(card);
+      assert.deepEqual([...card.querySelectorAll("li")].map((li) => li.textContent), expected);
+      assert.ok(card.textContent?.includes(price));
+      assert.ok(card.textContent?.includes(duration));
+      assert.ok(card.textContent?.includes("一次性支付，不自动续费"));
+    }
+    assert.match(articles.find((card) => card.textContent?.includes("Pro Semester"))?.textContent ?? "", /额度覆盖一个完整的 150 天周期，不按月重置/);
+    const credits = articles.find((card) => card.querySelector("h2")?.textContent === "100 credits");
+    assert.ok(credits);
+    assert.equal(credits.querySelectorAll("li").length, 0);
+    assert.ok(credits.textContent?.includes("9.90"));
+    assert.equal(credits.querySelector("a")?.getAttribute("href"), "/checkout/credits-product");
   } finally {
     globalThis.fetch = originalFetch;
     await harness.cleanup();

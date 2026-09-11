@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { createBillingRepository, type BillingAdminClient } from "../../lib/billing/repositories";
+import { subscriptionDisplayCatalog } from "./helpers/subscription-display-catalog";
 
 const projectFile = (path: string) => {
   const url = new URL(`../../${path}`, import.meta.url);
@@ -56,6 +57,31 @@ test("019 activates the exact catalog and serializes subscription insertion and 
   assert.match(sql, /revoke all on function public.billing_assert_subscription_available\(uuid, uuid\) from public, anon, authenticated, service_role/);
   // Preserve the existing replay branches and every payment/refund validation.
   assert.doesNotMatch(sql, /create or replace function public.billing_(settle_paid_order|bind_verified_payment_query|complete_refund)/);
+});
+
+test("019 seeds principal quota display matching the persisted monthly and semester entitlements", () => {
+  const catalog = subscriptionDisplayCatalog();
+  assert.deepEqual([...catalog], [
+    ["PRO_MONTHLY", { highlights: ["论文总结：100 次", "论文问答：1000 次", "论文翻译：30 次", "PPT 生成：30 次"] }],
+    ["PRO_SEMESTER", { highlights: ["论文总结：500 次", "论文问答：5000 次", "论文翻译：150 次", "PPT 生成：150 次"] }],
+  ]);
+  const sql = compactSql("supabase/migrations/202609100019_monthly_semester_catalog.sql");
+  const limits = new Map([...sql.matchAll(/\('(pro|pro_semester)', '([^']+)', '[^']+', (\d+)\)/g)]
+    .map((match) => [`${match[1]}:${match[2]}`, Number(match[3])]));
+  for (const [index, feature] of ["summarize", "chat", "translate", "ppt_generate"].entries()) {
+    const monthly = (catalog.get("PRO_MONTHLY") as { highlights: string[] }).highlights[index];
+    const semester = (catalog.get("PRO_SEMESTER") as { highlights: string[] }).highlights[index];
+    const monthLimit = Number(monthly.match(/\d+/)?.[0]);
+    const semesterLimit = Number(semester.match(/\d+/)?.[0]);
+    assert.equal(monthLimit, limits.get(`pro:${feature}`));
+    assert.equal(semesterLimit, limits.get(`pro_semester:${feature}`));
+    assert.equal(semesterLimit, monthLimit * 5);
+  }
+  assert.match(sql, /display_metadata = product\.display_metadata \|\| desired\.display_metadata/);
+  assert.match(sql, /where product\.sku = desired\.sku/);
+  assert.match(sql, /product\.display_metadata -> 'highlights' is distinct from/);
+  assert.match(sql, /entitlement\.entitlement_version = product\.entitlement_version/);
+  assert.match(sql, /raise exception 'subscription_display_quota_mismatch'/);
 });
 
 test("013 webhook retries are bounded, server-timed, immutable, and service-role only", () => {

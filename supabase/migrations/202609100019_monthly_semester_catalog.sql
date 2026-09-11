@@ -136,6 +136,19 @@ SET
   updated_at = now();
 
 
+-- Public card copy is owned by this catalog, never by purchase/admin inputs.
+-- Keep other display fields and the credit-pack metadata unchanged.
+WITH desired_display_metadata (sku, display_metadata) AS (
+  VALUES
+    ('PRO_MONTHLY', '{"highlights":["论文总结：100 次","论文问答：1000 次","论文翻译：30 次","PPT 生成：30 次"]}'::JSONB),
+    ('PRO_SEMESTER', '{"highlights":["论文总结：500 次","论文问答：5000 次","论文翻译：150 次","PPT 生成：150 次"]}'::JSONB)
+)
+UPDATE public.billing_products AS product
+SET display_metadata = product.display_metadata || desired.display_metadata,
+    updated_at = now()
+FROM desired_display_metadata AS desired
+WHERE product.sku = desired.sku;
+
 CREATE OR REPLACE FUNCTION public.billing_assert_semester_plan(p_plan_id UUID)
 RETURNS VOID
 LANGUAGE plpgsql
@@ -429,4 +442,31 @@ REVOKE ALL ON FUNCTION public.billing_guard_subscription_activation() FROM PUBLI
 
 -- Validate the final catalog before committing any activation.
 SELECT public.billing_assert_semester_plan(id) FROM public.billing_plans WHERE code='PRO_SEMESTER';
+
+-- Fail the whole migration if visible quotas drift from the version that orders
+-- snapshot. The semester guard above validates the full-period fivefold limits.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM public.billing_products AS product
+    WHERE product.sku IN ('PRO_MONTHLY', 'PRO_SEMESTER')
+      AND product.display_metadata -> 'highlights' IS DISTINCT FROM (
+        SELECT jsonb_agg(format('%s：%s 次', display.label, entitlement.periodic_limit) ORDER BY display.position)
+        FROM (VALUES
+          ('summarize', '论文总结', 1),
+          ('chat', '论文问答', 2),
+          ('translate', '论文翻译', 3),
+          ('ppt_generate', 'PPT 生成', 4)
+        ) AS display(feature_key, label, position)
+        JOIN public.billing_plan_entitlements AS entitlement
+          ON entitlement.plan_id = product.plan_id
+          AND entitlement.entitlement_version = product.entitlement_version
+          AND entitlement.feature_key = display.feature_key
+      )
+  ) THEN
+    RAISE EXCEPTION 'SUBSCRIPTION_DISPLAY_QUOTA_MISMATCH' USING ERRCODE = 'check_violation';
+  END IF;
+END;
+$$;
 COMMIT;
