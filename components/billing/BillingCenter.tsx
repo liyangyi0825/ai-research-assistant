@@ -7,7 +7,8 @@ import type {
   BillingAvailability,
   BillingSummary,
 } from "@/lib/billing/user-pages";
-import { ResearchResourceScale } from "./ResearchResourceScale";
+import { billingFeatureLabel } from "@/lib/billing/order-display";
+import { BillingStatusBadge } from "./BillingStatusBadge";
 
 function date(value: string | null): string {
   if (!value) return "—";
@@ -25,16 +26,6 @@ function money(amountMinor: number, currency: "CNY"): string {
     minimumFractionDigits: 2,
   }).format(amountMinor / 100);
 }
-
-const ORDER_STATUS: Record<string, string> = {
-  PENDING: "待支付",
-  PAID: "已支付",
-  FAILED: "支付失败",
-  CANCELLED: "已取消",
-  CLOSED: "已关闭",
-  REFUNDING: "退款审核中",
-  REFUNDED: "已退款",
-};
 
 export function BillingCenter() {
   const [summary, setSummary] = useState<BillingSummary | null>(null);
@@ -97,68 +88,57 @@ export function BillingCenter() {
     );
   }
 
-  const totalCredits = summary.credits.available + summary.credits.reserved;
   return (
-    <div className="space-y-5">
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1.2fr)_minmax(18rem,0.8fr)]">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
-          <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="space-y-8">
+      <section
+        aria-labelledby="resource-overview-heading"
+        className="overflow-hidden rounded-2xl border border-slate-200 bg-white"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4 sm:px-7">
+          <h2 id="resource-overview-heading" className="text-base font-semibold text-slate-950">资源总览</h2>
+          {availability?.available && (
+            <Link href="/pricing" className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white outline-none hover:bg-blue-700 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">
+              查看套餐
+            </Link>
+          )}
+        </div>
+        <div className="grid md:grid-cols-[1.1fr_1fr]">
+          <dl className="px-5 py-7 sm:px-7 sm:py-8">
             <div>
-              <p className="text-xs font-semibold tracking-[0.16em] text-blue-700">
-                CURRENT RESEARCH ACCESS
-              </p>
-              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-                {summary.subscription?.planName ?? "当前无付费套餐"}
-              </h2>
-              <p className="mt-2 text-sm text-slate-500">
-                {summary.subscription
-                  ? `有效期至 ${date(summary.subscription.endsAt)}`
-                  : "免费科研功能可继续使用"}
-              </p>
+              <dt className="text-sm font-medium text-teal-800">可用 credits</dt>
+              <dd className="mt-3 break-all text-5xl font-semibold tracking-tight text-teal-800 tabular-nums sm:text-6xl">
+                {summary.credits.available.toLocaleString("zh-CN")}
+              </dd>
             </div>
-            {availability?.available && (
-              <Link
-                href="/pricing"
-                className="rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2 text-sm font-medium text-blue-700 outline-none transition hover:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500"
-              >
-                查看套餐
-              </Link>
-            )}
-          </div>
-          <div className="mt-6">
-            <ResearchResourceScale
-              label="CREDITS 刻度"
-              value={summary.credits.available}
-              max={Math.max(totalCredits, 1)}
-              valueLabel={`${summary.credits.available.toLocaleString("zh-CN")} 可用`}
-              detail={`${summary.credits.reserved.toLocaleString("zh-CN")} 已预占`}
-            />
-          </div>
+            <div className="mt-5 flex items-baseline gap-3 text-sm">
+              <dt className="text-slate-500">已预占</dt>
+              <dd className="font-medium text-slate-700 tabular-nums">{summary.credits.reserved.toLocaleString("zh-CN")} credits</dd>
+            </div>
+          </dl>
+          <dl className="grid content-center gap-6 border-t border-slate-200 bg-slate-50/70 px-5 py-7 sm:px-7 md:border-t-0 md:border-l">
+            <div>
+              <dt className="text-xs font-medium text-slate-500">当前套餐</dt>
+              <dd className="mt-2 text-xl font-semibold text-slate-950">{summary.subscription?.planName ?? "当前无付费套餐"}</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-medium text-slate-500">有效期至</dt>
+              <dd className="mt-2 text-sm text-slate-700 tabular-nums">{summary.subscription ? date(summary.subscription.endsAt) : "免费科研功能可继续使用"}</dd>
+            </div>
+          </dl>
         </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-slate-950 p-5 text-slate-100 shadow-sm sm:p-7">
-          <p className="text-xs font-semibold tracking-[0.16em] text-blue-300">
-            ACCOUNT NOTE
-          </p>
-          <h2 className="mt-3 text-lg font-semibold">收费入口状态</h2>
-          <p className="mt-3 text-sm leading-6 text-slate-300">
-            {availability?.available
-              ? "当前账号可进入套餐确认流程；最终金额仍由服务端商品记录决定。"
-              : "当前未开放购买入口。账单历史和已获科研资源仍可在此查看。"}
-          </p>
-        </div>
+        {!availability?.available && (
+          <p className="border-t border-slate-200 px-5 py-3 text-xs leading-6 text-slate-500 sm:px-7">当前未开放购买入口。账单历史和已获科研资源仍可在此查看。</p>
+        )}
       </section>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
-        <div className="flex items-end justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold tracking-[0.16em] text-blue-700">
-              PERIOD QUOTAS
-            </p>
-            <h2 className="mt-2 text-xl font-semibold text-slate-950">
-              周期配额
-            </h2>
-          </div>
+      <section
+        aria-labelledby="quota-heading"
+        className="rounded-2xl border border-slate-200 bg-white px-5 py-5 sm:px-7"
+      >
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id="quota-heading" className="text-lg font-semibold text-slate-950">
+            周期配额
+          </h2>
           <span className="text-xs text-slate-500">
             已用与预占分别计量
           </span>
@@ -168,65 +148,118 @@ export function BillingCenter() {
             当前没有生效中的周期配额。可继续使用现有免费科研功能。
           </p>
         ) : (
-          <div className="mt-5 grid gap-4 md:grid-cols-2">
-            {summary.quotas.map((quota) => (
-              <ResearchResourceScale
-                key={`${quota.featureKey}:${quota.periodEnd}`}
-                label={quota.featureKey}
-                value={quota.used + quota.reserved}
-                max={Math.max(quota.limit, 1)}
-                valueLabel={`${quota.used.toLocaleString("zh-CN")} / ${quota.limit.toLocaleString("zh-CN")}`}
-                detail={`${quota.reserved.toLocaleString("zh-CN")} 已预占 · ${date(quota.periodEnd)} 重置`}
-              />
-            ))}
-          </div>
+          <ul className="mt-4 divide-y divide-slate-100">
+            {summary.quotas.map((quota) => {
+              const label = billingFeatureLabel(quota.featureKey);
+              const occupied = quota.used + quota.reserved;
+              const max = Math.max(quota.limit, 1);
+              return (
+                <li
+                  key={`${quota.featureKey}:${quota.periodEnd}`}
+                  className="grid gap-x-8 gap-y-3 py-4 sm:grid-cols-[minmax(8rem,0.65fr)_minmax(0,1.5fr)] sm:items-center"
+                >
+                  <div>
+                    <h3 className="text-sm font-medium text-slate-900">{label}</h3>
+                    <p className="mt-1 text-xs text-slate-500 tabular-nums">{date(quota.periodEnd)} 重置</p>
+                  </div>
+                  <div>
+                    <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
+                      <p className="text-slate-600">
+                        <span className="mr-2">已用 / 配额</span>
+                        <span className="text-sm font-medium text-slate-900 tabular-nums">
+                          {quota.used.toLocaleString("zh-CN")} / {quota.limit.toLocaleString("zh-CN")}
+                        </span>
+                      </p>
+                      <p className="text-slate-500">
+                        已预占 <span className="tabular-nums">{quota.reserved.toLocaleString("zh-CN")}</span>
+                      </p>
+                    </div>
+                    <div
+                      role="meter"
+                      aria-label={`${label}配额使用情况`}
+                      aria-valuemin={0}
+                      aria-valuemax={max}
+                      aria-valuenow={Math.min(max, occupied)}
+                      aria-valuetext={`已用 ${quota.used}，已预占 ${quota.reserved}，配额 ${quota.limit}`}
+                      className="mt-2.5 flex h-2 overflow-hidden rounded-full bg-slate-100"
+                    >
+                      <span
+                        className="h-full bg-blue-600"
+                        style={{ width: `${Math.min(100, (quota.used / max) * 100)}%` }}
+                      />
+                      <span
+                        className="h-full bg-blue-300"
+                        style={{
+                          width: `${Math.min(Math.max(0, 100 - (quota.used / max) * 100), (quota.reserved / max) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </section>
 
-      <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 px-5 py-5 sm:px-7">
-          <p className="text-xs font-semibold tracking-[0.16em] text-blue-700">
-            ORDERS
-          </p>
-          <h2 className="mt-2 text-xl font-semibold text-slate-950">
+      <section
+        aria-labelledby="orders-heading"
+        className="overflow-hidden rounded-2xl border border-slate-200 bg-white"
+      >
+        <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-200 px-5 py-5 sm:px-7">
+          <h2 id="orders-heading" className="text-lg font-semibold text-slate-950">
             订单记录
           </h2>
+          <p className="text-xs text-slate-500">最近 20 笔订单</p>
         </div>
         {summary.orders.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-slate-500 sm:px-7">
             暂无订单记录。
           </div>
         ) : (
-          <div className="divide-y divide-slate-100">
-            {summary.orders.map((item) => (
-              <Link
-                key={item.id}
-                href={`/billing/orders/${encodeURIComponent(item.id)}`}
-                className="grid gap-2 px-5 py-4 outline-none transition hover:bg-slate-50 focus-visible:bg-blue-50 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:px-7"
-              >
-                <div>
-                  <p className="font-medium text-slate-900">
-                    {item.productName}
-                  </p>
-                  <p className="mt-1 text-xs tabular-nums text-slate-500">
-                    {item.orderNumber} · {date(item.createdAt)}
-                  </p>
-                </div>
-                <span className="text-sm text-slate-600">
-                  {ORDER_STATUS[item.status] ?? item.status}
-                </span>
-                <strong className="text-sm tabular-nums text-slate-900">
-                  {money(item.amountMinor, item.currency)}
-                </strong>
-              </Link>
-            ))}
-          </div>
+          <table role="table" className="block w-full text-left text-sm md:table md:table-fixed">
+            <caption className="sr-only">最近订单及支付状态</caption>
+            <thead role="rowgroup" className="sr-only md:not-sr-only md:table-header-group">
+              <tr role="row" className="bg-slate-50 text-xs text-slate-500">
+                <th role="columnheader" scope="col" className="w-[24%] px-7 py-3 font-medium">产品</th>
+                <th role="columnheader" scope="col" className="w-[30%] px-3 py-3 font-medium">订单 / 日期</th>
+                <th role="columnheader" scope="col" className="w-[17%] px-3 py-3 font-medium">状态</th>
+                <th role="columnheader" scope="col" className="w-[15%] px-3 py-3 text-right font-medium">金额</th>
+                <th role="columnheader" scope="col" className="px-5 py-3 text-right font-medium"><span className="sr-only">操作</span></th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup" className="block divide-y divide-slate-100 md:table-row-group">
+              {summary.orders.map((item) => (
+                <tr
+                  role="row"
+                  key={item.id}
+                  className="grid grid-cols-2 items-center gap-x-3 gap-y-3 px-5 py-5 md:table-row md:hover:bg-slate-50/60"
+                >
+                  <td role="cell" className="col-span-2 break-words font-medium text-slate-900 md:px-7 md:py-5">{item.productName}</td>
+                  <td role="cell" className="col-span-2 min-w-0 md:px-3 md:py-5">
+                    <p className="break-all text-xs text-slate-600 tabular-nums">{item.orderNumber}</p>
+                    <p className="mt-1 text-xs text-slate-500 tabular-nums">{date(item.createdAt)}</p>
+                  </td>
+                  <td role="cell" className="md:px-3 md:py-5"><BillingStatusBadge status={item.status} /></td>
+                  <td role="cell" className="text-right font-medium text-slate-900 tabular-nums md:px-3 md:py-5">{money(item.amountMinor, item.currency)}</td>
+                  <td role="cell" className="col-span-2 text-right md:px-5 md:py-5">
+                    <Link
+                      href={`/billing/orders/${encodeURIComponent(item.id)}`}
+                      className="inline-flex min-h-10 items-center rounded-md px-2 font-medium whitespace-nowrap text-blue-700 outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+                    >
+                      查看详情<span className="sr-only">，订单 {item.orderNumber}</span>
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </section>
 
-      <section className="grid gap-5 lg:grid-cols-2">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
-          <h2 className="text-lg font-semibold text-slate-950">最近使用</h2>
+      <section className="grid gap-7 border-t border-slate-200 pt-6 lg:grid-cols-2">
+        <div className="min-w-0 px-1">
+          <h2 className="text-base font-semibold text-slate-700">最近使用</h2>
           {summary.usage.length === 0 ? (
             <p className="mt-4 text-sm text-slate-500">暂无计费使用记录。</p>
           ) : (
@@ -238,14 +271,14 @@ export function BillingCenter() {
                 >
                   <div>
                     <p className="font-medium text-slate-800">
-                      {item.featureKey}
+                      {billingFeatureLabel(item.featureKey)}
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
                       {date(item.createdAt)}
                     </p>
                   </div>
                   <span className="tabular-nums text-slate-600">
-                    {item.quotaUnits} quota · {item.creditAmount} credits
+                    {item.quotaUnits} 配额 · {item.creditAmount} credits
                   </span>
                 </li>
               ))}
@@ -253,8 +286,8 @@ export function BillingCenter() {
           )}
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
-          <h2 className="text-lg font-semibold text-slate-950">售后申请</h2>
+        <div className="min-w-0 px-1 lg:border-l lg:border-slate-200 lg:pl-7">
+          <h2 className="text-base font-semibold text-slate-700">售后申请</h2>
           {summary.refunds.length === 0 &&
           summary.invoices.length === 0 ? (
             <p className="mt-4 text-sm leading-6 text-slate-500">

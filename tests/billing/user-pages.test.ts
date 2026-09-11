@@ -11,6 +11,7 @@ import {
 import type { BillingConfig } from "../../lib/billing/config";
 import { BillingError } from "../../lib/billing/errors";
 import type { PublicBillingProduct } from "../../lib/billing/products";
+import type { BillingOrder, BillingOrderStatus } from "../../lib/billing/repositories";
 import type {
   BillingSummary,
   BillingUserPageRepository,
@@ -104,6 +105,142 @@ function summary(): BillingSummary {
     invoices: [],
   };
 }
+
+function dashboardOrder(status: BillingOrderStatus = "PAID"): BillingOrder {
+  return {
+    id: "order-1", orderNumber: "BILL-ORDER-1", userId: "user-1",
+    productId: "product-1", provider: "MOCK", amountMinor: 3990, currency: "CNY",
+    snapshotProductName: "科研月度方案", snapshotProductType: "SUBSCRIPTION",
+    snapshotPlanId: "plan-1", snapshotDurationDays: 30, snapshotCreditGrant: 800,
+    snapshotEntitlementVersion: "v1", snapshotEntitlements: [], snapshotDetails: {},
+    acceptedAgreementVersion: "billing-member-v1", expiresAt: "2026-07-28T10:00:00.000Z",
+    status, paidAt: "2026-07-28T09:02:00.000Z", closedAt: null, refundStatus: "NONE",
+    createdAt: "2026-07-28T09:00:00.000Z", updatedAt: "2026-07-28T09:02:00.000Z",
+  };
+}
+
+const orderStatusLabels: Array<[BillingOrderStatus, string]> = [
+  ["PENDING", "待支付"], ["PAID", "已支付"], ["FAILED", "支付失败"],
+  ["CANCELLED", "已取消"], ["CLOSED", "已关闭"],
+  ["REFUNDING", "退款审核中"], ["REFUNDED", "已退款"],
+];
+
+function dashboardFetch(data: BillingSummary, order = dashboardOrder(), available = true): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "/api/billing/summary") return Response.json({ summary: data });
+    if (url === "/api/billing/orders/order-1") return Response.json({ order });
+    if (url === "/api/billing/availability") return Response.json({
+      available, paymentMode: available ? "mock" : null,
+      mockConfirmationAllowed: available, agreementVersion: available ? "billing-member-v1" : null,
+    });
+    throw new Error(`Unexpected request: ${url}`);
+  }) as typeof fetch;
+}
+
+test("Billing dashboard renders resource overview, localized quota details and explicit order actions", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  const data = summary();
+  data.usage = [{ id: "usage-1", featureKey: "deep_research", status: "FINALIZED", quotaUnits: 1, creditAmount: 5, createdAt: "2026-07-28T09:00:00.000Z" }];
+  globalThis.fetch = dashboardFetch(data);
+  try {
+    const { BillingCenter } = await import("../../components/billing/BillingCenter");
+    await harness.render(createElement(BillingCenter));
+    const content = harness.container.textContent ?? "";
+    assert.match(content, /可用 credits.*800/);
+    assert.match(content, /已预占.*20/);
+    assert.match(content, /当前套餐.*科研月度方案/);
+    assert.match(content, /有效期至.*2026\/08\/01/);
+    const quota = harness.container.querySelector('[role="meter"][aria-label="深度研究配额使用情况"]');
+    assert.ok(quota, "Known features must have a localized accessible quota meter");
+    assert.equal(quota.getAttribute("aria-valuenow"), "20");
+    assert.equal(quota.getAttribute("aria-valuemax"), "100");
+    assert.match(content, /18\s*\/\s*100/);
+    assert.match(content, /已预占\s*2/);
+    assert.match(content, /2026\/08\/01\s*重置/);
+    assert.doesNotMatch(content, /deep_research/);
+    assert.ok(harness.container.querySelector('a[href="/pricing"]'));
+    const table = harness.container.querySelector("table");
+    assert.ok(table, "Orders must have table semantics");
+    assert.match(table.textContent ?? "", /产品.*订单.*状态.*金额/);
+    assert.match(table.textContent ?? "", /BILL-ORDER-1/);
+    assert.match(table.textContent ?? "", /39\.90/);
+    const action = table.querySelector('a[href="/billing/orders/order-1"]');
+    assert.match(action?.textContent ?? "", /查看详情/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("Billing dashboard renders no-plan and empty states without a gated purchase link", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = dashboardFetch({ ...summary(), subscription: null, credits: { available: 0, reserved: 0 }, quotas: [], orders: [] }, dashboardOrder(), false);
+  try {
+    const { BillingCenter } = await import("../../components/billing/BillingCenter");
+    await harness.render(createElement(BillingCenter));
+    assert.match(harness.container.textContent ?? "", /当前无付费套餐/);
+    assert.match(harness.container.textContent ?? "", /免费科研功能可继续使用/);
+    assert.match(harness.container.textContent ?? "", /没有生效中的周期配额/);
+    assert.match(harness.container.textContent ?? "", /暂无订单记录/);
+    assert.equal(harness.container.querySelector('a[href="/pricing"]'), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("Billing dashboard and order detail render all statuses with identical Chinese badges", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  const data = summary();
+  data.orders = orderStatusLabels.map(([status], index) => ({ ...data.orders[0], id: `order-${index}`, status }));
+  globalThis.fetch = dashboardFetch(data);
+  try {
+    const { BillingCenter } = await import("../../components/billing/BillingCenter");
+    const { OrderDetail } = await import("../../components/billing/OrderDetail");
+    await harness.render(createElement(BillingCenter));
+    const badges = [...harness.container.querySelectorAll('[aria-label^="订单状态："]')];
+    assert.deepEqual(badges.map((badge) => badge.textContent), orderStatusLabels.map(([, label]) => label));
+    for (const [index, [status, label]] of orderStatusLabels.entries()) {
+      globalThis.fetch = dashboardFetch(data, dashboardOrder(status));
+      await harness.render(createElement(OrderDetail, { key: status, orderId: "order-1" }));
+      const badge = harness.container.querySelector(`[aria-label="订单状态：${label}"]`);
+      assert.equal(badge?.textContent, label);
+      assert.equal(badge?.className, badges[index].className);
+      assert.match(harness.container.textContent ?? "", /订单资源.*800.*30/);
+      assert.equal(harness.container.querySelectorAll("form").length, status === "PAID" ? 2 : 0);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("Billing dashboard and order detail retain loading and unavailable states", async () => {
+  const harness = createReactDomHarness();
+  const originalFetch = globalThis.fetch;
+  try {
+    const { BillingCenter } = await import("../../components/billing/BillingCenter");
+    const { OrderDetail } = await import("../../components/billing/OrderDetail");
+    globalThis.fetch = (() => new Promise<Response>(() => {})) as typeof fetch;
+    await harness.render(createElement(BillingCenter));
+    assert.ok(harness.container.querySelector('[aria-label="正在加载账单信息"]'));
+    await harness.render(createElement(OrderDetail, { orderId: "order-1" }));
+    assert.ok(harness.container.querySelector('[aria-label="正在加载订单信息"]'));
+    globalThis.fetch = (async () => Response.json({}, { status: 503 })) as typeof fetch;
+    await harness.render(createElement(BillingCenter));
+    assert.match(harness.container.textContent ?? "", /账单信息暂时无法加载/);
+    await harness.render(createElement(OrderDetail, { orderId: "order-1" }));
+    assert.match(harness.container.textContent ?? "", /订单暂时无法加载/);
+    assert.ok(harness.container.querySelector('a[href="/billing"]'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
 
 function publicProducts(): PublicBillingProduct[] {
   return [

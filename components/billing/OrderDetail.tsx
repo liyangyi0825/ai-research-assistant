@@ -9,7 +9,7 @@ import type {
   InvoiceTitleType,
   RefundReasonCode,
 } from "@/lib/billing/user-pages";
-import { ResearchResourceScale } from "./ResearchResourceScale";
+import { BillingStatusBadge } from "./BillingStatusBadge";
 
 function money(amountMinor: number, currency: "CNY"): string {
   return new Intl.NumberFormat("zh-CN", {
@@ -149,7 +149,7 @@ export function OrderDetail({ orderId }: { orderId: string }) {
 
   if (loading) {
     return (
-      <div className="h-96 animate-pulse rounded-2xl border border-slate-200 bg-white motion-reduce:animate-none" />
+      <div aria-label="正在加载订单信息" className="h-96 animate-pulse rounded-2xl border border-slate-200 bg-white motion-reduce:animate-none" />
     );
   }
 
@@ -171,57 +171,59 @@ export function OrderDetail({ orderId }: { orderId: string }) {
     availability?.available &&
     order.status === "PAID" &&
     order.refundStatus !== "FULL";
-  const primaryResource =
-    order.snapshotCreditGrant ||
-    order.snapshotDurationDays ||
-    0;
   return (
-    <div className="space-y-5">
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7">
+    <div className="space-y-7">
+      <nav aria-label="账单导航">
+        <Link href="/billing" className="inline-flex min-h-10 items-center rounded-md text-sm font-medium text-blue-700 outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">返回账单中心</Link>
+      </nav>
+      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 sm:p-7">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold tracking-[0.16em] text-blue-700">
-              ORDER SNAPSHOT
-            </p>
-            <h1 className="mt-2 text-2xl font-semibold text-slate-950">
+          <div className="min-w-0 flex-1 basis-60">
+            <BillingStatusBadge status={order.status} />
+            <h1 className="mt-4 break-words text-2xl font-semibold tracking-tight text-slate-950">
               {order.snapshotProductName}
             </h1>
-            <p className="mt-2 text-xs tabular-nums text-slate-500">
-              {order.orderNumber}
+            <p className="mt-2 break-all text-xs tabular-nums text-slate-500">
+              订单编号 {order.orderNumber}
             </p>
           </div>
-          <div className="text-right">
-            <p className="text-2xl font-semibold tabular-nums text-slate-950">
+          <div className="sm:text-right">
+            <p className="text-xs font-medium text-slate-500">订单金额</p>
+            <p className="mt-2 text-3xl font-semibold tracking-tight tabular-nums text-slate-950">
               {money(order.amountMinor, order.currency)}
             </p>
-            <p className="mt-1 text-sm text-slate-500">{order.status}</p>
           </div>
         </div>
-        <div className="mt-6">
-          <ResearchResourceScale
-            label="订单科研资源刻度"
-            value={primaryResource}
-            max={Math.max(primaryResource, 1)}
-            valueLabel={
-              order.snapshotCreditGrant > 0
-                ? `${order.snapshotCreditGrant.toLocaleString("zh-CN")} credits`
-                : `${(order.snapshotDurationDays ?? 0).toLocaleString("zh-CN")} 天`
-            }
-            detail={`支付时间 ${dateTime(order.paidAt)}`}
-          />
+        <div className="mt-7 border-y border-slate-200 bg-slate-50/70 px-4 py-5 sm:px-5">
+          <h2 className="text-sm font-semibold text-slate-700">订单资源</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-500">下单时的资源快照，实际到账情况请查看账单中心。</p>
+          <dl className="mt-4 grid gap-5 sm:grid-cols-2">
+            <div>
+              <dt className="text-xs text-slate-500">包含 credits</dt>
+              <dd className="mt-1 text-2xl font-semibold text-slate-950 tabular-nums">{order.snapshotCreditGrant.toLocaleString("zh-CN")}</dd>
+            </div>
+            <div className="sm:border-l sm:border-slate-200 sm:pl-5">
+              <dt className="text-xs text-slate-500">套餐时长</dt>
+              <dd className="mt-1 text-2xl font-semibold text-slate-950 tabular-nums">{order.snapshotDurationDays === null ? "—" : `${order.snapshotDurationDays.toLocaleString("zh-CN")} 天`}</dd>
+            </div>
+          </dl>
         </div>
-        <dl className="mt-6 grid gap-4 border-t border-slate-100 pt-5 text-sm sm:grid-cols-3">
+        <dl className="mt-6 grid gap-x-6 gap-y-5 text-sm sm:grid-cols-2 lg:grid-cols-4">
           <div>
             <dt className="text-slate-500">创建时间</dt>
-            <dd className="mt-1 text-slate-900">{dateTime(order.createdAt)}</dd>
+            <dd className="mt-1 text-slate-900 tabular-nums">{dateTime(order.createdAt)}</dd>
+          </div>
+          <div>
+            <dt className="text-slate-500">支付时间</dt>
+            <dd className="mt-1 text-slate-900 tabular-nums">{dateTime(order.paidAt)}</dd>
           </div>
           <div>
             <dt className="text-slate-500">支付方式</dt>
-            <dd className="mt-1 text-slate-900">{order.provider}</dd>
+            <dd className="mt-1 text-slate-900">{{ MOCK: "模拟支付", WECHAT: "微信支付", ALIPAY: "支付宝" }[order.provider]}</dd>
           </div>
           <div>
             <dt className="text-slate-500">退款状态</dt>
-            <dd className="mt-1 text-slate-900">{order.refundStatus}</dd>
+            <dd className="mt-1 text-slate-900">{{ NONE: "无退款", REQUESTED: "已申请退款", PARTIAL: "部分退款", FULL: "全额退款" }[order.refundStatus]}</dd>
           </div>
         </dl>
       </section>
@@ -230,7 +232,7 @@ export function OrderDetail({ orderId }: { orderId: string }) {
         <section className="grid gap-5 lg:grid-cols-2">
           <form
             onSubmit={requestRefund}
-            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7"
+            className="rounded-xl border border-slate-200 bg-white p-5 sm:p-7"
           >
             <h2 className="text-lg font-semibold text-slate-950">申请退款审核</h2>
             <p className="mt-2 text-sm leading-6 text-slate-500">
@@ -273,7 +275,7 @@ export function OrderDetail({ orderId }: { orderId: string }) {
 
           <form
             onSubmit={requestInvoice}
-            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7"
+            className="rounded-xl border border-slate-200 bg-white p-5 sm:p-7"
           >
             <h2 className="text-lg font-semibold text-slate-950">申请发票</h2>
             <p className="mt-2 text-sm leading-6 text-slate-500">
