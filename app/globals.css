@@ -128,3 +128,14 @@
     @apply font-sans;
   }
 }
+
+/* Sidebar routes own the space above the real footer; only their main pane scrolls. */
+body:has(> div > [data-sidebar-shell]) {
+  height: 100%;
+  overflow: hidden;
+}
+
+body:has(> div > [data-sidebar-shell]) > div:first-child {
+  min-height: 0;
+  overflow: hidden;
+}

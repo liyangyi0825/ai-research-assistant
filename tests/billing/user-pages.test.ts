@@ -1148,6 +1148,7 @@ test("disabled billing has no purchase action and production mock confirmation i
 
 test("AppShell bypasses independent billing routes instead of mounting SPA tabs", async () => {
   const appShell = await source("components/AppShell.tsx");
+  const globalCss = await source("app/globals.css");
 
   assert.match(appShell, /BILLING_PATHS/);
   assert.match(appShell, /"\/billing"/);
@@ -1161,19 +1162,19 @@ test("AppShell bypasses independent billing routes instead of mounting SPA tabs"
     "AppShell must fill the root layout slot instead of adding a second viewport height",
   );
   assert.equal(
-    appShell.match(/className="flex h-\[calc\(100dvh-31px\)\] overflow-hidden/g)?.length,
+    appShell.match(/data-sidebar-shell/g)?.length,
     2,
-    "Every sidebar shell must own the viewport height above the global footer",
+    "Every sidebar shell must opt into the constrained root layout",
   );
-  assert.doesNotMatch(
-    appShell,
-    /className="flex h-full overflow-hidden/,
-    "No sidebar shell may grow with page content",
+  assert.equal(
+    appShell.match(/className="flex h-full overflow-hidden/g)?.length,
+    2,
+    "Every sidebar shell must fill the root layout space left above the footer",
   );
   assert.match(
     appShell,
-    /if \(isBypassPage \|\| isBillingPage\)[\s\S]*?className="flex h-\[calc\(100dvh-31px\)\] overflow-hidden"[\s\S]*?className="hidden h-full md:flex"[\s\S]*?<main className="flex-1 overflow-auto">/,
-    "independent pages must use a viewport-height two-pane shell with only the main pane scrolling",
+    /if \(isBypassPage \|\| isBillingPage\)[\s\S]*?data-sidebar-shell[\s\S]*?className="flex h-full overflow-hidden"[\s\S]*?className="hidden h-full md:flex"[\s\S]*?<main className="flex-1 overflow-auto">/,
+    "independent pages must use a constrained two-pane shell with only the main pane scrolling",
   );
   assert.doesNotMatch(
     appShell,
@@ -1189,6 +1190,16 @@ test("AppShell bypasses independent billing routes instead of mounting SPA tabs"
     appShell.match(/<main className="flex-1 overflow-auto/g)?.length,
     2,
     "Only the main pane must scroll in both independent and SPA routes",
+  );
+  assert.match(
+    globalCss,
+    /body:has\(> div > \[data-sidebar-shell\]\)\s*\{[\s\S]*?height:\s*100%;[\s\S]*?overflow:\s*hidden;/,
+    "sidebar routes must prevent the document from becoming a second scroll container",
+  );
+  assert.match(
+    globalCss,
+    /body:has\(> div > \[data-sidebar-shell\]\)\s*>\s*div:first-child\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*hidden;/,
+    "the root content slot must shrink above the real footer height",
   );
 });
 
