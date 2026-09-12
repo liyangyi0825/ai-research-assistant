@@ -1155,6 +1155,16 @@ test("AppShell bypasses independent billing routes instead of mounting SPA tabs"
   assert.match(appShell, /"\/checkout"/);
   assert.match(appShell, /isBillingPage/);
   assert.match(appShell, /isBypassPage\s*\|\|\s*isBillingPage/);
+  assert.doesNotMatch(
+    appShell,
+    /className="flex h-screen overflow-hidden/,
+    "AppShell must fill the root layout slot instead of adding a second viewport height",
+  );
+  assert.equal(
+    appShell.match(/className="flex h-full overflow-hidden/g)?.length,
+    2,
+    "Both AppShell branches must inherit the height reserved above the global footer",
+  );
 });
 
 test("availability fails closed and only enables production mock for a test user or admin", async () => {
