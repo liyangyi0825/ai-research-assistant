@@ -1165,6 +1165,11 @@ test("AppShell bypasses independent billing routes instead of mounting SPA tabs"
     2,
     "Both AppShell branches must inherit the height reserved above the global footer",
   );
+  assert.match(
+    appShell,
+    /if \(isBypassPage \|\| isBillingPage\)[\s\S]*?className="sticky top-0 hidden h-screen md:flex"/,
+    "independent desktop pages must keep the sidebar fixed while their content scrolls",
+  );
 });
 
 test("availability fails closed and only enables production mock for a test user or admin", async () => {

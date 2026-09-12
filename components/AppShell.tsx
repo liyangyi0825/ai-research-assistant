@@ -124,7 +124,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (isBypassPage || isBillingPage) {
     return (
       <div className="flex h-full overflow-hidden" style={{ background: "#F8FAFC" }}>
-        <div className="hidden md:flex h-full">
+        <div className="sticky top-0 hidden h-screen md:flex">
           <Sidebar />
         </div>
         {sidebarOpen && (
