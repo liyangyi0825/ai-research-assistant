@@ -123,8 +123,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // 论文详情等 bypass 页面：有侧边栏但不走 SPA tab 系统
   if (isBypassPage || isBillingPage) {
     return (
-      <div className="flex h-full overflow-hidden" style={{ background: "#F8FAFC" }}>
-        <div className="sticky top-0 hidden h-screen md:flex">
+      <div className="flex h-[calc(100dvh-31px)] overflow-hidden" style={{ background: "#F8FAFC" }}>
+        <div className="hidden h-full md:flex">
           <Sidebar />
         </div>
         {sidebarOpen && (
@@ -145,9 +145,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-full overflow-hidden bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div className="flex h-[calc(100dvh-31px)] overflow-hidden bg-gradient-to-br from-blue-50 to-indigo-100">
       {/* 桌面端侧边栏 */}
-      <div className="hidden md:flex h-full">
+      <div className="hidden h-full md:flex">
         <Sidebar activeTab={activeTab} onTabChange={handleTabChange} />
       </div>
 

@@ -1161,14 +1161,34 @@ test("AppShell bypasses independent billing routes instead of mounting SPA tabs"
     "AppShell must fill the root layout slot instead of adding a second viewport height",
   );
   assert.equal(
-    appShell.match(/className="flex h-full overflow-hidden/g)?.length,
+    appShell.match(/className="flex h-\[calc\(100dvh-31px\)\] overflow-hidden/g)?.length,
     2,
-    "Both AppShell branches must inherit the height reserved above the global footer",
+    "Every sidebar shell must own the viewport height above the global footer",
+  );
+  assert.doesNotMatch(
+    appShell,
+    /className="flex h-full overflow-hidden/,
+    "No sidebar shell may grow with page content",
   );
   assert.match(
     appShell,
-    /if \(isBypassPage \|\| isBillingPage\)[\s\S]*?className="sticky top-0 hidden h-screen md:flex"/,
-    "independent desktop pages must keep the sidebar fixed while their content scrolls",
+    /if \(isBypassPage \|\| isBillingPage\)[\s\S]*?className="flex h-\[calc\(100dvh-31px\)\] overflow-hidden"[\s\S]*?className="hidden h-full md:flex"[\s\S]*?<main className="flex-1 overflow-auto">/,
+    "independent pages must use a viewport-height two-pane shell with only the main pane scrolling",
+  );
+  assert.doesNotMatch(
+    appShell,
+    /className="sticky top-0 hidden h-screen md:flex"/,
+    "the desktop sidebar must not rely on sticky positioning inside an overflow container",
+  );
+  assert.equal(
+    appShell.match(/className="hidden h-full md:flex"/g)?.length,
+    2,
+    "Both desktop sidebars must fill their independent shell without owning page scroll",
+  );
+  assert.equal(
+    appShell.match(/<main className="flex-1 overflow-auto/g)?.length,
+    2,
+    "Only the main pane must scroll in both independent and SPA routes",
   );
 });
 
